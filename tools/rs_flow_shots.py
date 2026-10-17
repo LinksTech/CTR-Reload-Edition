@@ -2,9 +2,12 @@
 """Reload Studio, guided flow "Build a character": shot series and click count.
 
 Drives the page "Character" of Reload Studio with its automation verbs (--do) for the three
-routes (vanilla, lowpoly, hires): the three cards (step 0), then every step (Model, Driver,
-In-game look, Voices, Build before and after the build) and "Test in game" (in automation the
-Studio only logs the command line; the game is never started). One Studio run per route.
+routes (vanilla, lowpoly, hires): the three cards (step 0, in the light and the dark theme), then
+every step one after the other (Model, Driver, In-game look, Voices, Build before and after the
+build) and "Test in game" (in automation the Studio only logs the command line; the game is never
+started), in a window of --size (client area, default 1600 x 900). One Studio run per route for
+the pictures, and one more per route that takes the shortest way a person takes (card, model,
+the head "5 Build", Build, Test in game) and checks that it works.
 
 Per route it writes into --out:
   <route>-<nn>-<step>.png/.txt   shot and `controls` dump of every step
@@ -12,6 +15,7 @@ Per route it writes into --out:
   legacy.log, legacy.rldchar     a script of before without a route (with the route vanilla)
   <route>.log                    the automation log (--log)
   <route>.rldchar                the built character (never into the game's characters folder)
+  <route>-shortest.log/.rldchar  the run of the shortest way (and its report)
   rs.ini                         the Studio's settings (--settings; nothing goes to %APPDATA%)
   AFTER.md                       the click table AFTER (and the comparison with BEFORE.md)
 
@@ -26,6 +30,8 @@ modelled from the plan (decisions E2-E4, E10); the run checks it:
   - the logged "Test in game" command line has --char (and --engine-hires-chars on lowpoly/hires only)
   - with the route vanilla: a script of before (no route verb) builds, and the log says the page
     picked Vanilla by itself ("route: vanilla (implicit ...)")
+  - the shortest way builds without a typed name (the log says "name: ... (from the file name)")
+    and logs the Test in game command line
 Exit code 0 only if all of that holds.
 
 Only files this script wrote earlier (listed in <out>\\.rs_flow_shots.manifest) are removed
@@ -33,7 +39,7 @@ before a run; other files and folders are never touched.
 
 Examples:
   python tools/rs_flow_shots.py --dry-run --route all --out C:\\work\\flow --models C:\\work\\models
-  python tools/rs_flow_shots.py --route hires --out C:\\work\\flow --models C:\\work\\models --theme light
+  python tools/rs_flow_shots.py --route hires --out C:\\work\\flow --models C:\\work\\models --size 1600x900
 Python standard library only.
 """
 import argparse
@@ -49,7 +55,6 @@ TITLES = {"vanilla": "Vanilla", "lowpoly": "Low-Poly", "hires": "Hi-Res"}
 CHRG = {"vanilla": False, "lowpoly": True, "hires": True}
 DEFAULT_MODEL = {"vanilla": "testdriver-classic.glb", "lowpoly": "testdriver-lowpoly.glb",
                  "hires": "testdriver-t10k-x2048.glb"}
-NAMES = {"vanilla": "FLOWVANILLA", "lowpoly": "FLOWLOWPOLY", "hires": "FLOWHIRES"}
 MANIFEST = ".rs_flow_shots.manifest"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_STUDIO = os.path.join(REPO_ROOT, "build-msvc-x86", "Release", "ReloadStudio.exe")
@@ -61,10 +66,15 @@ DEFAULT_STUDIO = os.path.join(REPO_ROOT, "build-msvc-x86", "Release", "ReloadStu
 #   "head"    a visible step head (a Button) whose text ends with that word ("1 Model", "4 Voices")
 # "{title}" stands for the route's card title. Lists per step; CHRG_EXPECT and VANILLA_EXPECT
 # add the entries that only hold for the CHRG routes or only for Vanilla.
-HEADS = [("head", "Button", w) for w in ("Model", "Driver", "In-game look", "Voices", "Build")]
+# A head may carry its short text where the layout is narrow ("Look", "Voices"): a tuple names
+# every text that counts.
+HEADS = [("head", "Button", w) for w in ("Model", "Driver", ("In-game look", "Look"),
+                                         ("Voices (optional)", "Voices"), "Build")]
 FLOW = [("shown", "Static", "Building: {title}"), ("shown", "Button", "Change type"),
         ("shown", "Button", "< Back")] + HEADS
 EXPECT = {
+    "cards-dark": [("shown", "Static", "What do you want to build?"), ("shown", "Button", "Vanilla"),
+                   ("shown", "Button", "Low-Poly"), ("shown", "Button", "Hi-Res")],
     "cards": [("shown", "Static", "What do you want to build?"), ("shown", "Button", "Vanilla"),
               ("shown", "Button", "Low-Poly"), ("shown", "Button", "Hi-Res"),
               ("hidden", "Button", "< Back"), ("hidden", "Button", "Next >"),
@@ -119,10 +129,13 @@ class Shot:
         return "%s-%s-%s" % (route, self.nn, self.step)
 
 
-def route_shots(route, model, outfile, extras):
-    """The automation steps of a route as pictures, in order."""
-    shots = [Shot("00", "cards", ["page char", "route none", "wait 300"])]
-    m = ["route " + route, "wait 300", "model " + model, "wait 800"]
+def route_shots(route, model, outfile, extras, size=(1600, 900), theme="light"):
+    """The automation steps of a route as pictures, in order: every step one after the other
+    (the walk through the page, not the shortest way - that is shortest_steps)."""
+    other = "dark" if theme == "light" else "light"
+    shots = [Shot("00", "cards", ["size %d %d" % size, "theme " + theme, "page char", "route none", "wait 300"]),
+             Shot("00d", "cards-" + other, ["theme " + other, "wait 300"])]
+    m = ["theme " + theme, "route " + route, "wait 300", "model " + model, "wait 800"]
     shots.append(Shot("01", "model", m))
     if extras:
         shots.append(Shot("01a", "model-advanced", ["advanced on", "wait 300"], True))
@@ -131,7 +144,7 @@ def route_shots(route, model, outfile, extras):
             shots.append(Shot("01c", "model-preview-hires", ["preview hires", "wait 300"], True))
         else:
             shots.append(Shot("01b", "model-advanced-off", ["advanced off", "wait 300"], True))
-    shots.append(Shot("02", "driver", ["step next", "name " + NAMES[route], "wait 300"]))
+    shots.append(Shot("02", "driver", ["step next", "wait 300"]))
     shots.append(Shot("03", "look", ["step next", "wait 300"]))
     shots.append(Shot("04", "voices", ["step next", "wait 300"]))
     shots.append(Shot("05", "build", ["step next", "out " + outfile, "wait 300"]))
@@ -157,6 +170,15 @@ def do_steps(route, shots, outdir):
     return steps
 
 
+def shortest_steps(route, model, outfile, report):
+    """The shortest way of a person, as automation: the card, the model, the head "5 Build" (the
+    same Char_SelectTab as the click), Build, Test in game. No name is typed: the page takes it
+    from the file name. "out" only keeps the file out of the game's characters folder (the
+    default there costs no click)."""
+    return ["page char", "route " + route, "model " + model, "step build", "out " + outfile, "build",
+            "test-in-game", "report " + report, "quit"]
+
+
 def legacy_steps(model, outfile):
     """A script of before, without a route: the page must pick Vanilla by itself."""
     return ["page char", "model " + model, "name FLOWLEGACY", "out " + outfile, "build", "quit"]
@@ -166,15 +188,10 @@ def after_actions(route):
     """The user actions AFTER (shortest path with defaults): (action, clicks, fields, shot step)."""
     chrg = CHRG[route]
     return [
-        ("click \"Character\" in the sidebar (the Studio opens on Track)", 1, 0, "cards"),
-        ("click the card \"%s\"" % TITLES[route], 1, 0, "cards"),
-        ("Model: Browse..., Open (%s)" % (".glb" if chrg else "model file"), 2, 0, "model"),
-        ("click \"Next >\" (to Driver)", 1, 0, "model"),
-        ("type the name", 0, 1, "driver"),
-        ("click \"Next >\" (to In-game look)", 1, 0, "driver"),
-        ("click \"Next >\" (to Voices; optional, skipped)", 1, 0, "look"),
-        ("click \"Next >\" (to Build)", 1, 0, "voices"),
-        ("click \"Build\" (Save as defaults to the game's characters folder)", 1, 0, "build"),
+        ("click the card \"%s\" (step 0 of the page Character)" % TITLES[route], 1, 0, "cards"),
+        ("Model: Browse..., Open (%s; the check starts at once)" % (".glb" if chrg else "model file"), 2, 0, "model"),
+        ("click the head \"5 Build\" (the name comes from the file name, nothing typed)", 1, 0, "build"),
+        ("click \"Build\" (Save as defaults to the game's characters folder)", 1, 0, "built"),
         ("click \"Test in game\"%s" % (" (with --engine-hires-chars)" if chrg else ""), 1, 0, "test"),
     ]
 
@@ -284,17 +301,20 @@ def check_controls(path, expect):
             shown.append((f[2], f[12]))
     missing = []
     for rule, cls, text in expect:
+        texts = text if isinstance(text, tuple) else (text,)
+
         def hit(c, t):
             if cls is not None and c != cls:
                 return False
             if rule == "head":
-                return t == text or t.endswith(" " + text)
-            return t == text
+                return any(t == x or t.endswith(" " + x) for x in texts)
+            return t in texts
         found = any(hit(c, t) for c, t in shown)
+        name = " / ".join(texts)
         if rule in ("shown", "head") and not found:
-            missing.append("%s '%s' not present and visible" % ("step head" if rule == "head" else (cls or "control"), text))
+            missing.append("%s '%s' not present and visible" % ("step head" if rule == "head" else (cls or "control"), name))
         elif rule == "hidden" and found:
-            missing.append("%s '%s' visible but should not be" % (cls or "control", text))
+            missing.append("%s '%s' visible but should not be" % (cls or "control", name))
     return missing
 
 
@@ -316,7 +336,8 @@ def check_report(path):
 def step_expect(route, step):
     exp = list(EXPECT.get(step, []))
     exp += (CHRG_EXPECT if CHRG[route] else VANILLA_EXPECT).get(step, [])
-    return [(rule, cls, text.replace("{title}", TITLES[route])) for rule, cls, text in exp]
+    return [(rule, cls, text if isinstance(text, tuple) else text.replace("{title}", TITLES[route]))
+            for rule, cls, text in exp]
 
 
 def check_run(route, shots, outdir, log_lines):
@@ -368,7 +389,7 @@ def clean_old(outdir):
 
 def run_route(args, route, model, outdir):
     outfile = os.path.join(outdir, route + ".rldchar")
-    shots = route_shots(route, model, outfile, args.extras)
+    shots = route_shots(route, model, outfile, args.extras, args.size, args.theme)
     steps = do_steps(route, shots, outdir)
     cmd = [args.studio, "--settings", os.path.join(outdir, "rs.ini"), "--log", os.path.join(outdir, route + ".log"),
            "--theme", args.theme]
@@ -419,6 +440,51 @@ def run_legacy(args, model, outdir):
     return fails, misses, implicit[:1]
 
 
+def run_shortest(args, route, model, outdir):
+    """The shortest way (shortest_steps) of a route: (fails, misses, notes)."""
+    out = os.path.join(outdir, route + "-shortest.rldchar")
+    log = os.path.join(outdir, route + "-shortest.log")
+    steps = shortest_steps(route, model, out, os.path.join(outdir, route + "-shortest-report.txt"))
+    cmd = [args.studio, "--settings", os.path.join(outdir, "rs.ini"), "--log", log, "--theme", args.theme]
+    for s in steps:
+        cmd += ["--do", s]
+    env = dict(os.environ, TMP=args.tmp, TEMP=args.tmp)
+    print("route %s, shortest way: starting %s (%d steps)" % (route, args.studio, len(steps)))
+    try:
+        subprocess.run(cmd, env=env, timeout=args.timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        print("route %s, shortest way: the Studio did not finish within %d s (killed)" % (route, args.timeout))
+    lines = read_log(log)
+    if lines is None:
+        return ["no log written"], [], []
+    fails = [ln.strip() for ln in lines if "FAIL" in ln]
+    if not [ln for ln in lines if ln.startswith("automation finished")]:
+        fails.append("the log has no 'automation finished' line")
+    misses, notes = [], []
+    named = [ln.strip() for ln in lines if ln.strip().startswith("name:") and "(from the file name)" in ln]
+    if named:
+        notes.append(named[0])
+    else:
+        misses.append("no log line 'name: ... (from the file name)': the name was not taken from the file")
+    if not os.path.isfile(out):
+        misses.append("the shortest way built no %s" % os.path.basename(out))
+    cmds = [ln for ln in lines if "--char" in ln and "ctr_native" in ln]
+    if not cmds:
+        misses.append("no logged Test in game command line with --char")
+    else:
+        if CHRG[route] != ("--engine-hires-chars" in cmds[-1]):
+            misses.append("the Test in game command line %s --engine-hires-chars" % ("lacks" if CHRG[route] else "has"))
+        notes.append("test-in-game command line: " + cmds[-1].strip())
+    return fails, misses, notes
+
+
+def parse_size(text):
+    m = re.match(r"^(\d+)x(\d+)$", text)
+    if not m:
+        raise argparse.ArgumentTypeError("say <width>x<height>, e.g. 1600x900")
+    return int(m.group(1)), int(m.group(2))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Reload Studio guided flow: shots per step and click count AFTER.")
     ap.add_argument("--studio", default=DEFAULT_STUDIO, help="ReloadStudio.exe (default: the Release build of this checkout)")
@@ -427,7 +493,9 @@ def main(argv=None):
                     help="folder with the test driver glbs (or env RS_FLOW_MODELS); required except with --dry-run")
     ap.add_argument("--route", default="all", choices=ROUTES + ("all",))
     ap.add_argument("--dry-run", action="store_true", help="print the --do steps and the click table; start nothing")
-    ap.add_argument("--theme", default="dark", choices=("dark", "light"))
+    ap.add_argument("--theme", default="light", choices=("dark", "light"),
+                    help="theme of the series (step 0 is shot in the other one too)")
+    ap.add_argument("--size", type=parse_size, default=(1600, 900), help="client area of the window, default 1600x900")
     ap.add_argument("--tmp", default=None, help="TMP/TEMP of the Studio (default: the out folder)")
     ap.add_argument("--before", default=None, help="BEFORE.md: adds the comparison table to AFTER.md")
     ap.add_argument("--extras", action="store_true", help="also shoot Advanced, Show details and the preview switch")
@@ -450,10 +518,15 @@ def main(argv=None):
 
     if args.dry_run:
         for r in routes:
-            shots = route_shots(r, models[r], os.path.join(outdir, r + ".rldchar"), args.extras)
+            shots = route_shots(r, models[r], os.path.join(outdir, r + ".rldchar"), args.extras, args.size, args.theme)
             print("== route %s: %s --settings %s --log %s --theme %s" %
                   (r, args.studio, os.path.join(outdir, "rs.ini"), os.path.join(outdir, r + ".log"), args.theme))
             for st in do_steps(r, shots, outdir):
+                print("  --do \"%s\"" % st)
+            print("")
+            print("== route %s, the shortest way" % r)
+            for st in shortest_steps(r, models[r], os.path.join(outdir, r + "-shortest.rldchar"),
+                                     os.path.join(outdir, r + "-shortest-report.txt")):
                 print("  --do \"%s\"" % st)
             print("")
             print("AFTER, route %s" % TITLES[r])
@@ -483,10 +556,19 @@ def main(argv=None):
     exit_code = 0
     md = ["# Click count AFTER (guided flow)", "",
           "Rule: 1 click = one mouse click or Enter; a file choice = 2 (Browse, Open); typing a name = 0 clicks, "
-          "counted as a field typed. Shortest path with defaults, from Studio start to \"Test in game\".", ""]
+          "counted as a field typed. Shortest path with defaults, from the page Character (step 0) to "
+          "\"Test in game\": the card, the model, the head \"5 Build\", Build, Test in game. The run of each "
+          "route below takes exactly that way once more and checks it (\"shortest way\" lines); the shots walk "
+          "through every step one after the other.", "",
+          "Note: BEFORE counts 1 click on \"Character\" in the sidebar (the Studio opened on Track). The Studio "
+          "starts on the page it showed last; from a Studio on another page add that 1 click to AFTER as well.", ""]
     results = {}
     for r in routes:
         shots, (fails, ctrl, notes) = run_route(args, r, models[r], outdir)
+        sf, sm, sn = run_shortest(args, r, models[r], outdir)
+        fails += ["shortest way: " + t for t in sf]
+        ctrl += ["shortest way: " + t for t in sm]
+        notes += ["shortest way: " + t for t in sn]
         results[r] = (shots, fails, ctrl, notes)
         print("route %s: %d FAIL line(s), %d control check miss(es)" % (r, len(fails), len(ctrl)))
         for t in fails:
