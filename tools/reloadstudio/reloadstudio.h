@@ -438,7 +438,7 @@
 //   then checks and builds as it did before, the same commands, the same bytes.
 //   A model chosen ("model", "drop", Browse) while the name field is empty or
 //   holds a name made this way gives the name of its file: upper case, the
-//   menu font's characters only (others a space), at most 17 - logged as
+//   menu font's characters only (others a space), at most 15 - logged as
 //   "name: <X> (from the file name)"; a name set with "name" (or typed) is
 //   never replaced, so a script that sets it keeps its bytes.
 //   step <1..5|model|driver|look|voices|build|next|back>   as a click on the

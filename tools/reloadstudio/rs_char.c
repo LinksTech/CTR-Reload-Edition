@@ -7474,11 +7474,15 @@ static void Char_ModelChanged(HWND page)
 // THE NAME FROM THE FILE: a model chosen while the name field is empty (or
 // still holds a name made this way) gives the name of its file - upper case,
 // the characters of the game's menu font only (any other one a space, spaces
-// not doubled, none at the ends), at most CHAR_NAME_MAX. So the step Driver
+// not doubled, none at the ends), at most CHAR_NAME_FROM_FILE (15: make-char
+// notes name-long above that - a name the Studio makes should not draw a note
+// of its own). So the step Driver
 // needs the author only to change it, and the shortest way is card, model,
 // the head Build, Build. A name the author typed is never replaced
 // (nameDerived goes to 0 with the first change of the field that is not this
 // one). Nothing usable in the file name: the field stays as it was.
+#define CHAR_NAME_FROM_FILE 15
+
 static void Char_NameFromModel(const wchar_t *path)
 {
     wchar_t name[CHAR_NAME_MAX + 1], *now;
@@ -7491,7 +7495,7 @@ static void Char_NameFromModel(const wchar_t *path)
         return;
     }
     Rs_Free(now);
-    for (; *p && p != dot && n < CHAR_NAME_MAX; p++) {
+    for (; *p && p != dot && n < CHAR_NAME_FROM_FILE; p++) {
         wchar_t c = *p;
         if (c >= L'a' && c <= L'z')
             c = (wchar_t)(c - L'a' + L'A');
