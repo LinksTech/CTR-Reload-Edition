@@ -308,6 +308,7 @@ target_compile_options(rldpack PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
 if(MSVC)
     add_executable(ReloadStudio WIN32
         tools/reloadstudio/rs_shell.c
+        tools/reloadstudio/rs_module.c
         tools/reloadstudio/rs_track.c
         tools/reloadstudio/rs_cups.c
         tools/reloadstudio/rs_test.c

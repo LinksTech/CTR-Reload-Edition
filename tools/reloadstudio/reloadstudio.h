@@ -15,6 +15,7 @@
 //   rs_shell.c    window, sidebar, fonts, colours (light/dark),
 //                 cards, buttons, message list, dialogs, settings,
 //                 child processes, automation (--do) and screenshot (shot)
+//   rs_module.c   the registry of the modules: every page is one (rs_module.h)
 //   rs_rldpack.c  rldpack.c with a renamed main
 //   rs_track.c    page "Track"
 //   rs_cups.c     page "Cups"
@@ -60,6 +61,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <stdio.h>
+#include "rs_module.h"
 
 // ---------------------------------------------------------------------------
 // Version and build ID
@@ -842,7 +844,17 @@ extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
 extern const struct RsPageDef g_rsCharPage;    // rs_char.c
 extern const struct RsPageDef g_rsTestPage;    // rs_test.c
 
-enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_COUNT };
+// The page IDs of the built-in modules (rs_module.c, in this order); the
+// pages of other modules follow them.
+enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_BUILTIN_COUNT };
+
+// The registry of the modules (rs_module.c). Rs_ModulesInit once, before the
+// pages are made; then the page ID of a module is its place here.
+void Rs_ModulesInit(void);
+int  Rs_ModuleCount(void);
+int  Rs_ModuleBuiltinCount(void);
+const struct RsModuleDef *Rs_ModuleAt(int id);   // NULL outside 0..Rs_ModuleCount()-1
+int  Rs_ModuleByWord(const wchar_t *word);       // page ID, -1 if no module has this word
 
 // Own messages to page windows.
 #define RS_WM_JOB_LINE    (WM_APP + 1)  // wParam = job, lParam = wchar_t* line (Rs_Free)

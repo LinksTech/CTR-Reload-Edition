@@ -129,6 +129,7 @@ int Rldpack_Main(int argc, char *argv[]);
 #define RS_SIDEBAR_NARROW 60
 #define RS_WIDE_MIN (RS_SIDEBAR_W + 1064)
 #define RS_SIDEBAR_FULL_H 430   // four entries (46 px each) above the version and the footer
+#define RS_SIDEBAR_ENTRY_H 46   // each entry more makes it that much higher
 #define RS_MIN_CLIENT_W 480
 #define RS_MIN_CLIENT_H 320
 #define RS_START_W 1340
@@ -176,10 +177,8 @@ static int g_forcedDpi;                 // --ui-scale as dpi, 0 = the monitor's
 static int g_screenW, g_screenH;        // --screen, 0 = the real monitor
 static int g_pageTop;                   // Rs_PageTop, 0 = not measured yet
 static int g_topChanged;                // a fit moved Rs_PageTop: lay the other pages out again
-static HWND g_pages[RS_PAGE_COUNT];
-static const struct RsPageDef *const g_defs[RS_PAGE_COUNT] = {
-    &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsTestPage
-};
+static HWND g_pages[RS_MAX_MODULES];
+static int g_pageCount;                 // pages of the modules (Rs_ModuleCount), set before they are made
 static int g_current = -1;
 static int g_dpi = 96;
 static HFONT g_fonts[RS_FONT_COUNT];
@@ -1691,7 +1690,8 @@ int Rs_PageHeadBottom(HWND page, int w)
 static int Rs_TopUpdate(void)
 {
     int i, top = Rs_Px(104), old = g_pageTop;
-    for (i = 0; i < RS_PAGE_COUNT; i++) {
+    // The built-in pages only: a page of another module never moves theirs.
+    for (i = 0; i < g_pageCount && i < Rs_ModuleBuiltinCount(); i++) {
         struct RsPageState *st = g_pages[i] ? Rs_State(g_pages[i]) : NULL;
         int tb, sb;
         if (!st || st->headW <= 0)
@@ -3301,26 +3301,34 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-// The pages by name: the automation verb "page <name>" and the setting "page=".
-static const wchar_t *const g_pageWords[RS_PAGE_COUNT] = { L"track", L"cups", L"char", L"test" };
+// The pages by name: the automation verb "page <name>" and the setting "page="
+// - the word of each module (rs_module.c).
+static const wchar_t *Rs_PageWord(int id)
+{
+    const struct RsModuleDef *m = Rs_ModuleAt(id);
+    return m ? m->word : L"";
+}
+
+// The page of a module (its definition), by page ID.
+static const struct RsPageDef *Rs_Def(int id)
+{
+    return Rs_ModuleAt(id)->page;
+}
 // The page "Hi-Res (Preview)" is gone: every function of it is on the page
 // Character, routes Low-Poly and Hi-Res. Its word, from old scripts and
 // settings, gets this answer (automation) or the page Character (start).
 #define RS_PAGE_HIRES_GONE L"hires"
 
-// RS_PAGE_* of a name, -1 if unknown.
+// The page ID of a name, -1 if unknown.
 static int Rs_PageByWord(const wchar_t *word)
 {
-    int i;
-    for (i = 0; i < RS_PAGE_COUNT; i++)
-        if (wcscmp(word, g_pageWords[i]) == 0)
-            return i;
-    return -1;
+    int id = Rs_ModuleByWord(word);
+    return id < g_pageCount ? id : -1;
 }
 
 HWND Rs_PageWindow(int id)
 {
-    return (id >= 0 && id < RS_PAGE_COUNT) ? g_pages[id] : NULL;
+    return (id >= 0 && id < g_pageCount) ? g_pages[id] : NULL;
 }
 
 HWND Rs_MainWindow(void)
@@ -3333,9 +3341,9 @@ static void Rs_PageFit(int id, int relayout);
 void Rs_ShowPage(int id)
 {
     int i;
-    if (id < 0 || id >= RS_PAGE_COUNT)
+    if (id < 0 || id >= g_pageCount)
         return;
-    for (i = 0; i < RS_PAGE_COUNT; i++)
+    for (i = 0; i < g_pageCount; i++)
         if (i != id && g_pages[i])
             ShowWindow(g_pages[i], SW_HIDE);
     g_current = id;
@@ -3344,7 +3352,7 @@ void Rs_ShowPage(int id)
     InvalidateRect(g_sidebar, NULL, FALSE);
     SendMessageW(g_pages[id], RS_WM_PAGE_SHOWN, 0, 0);
     Rs_TipsSyncPage(g_pages[id]);
-    Rs_ConfigSet(L"page", g_pageWords[id]);
+    Rs_ConfigSet(L"page", Rs_PageWord(id));
 }
 
 // ---------------------------------------------------------------------------
@@ -3464,7 +3472,7 @@ static void Rs_PagePlace(struct RsPageState *st, HWND page)
 // beyond the page, the page grows to it and is laid out again (at most twice).
 static void Rs_PageFit(int id, int relayout)
 {
-    HWND page = (id >= 0 && id < RS_PAGE_COUNT) ? g_pages[id] : NULL;
+    HWND page = (id >= 0 && id < g_pageCount) ? g_pages[id] : NULL;
     struct RsPageState *st = page ? Rs_State(page) : NULL;
     SIZE need, view = { 1, 1 }, ext;
     RECT pr;
@@ -3631,7 +3639,7 @@ static LRESULT CALLBACK Rs_HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         int id = (int)wParam;
         // Always a fit, not only when something reaches beyond the page: a
         // page that became shorter (a card closed) shrinks back as well.
-        if (id >= 0 && id < RS_PAGE_COUNT && g_pages[id]) {
+        if (id >= 0 && id < g_pageCount && g_pages[id]) {
             Rs_State(g_pages[id])->fitPosted = 0;
             g_topChanged = 0;
             Rs_PageFit(id, 0);
@@ -3683,12 +3691,12 @@ static LRESULT CALLBACK Rs_HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 // Sidebar
 // ---------------------------------------------------------------------------
 
-static const wchar_t *const g_navIcons[RS_PAGE_COUNT] = {
-    L"\xE8B7",   // Folder
-    L"\xE8FD",   // BulletedList
-    L"\xE77B",   // Contact
-    L"\xE768",   // Play
-};
+// The icon of a page in the sidebar: its module's (rs_module.c), else Puzzle.
+static const wchar_t *Rs_NavIcon(int id)
+{
+    const struct RsModuleDef *m = Rs_ModuleAt(id);
+    return m && m->icon ? m->icon : L"\xEA86";
+}
 
 // 1 if the sidebar is too low for the version line and the footer: then the
 // entries move up and the scheme entry follows right below them.
@@ -3696,14 +3704,15 @@ static int Rs_SideCompact(void)
 {
     RECT client;
     GetClientRect(g_sidebar, &client);
-    return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H);
+    int more = g_pageCount > 4 ? g_pageCount - 4 : 0;
+    return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H + more * RS_SIDEBAR_ENTRY_H);
 }
 
-// The pages the sidebar lists: all of them - Track, Cups, Character, Test in
-// game. (A page that is not listed would get an empty entry, Rs_NavRect.)
+// The pages the sidebar lists: all of them - the page of every module. (A
+// page that is not listed would get an empty entry, Rs_NavRect.)
 static int Rs_NavShown(int id)
 {
-    return id >= 0 && id < RS_PAGE_COUNT;
+    return id >= 0 && id < g_pageCount;
 }
 
 // The place of a listed page in the sidebar (0 = the first entry).
@@ -3722,7 +3731,7 @@ static RECT Rs_NavRect(int i)
     RECT r;
     RECT client;
     int compact = Rs_SideCompact();
-    if (i < 0 || i >= RS_PAGE_COUNT || !Rs_NavShown(i)) {
+    if (i < 0 || i >= g_pageCount || !Rs_NavShown(i)) {
         SetRectEmpty(&r);
         return r;
     }
@@ -3736,7 +3745,7 @@ static RECT Rs_NavRect(int i)
 
 // The entry "Dark mode" / "Light mode" at the bottom of the sidebar, above the
 // footer. For Rs_NavHit and g_hoverNav it has the number RS_NAV_THEME.
-#define RS_NAV_THEME RS_PAGE_COUNT
+#define RS_NAV_THEME g_pageCount
 
 static RECT Rs_ThemeRect(void)
 {
@@ -3748,7 +3757,7 @@ static RECT Rs_ThemeRect(void)
     if (Rs_SideCompact()) {
         int i, lastId = 0;
         RECT last;
-        for (i = 0; i < RS_PAGE_COUNT; i++)
+        for (i = 0; i < g_pageCount; i++)
             if (Rs_NavShown(i))
                 lastId = i;
         last = Rs_NavRect(lastId);
@@ -3854,7 +3863,7 @@ static void Rs_SidebarPaint(HWND hwnd)
         }
     }
 
-    for (i = 0; i < RS_PAGE_COUNT; i++) {
+    for (i = 0; i < g_pageCount; i++) {
         RECT r = Rs_NavRect(i);
         RECT t;
         int sel = i == g_current;
@@ -3873,15 +3882,15 @@ static void Rs_SidebarPaint(HWND hwnd)
         SelectObject(mem, g_iconFont);
         SetTextColor(mem, sel ? RGB(255, 255, 255) : RGB(150, 156, 170));
         if (g_narrow) {
-            DrawTextW(mem, g_navIcons[i], -1, &t, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+            DrawTextW(mem, Rs_NavIcon(i), -1, &t, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
             continue;
         }
         t.left += Rs_Px(16);
-        DrawTextW(mem, g_navIcons[i], -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        DrawTextW(mem, Rs_NavIcon(i), -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
         t.left += Rs_Px(30);
         SelectObject(mem, Rs_Font(sel ? RS_FONT_BOLD : RS_FONT_BODY));
         SetTextColor(mem, sel ? RGB(255, 255, 255) : RGB(200, 204, 214));
-        DrawTextW(mem, g_defs[i]->navName, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        DrawTextW(mem, Rs_Def(i)->navName, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
 
     {
@@ -3929,7 +3938,7 @@ static int Rs_NavHit(LPARAM lParam)
     int i;
     pt.x = (short)LOWORD(lParam);
     pt.y = (short)HIWORD(lParam);
-    for (i = 0; i < RS_PAGE_COUNT; i++) {
+    for (i = 0; i < g_pageCount; i++) {
         RECT r = Rs_NavRect(i);
         if (PtInRect(&r, pt))
             return i;
@@ -3950,8 +3959,8 @@ static LRESULT CALLBACK Rs_SidebarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         if (hdr && hdr->code == TTN_GETDISPINFOW) {
             NMTTDISPINFOW *di = (NMTTDISPINFOW *)lParam;
             int i = (int)hdr->idFrom - 1;
-            if (i >= 0 && i < RS_PAGE_COUNT)
-                di->lpszText = (LPWSTR)g_defs[i]->navName;
+            if (i >= 0 && i < g_pageCount)
+                di->lpszText = (LPWSTR)Rs_Def(i)->navName;
             else
                 di->lpszText = (LPWSTR)(g_dark ? L"Light mode" : L"Dark mode");
             return 0;
@@ -4263,7 +4272,7 @@ static int Rs_DumpControls(const wchar_t *path)
     fprintf(f, "window\t%ld\t%ld\t%d\t%u\t%ld\t%d\t%d\n", cr.right, cr.bottom, g_dpi,
             GetDpiForWindow(g_main), sr.right, g_narrow, Rs_SideCompact());
     fprintf(f, "view\t%ld\t%ld\t%d\t%d\n", hr.left, hr.top, st->viewW, st->viewH);
-    fprintf(f, "page\t%ls\t%ld\t%ld\t%d\t%d\t%d\t%d\n", g_pageWords[st->id], pr.right, pr.bottom,
+    fprintf(f, "page\t%ls\t%ld\t%ld\t%d\t%d\t%d\t%d\n", Rs_PageWord(st->id), pr.right, pr.bottom,
             st->scrollX, st->scrollY, Rs_PageMin(st).cx, Rs_PageMin(st).cy);
     {
         int tb, sb;
@@ -4297,14 +4306,14 @@ static int Rs_DumpControls(const wchar_t *path)
     // The entries the sidebar shows (a page it does not list has none).
     for (i = 0; i <= RS_NAV_THEME; i++) {
         RECT r = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
-        const wchar_t *name = i == RS_NAV_THEME ? (g_dark ? L"Light mode" : L"Dark mode") : g_defs[i]->navName;
+        const wchar_t *name = i == RS_NAV_THEME ? (g_dark ? L"Light mode" : L"Dark mode") : Rs_Def(i)->navName;
         long edge;
         if (i != RS_NAV_THEME && !Rs_NavShown(i))
             continue;
         edge = g_narrow ? 0 : r.left + Rs_Px(46) +
                     Rs_TextSize(dc, Rs_Font(i == g_current ? RS_FONT_BOLD : RS_FONT_BODY), name, 0,
                                 DT_SINGLELINE | DT_NOPREFIX).cx;
-        fprintf(f, "side\t%ls\t%ld\t%ld\t%ld\t%ld\t%ld\n", i == RS_NAV_THEME ? L"theme" : g_pageWords[i],
+        fprintf(f, "side\t%ls\t%ld\t%ld\t%ld\t%ld\t%ld\n", i == RS_NAV_THEME ? L"theme" : Rs_PageWord(i),
                 r.left, r.top, r.right, r.bottom, edge);
     }
     if (!g_narrow) {
@@ -4367,7 +4376,7 @@ static int Rs_AutoNumbers(const wchar_t *arg)
 
 static int Rs_PageBusy(int id)
 {
-    const struct RsPageDef *def = g_defs[id];
+    const struct RsPageDef *def = Rs_Def(id);
     return def->busy ? def->busy(g_pages[id]) : 0;
 }
 
@@ -4379,7 +4388,7 @@ static void Rs_AutoTick(void)
     // the window then, or to cancel); every other step waits for the end.
     int now = g_autoNext < g_autoCount && g_auto[g_autoNext].now;
 
-    for (i = 0; i < RS_PAGE_COUNT; i++)
+    for (i = 0; i < g_pageCount; i++)
         busy |= Rs_PageBusy(i);
     if (g_autoWaiting && !now) {
         if (busy)
@@ -4495,7 +4504,7 @@ static void Rs_AutoTick(void)
         return;
     }
     {
-        const struct RsPageDef *def = g_defs[g_current];
+        const struct RsPageDef *def = Rs_Def(g_current);
         int r = def->automate ? def->automate(g_pages[g_current], s->verb, s->arg) : RS_AUTO_UNKNOWN;
         if (r == RS_AUTO_UNKNOWN) {
             Rs_AutoLog(L"  FAIL: the page does not know '%ls'", s->verb);
@@ -4532,7 +4541,7 @@ static void Rs_Layout(int relayout)
     // heading wraps into another line): then every page anew.
     for (round = 0; round < 2; round++) {
         g_topChanged = Rs_TopUpdate();     // the fonts may have changed (dpi)
-        for (i = 0; i < RS_PAGE_COUNT; i++)
+        for (i = 0; i < g_pageCount; i++)
             if (i != g_current)
                 Rs_PageFit(i, relayout);
         if (g_current >= 0)
@@ -4624,7 +4633,10 @@ static LRESULT CALLBACK Rs_MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         // scroll instead. With --screen the window may be larger than the
         // real screen.
         MINMAXINFO *mm = (MINMAXINFO *)lParam;
-        RECT r = { 0, 0, Rs_Px(RS_MIN_CLIENT_W), Rs_Px(RS_MIN_CLIENT_H) };
+        // The compact sidebar needs 122 + 42 px per entry (Rs_NavRect, Rs_ThemeRect);
+        // with up to four entries that is below RS_MIN_CLIENT_H.
+        int minH = 122 + 42 * g_pageCount > RS_MIN_CLIENT_H ? 122 + 42 * g_pageCount : RS_MIN_CLIENT_H;
+        RECT r = { 0, 0, Rs_Px(RS_MIN_CLIENT_W), Rs_Px(minH) };
         RECT work = Rs_WorkArea(hwnd);
         AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd));
         mm->ptMinTrackSize.x = r.right - r.left;
@@ -4649,7 +4661,7 @@ static LRESULT CALLBACK Rs_MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             int i, old = g_dpi;
             g_dpi = HIWORD(wParam);
             // The scroll positions in the new scale, so that the same part stays in view.
-            for (i = 0; i < RS_PAGE_COUNT; i++) {
+            for (i = 0; i < g_pageCount; i++) {
                 struct RsPageState *ps = g_pages[i] ? Rs_State(g_pages[i]) : NULL;
                 if (ps && old > 0) {
                     ps->scrollX = MulDiv(ps->scrollX, g_dpi, old);
@@ -4681,12 +4693,12 @@ static LRESULT CALLBACK Rs_MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_CLOSE: {
         int i;
         if (!g_automating) {
-            for (i = 0; i < RS_PAGE_COUNT; i++) {
+            for (i = 0; i < g_pageCount; i++) {
                 int handled = 0;
                 LRESULT keep;
-                if (!g_defs[i]->message)
+                if (!Rs_Def(i)->message)
                     continue;
-                keep = g_defs[i]->message(g_pages[i], RS_WM_QUERY_CLOSE, 0, 0, &handled);
+                keep = Rs_Def(i)->message(g_pages[i], RS_WM_QUERY_CLOSE, 0, 0, &handled);
                 if (handled && keep == 0)
                     return 0;
             }
@@ -4917,6 +4929,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     InitCommonControlsEx(&icc);
     Rs_ConfigInit(settingsArg);
     Rs_TempForChildren();
+    // The modules, before anything asks for a page (the sidebar, the tips).
+    Rs_ModulesInit();
+    g_pageCount = Rs_ModuleCount();
 
     {
         HDC dc = GetDC(NULL);
@@ -4967,11 +4982,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
                                        0, 0, 10, 10, g_main, NULL, inst, NULL));
     ShowScrollBar(g_host, SB_BOTH, FALSE);
     Rs_TipsCreate();
-    for (i = 0; i < RS_PAGE_COUNT; i++) {
+    for (i = 0; i < g_pageCount; i++) {
         struct RsPageState *st = Rs_Alloc(sizeof(*st));
         st->id = i;
-        st->def = g_defs[i];
-        g_pages[i] = CreateWindowExW(WS_EX_CONTROLPARENT, L"RsPage", g_defs[i]->navName,
+        st->def = Rs_Def(i);
+        g_pages[i] = CreateWindowExW(WS_EX_CONTROLPARENT, L"RsPage", st->def->navName,
                                      WS_CHILD | WS_CLIPCHILDREN, 0, 0, 10, 10,
                                      g_host, NULL, inst, st);
         if (st->def->create)
