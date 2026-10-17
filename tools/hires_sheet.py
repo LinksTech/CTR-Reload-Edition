@@ -5,6 +5,8 @@ Usage:
   python tools/hires_sheet.py race --shots <dir> --name <shot-name>
          --series <first>,<count>,<step> --log <game log> --out <dir>
          [--seat 0] [--crop 2.0]
+  python tools/hires_sheet.py race-sparse --shots <dir> --name <shot-name> --series <first>,<count>,<step>
+         --log <game log> --out <dir> [--crop 2.0] [--seats all|0,1,..]
   python tools/hires_sheet.py files --out <file.png> --title <text> <label>=<image> ...
   python tools/hires_sheet.py podium --shots <dir> --name <shot-name> --out <dir>
   python tools/hires_sheet.py selftest
@@ -56,7 +58,7 @@ def _font():
         return ImageFont.load_default()
 
 
-def make_tile(img, label):
+def make_tile(img, label, note="missing"):
     """One tile TILE_W x (LABEL_H + TILE_H); img None -> grey 'missing' tile."""
     tile = Image.new("RGB", (TILE_W, LABEL_H + TILE_H), (40, 40, 44))
     d = ImageDraw.Draw(tile)
@@ -64,7 +66,7 @@ def make_tile(img, label):
     d.text((6, 7), label, fill=(235, 235, 235), font=_font())
     if img is None:
         d.rectangle([0, LABEL_H, TILE_W, LABEL_H + TILE_H], fill=(110, 110, 110))
-        d.text((TILE_W // 2 - 25, LABEL_H + TILE_H // 2 - 6), "missing", fill=(255, 255, 255), font=_font())
+        d.text((TILE_W // 2 - 4 * len(note), LABEL_H + TILE_H // 2 - 6), note, fill=(255, 255, 255), font=_font())
         return tile
     img = img.convert("RGB")
     s = min(TILE_W / img.width, TILE_H / img.height)
@@ -81,8 +83,10 @@ def make_sheet(tiles, title=None):
     sheet = Image.new("RGB", (SHEET_W, top + rows * (LABEL_H + TILE_H)), (16, 16, 18))
     if title:
         ImageDraw.Draw(sheet).text((6, 8), title, fill=(255, 255, 255), font=_font())
-    for i, (img, label) in enumerate(tiles):
-        sheet.paste(make_tile(img, label), ((i % COLS) * TILE_W, top + (i // COLS) * (LABEL_H + TILE_H)))
+    for i, t in enumerate(tiles):
+        img, label = t[0], t[1]
+        note = t[2] if len(t) > 2 else "missing"
+        sheet.paste(make_tile(img, label, note), ((i % COLS) * TILE_W, top + (i // COLS) * (LABEL_H + TILE_H)))
     return sheet
 
 
@@ -174,6 +178,107 @@ def do_race(shots, name, series, log, out, seat=0, crop=2.0):
 
 
 # --------------------------------------------------------------------------
+# race-sparse: few shots, many seats
+# --------------------------------------------------------------------------
+MAX_VB_AGE = 4
+
+
+def _clean_state(r, state):
+    """True when the record is a clean line of the derived state (no cross-fade)."""
+    return (r.get("eval_state", r["state"]) == state and r.get("eval_clip", r["clip"]) == state
+            and r.get("eval_ok", True) and r["blend"] in (None, 1.0))
+
+
+def run_scores(recs, state):
+    """{index in recs: min(lines since the run started, lines until it ends)} for state."""
+    out = {}
+    i = 0
+    while i < len(recs):
+        if _clean_state(recs[i], state):
+            j = i
+            while j + 1 < len(recs) and _clean_state(recs[j + 1], state):
+                j += 1
+            for k in range(i, j + 1):
+                out[k] = min(k - i, j - k)
+            i = j + 1
+        else:
+            i += 1
+    return out
+
+
+def parse_seats(text):
+    if text in (None, "", "all"):
+        return None
+    return {int(t) for t in text.split(",")}
+
+
+def pick_sparse(recs_by_seat, shot_ids, first, step):
+    """state -> (score, shot index, seat, rec) of the best pair, or None."""
+    import bisect
+    picks = {}
+    for state in STATES:
+        best = None
+        for seat, recs in recs_by_seat.items():
+            scores = run_scores(recs, state)
+            vbs = [r["vb"] for r in recs]
+            for i in shot_ids:
+                v = first + i * step
+                k = bisect.bisect_right(vbs, v) - 1
+                if k < 0 or v - vbs[k] > MAX_VB_AGE or k not in scores:
+                    continue
+                key = (-scores[k], i, seat)
+                if best is None or key < best[0]:
+                    best = (key, recs[k])
+        picks[state] = None if best is None else (-best[0][0], best[0][1], best[0][2], best[1])
+    return picks
+
+
+def do_race_sparse(shots, name, series, log, out, crop=2.0, seats=None):
+    ev = load_eval_module()
+    first, count, step = series
+    with open(log, "r", errors="replace") as f:
+        recs = ev.parse_hires_lines(f.readlines())
+    by_seat = {}
+    for r in recs:
+        if seats is None or r["seat"] in seats:
+            by_seat.setdefault(r["seat"], []).append(r)
+    for lst in by_seat.values():
+        lst.sort(key=lambda r: r["vb"])      # stable: log order within one vb
+    shot_ids = [i for i in range(count)
+                if os.path.isfile(os.path.join(shots, "%s-f%05d.bmp" % (name, i)))]
+    if not shot_ids:
+        warn("no snapshot files %s-fNNNNN.bmp in %s" % (name, shots))
+    picks = pick_sparse(by_seat, shot_ids, first, step)
+    os.makedirs(out, exist_ok=True)
+    tiles, lines, n = [], [], 0
+    for state in STATES:
+        pk = picks[state]
+        if pk is None:
+            warn("state %s: not in any shot" % state)
+            tiles.append((None, state + " | not in any shot", "not in any shot"))
+            lines.append("%s none" % state)
+            continue
+        score, i, seat, rec = pk
+        img = load_image(os.path.join(shots, "%s-f%05d.bmp" % (name, i)))
+        if img is None:
+            warn("state %s: snapshot unreadable: shot %d" % (state, i))
+            tiles.append((None, state + " | shot %d unreadable" % i))
+            lines.append("%s none" % state)
+            continue
+        c = crop_box(img, rec.get("box"), crop)
+        c.save(os.path.join(out, "race-%s.png" % state))
+        tiles.append((c, "%s | seat %d | clip %s | vb %d | shot %d"
+                      % (state, seat, rec.get("eval_clip", rec["clip"]), rec["vb"], i)))
+        lines.append("%s shot %d seat %d vb %d score %d" % (state, i, seat, rec["vb"], score))
+        n += 1
+    if n:
+        make_sheet(tiles).save(os.path.join(out, "race-sheet.png"))
+        with open(os.path.join(out, "race-pick.txt"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+    return n, picks
+
+
+# --------------------------------------------------------------------------
 # files / podium
 # --------------------------------------------------------------------------
 def do_files(out, title, pairs):
@@ -219,6 +324,75 @@ def do_podium(shots, name, out):
 # --------------------------------------------------------------------------
 # selftest
 # --------------------------------------------------------------------------
+def _selftest_sparse(base, check):
+    ev = load_eval_module()
+    sb = os.path.join(base, "sparse")
+    os.makedirs(sb)
+    first, step, count = 100, 50, 8
+    boxes = {0: (0.10, 0.20, 0.25, 0.40), 1: (0.60, 0.20, 0.75, 0.40), 2: (0.35, 0.60, 0.45, 0.80)}
+    seat_col = {0: (255, 0, 0), 1: (0, 255, 0), 2: (0, 0, 255)}
+    timeline = {
+        0: [("idle", 90, 140), ("steer_left", 140, 260), ("jump", 260, 300), ("hit", 300, 330),
+            ("drift_left", 330, 462)],
+        1: [("steer_right", 90, 230), ("drift_right", 230, 330), ("steer_left", 330, 380),
+            ("idle", 380, 462)],
+        2: [("jump", 202, 242)],       # last line 240: the shot at 250 is 10 VBlanks later
+    }
+    default_box = "box 0.41 0.52 0.58 0.71"
+    lines = ["noise line"]
+    for seat, segs in timeline.items():
+        for st_name, a, b in segs:
+            for vb in range(a, b, 2):
+                ln = ev._line(vb, seat, st_name, st_name)
+                lines.append(ln.replace(default_box, "box %g %g %g %g" % boxes[seat]))
+    # a cross-fading line must never count as clean
+    lines.append(ev._line(250, 2, "hit", "hit", blend=0.4).replace(
+        default_box, "box %g %g %g %g" % boxes[2]))
+    lp = os.path.join(sb, "game.log")
+    with open(lp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    W, H = 640, 360
+    for i in range(count):
+        im = Image.new("RGB", (W, H), (60, 60, 60))
+        d = ImageDraw.Draw(im)
+        for seat, bx in boxes.items():
+            d.rectangle([int(bx[0] * W), int(bx[1] * H), int(bx[2] * W), int(bx[3] * H)], fill=seat_col[seat])
+        im.save(os.path.join(sb, "s-f%05d.bmp" % i), format="BMP")
+    del WARNINGS[:]
+    out = os.path.join(sb, "out")
+    n, picks = do_race_sparse(sb, "s", (first, count, step), lp, out, 2.0, None)
+    exp = {"steer_left": (2, 0), "steer_right": (1, 1), "drift_right": (4, 1),
+           "drift_left": (6, 0), "hit": (4, 0), "idle": (6, 1)}
+    for s, (ei, es) in exp.items():
+        pk = picks[s]
+        check(pk is not None and (pk[1], pk[2]) == (ei, es),
+              "sparse %s: expected (shot %d, seat %d) got %s" % (s, ei, es, None if pk is None else (pk[1], pk[2])))
+    check(picks["steer_left"][0] == 29 and picks["steer_right"][0] == 30, "sparse scores deepest in run")
+    check(picks["idle"][3]["vb"] == 400 and picks["idle"][0] == 10, "sparse idle: vb 400 score 10")
+    check(picks["hit"][1] == 4, "sparse hit: cross-fading line at shot 3 is not clean")
+    check(picks["jump"] is None, "sparse jump: 4-VBlank rule / state only between shots -> no pick")
+    check(any("jump" in w and "not in any shot" in w for w in WARNINGS), "sparse: warning for the missing state")
+    check(n == 6, "sparse: 6 tiles with a picture")
+    check(not os.path.exists(os.path.join(out, "race-jump.png")), "sparse: no png for the grey state")
+    im = Image.open(os.path.join(out, "race-sheet.png")).convert("RGB")
+    check(im.width == SHEET_W and im.height == 3 * (LABEL_H + TILE_H), "sparse sheet: width 918, 7 tiles -> 3 rows")
+    check(im.getpixel((2 * TILE_W + 10, LABEL_H + 10)) == (110, 110, 110), "sparse: grey 'not in any shot' tile")
+    for s, (ei, es) in exp.items():
+        c = Image.open(os.path.join(out, "race-%s.png" % s)).convert("RGB")
+        check(c.getpixel((c.width // 2, c.height // 2)) == seat_col[es],
+              "sparse %s: crop centre is seat %d's rectangle" % (s, es))
+    with open(os.path.join(out, "race-pick.txt")) as f:
+        pk_lines = f.read().splitlines()
+    check(len(pk_lines) == 7 and "steer_left shot 2 seat 0 vb 200 score 29" in pk_lines
+          and "jump none" in pk_lines, "race-pick.txt lines")
+    n2, picks2 = do_race_sparse(sb, "s", (first, count, step), lp, os.path.join(sb, "out2"), 2.0, {0})
+    check(picks2["steer_right"] is None and picks2["idle"][2] == 0, "sparse --seats 0 only")
+    check(parse_seats("all") is None and parse_seats("0,2") == {0, 2}, "parse_seats")
+    os.remove(os.path.join(sb, "s-f%05d.bmp" % 2))
+    n3, picks3 = do_race_sparse(sb, "s", (first, count, step), lp, os.path.join(sb, "out3"), 2.0, None)
+    check(picks3["steer_left"][1] != 2, "sparse: deleted shot is skipped")
+
+
 def selftest():
     base = os.path.join(tempfile.gettempdir(), "hires_sheet_selftest")
     shutil.rmtree(base, ignore_errors=True)
@@ -317,6 +491,7 @@ def selftest():
     cap = find_podium(pd, "q")
     check(len(cap) == 12 and cap[0][0] == 0 and cap[-1][0] == 29, "podium capped to 12 evenly")
     check(do_podium(pd, "nothing", os.path.join(base, "podout2")) == 0, "no podium shots -> 0, no crash")
+    _selftest_sparse(base, check)
     print("hires_sheet selftest: %d checks, %d failures" % (n[0], n[1]))
     return 1 if n[1] else 0
 
@@ -333,6 +508,14 @@ def main(argv=None):
     r.add_argument("--out", required=True)
     r.add_argument("--seat", type=int, default=0)
     r.add_argument("--crop", type=float, default=2.0)
+    q = sub.add_parser("race-sparse")
+    q.add_argument("--shots", required=True)
+    q.add_argument("--name", required=True)
+    q.add_argument("--series", required=True)
+    q.add_argument("--log", required=True)
+    q.add_argument("--out", required=True)
+    q.add_argument("--crop", type=float, default=2.0)
+    q.add_argument("--seats", default="all")
     f = sub.add_parser("files")
     f.add_argument("--out", required=True)
     f.add_argument("--title", default="")
@@ -352,7 +535,13 @@ def main(argv=None):
     try:
         if a.cmd == "selftest":
             return selftest()
-        if a.cmd == "race":
+        if a.cmd == "race-sparse":
+            if a.crop <= 0:
+                print("--crop must be > 0", file=sys.stderr)
+                return 2
+            n, _ = do_race_sparse(a.shots, a.name, parse_series(a.series), a.log, a.out, a.crop,
+                                  parse_seats(a.seats))
+        elif a.cmd == "race":
             if a.crop <= 0:
                 print("--crop must be > 0", file=sys.stderr)
                 return 2
