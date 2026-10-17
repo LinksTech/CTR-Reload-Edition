@@ -53,6 +53,11 @@
 //   classic model. Every material of such a file - the default one and the
 //   standard wheels' too - draws with shading 2 (unlit). A file in glTF mode
 //   (every CHRG before the mode) or off draws lit, exactly as before.
+//   THE DRAW TINT (every mode): the tint of the classic driver's route
+//   (EngCmdl_Tints, the depth cue toward the ground's far colour) multiplies the
+//   colour on display values, as "ne" does it for the classic driver - so a
+//   hi-res driver on dark ground is as dark as the classic one
+//   (engine_static_shader.inc THE DRAW TINT, Engine_NsTints).
 
 // On by default whenever the engine draws (round of 2026-10-17, format 4.2);
 // 0 with --no-hires-chars (main.c), and 0 from the roster on when no file of
@@ -1964,8 +1969,11 @@ internal int EngHc_HullBox(const EngHcChar *c, const EngineCamera *cam, const En
 	return 1;
 }
 
+// tint: the draw tint of this draw (EngCmdl_Tints), the line's last field - a
+// single word "tint r,g,b", so that a reader that skips unknown words
+// (tools/hires_tick_eval.py) keeps every field it knows.
 internal void EngHc_LogTick(const struct GameTracker *gGT, int seat, const struct Driver *d, const EngHcChar *c, const EngHcPoseInfo *info,
-                            const EngineMat4 *world)
+                            const EngineMat4 *world, const float tint[4])
 {
 	EngHcSeatRun *run = &s_hc.seats[seat];
 	const EngHcSlot *slot = &s_hc.slots[seat];
@@ -1986,13 +1994,15 @@ internal void EngHc_LogTick(const struct GameTracker *gGT, int seat, const struc
 	}
 	s_hc.lines++;
 	Platform_Log("[CTR Engine] hires char: vb %d seat %d timer %u state %s want %s clip %s t %.4f blend %.4f prev %s steer %.4f steerclip %s steerRaw %d air %d "
-	             "kart %d drift %d rank %d yaw %.5f yawgame %.5f roll %.5f omega %.4f radius %.4f v %.4f pos %d %d %d wheels %s box %.4f %.4f %.4f %.4f\n",
+	             "kart %d drift %d rank %d yaw %.5f yawgame %.5f roll %.5f omega %.4f radius %.4f v %.4f pos %d %d %d wheels %s box %.4f %.4f %.4f %.4f "
+	             "tint %.4f,%.4f,%.4f\n",
 	             Platform_GetVBlankCount(), seat, (unsigned)gGT->timer, EngHc_StateName(run->st.state), Engine_HiresClipName(info->want),
 	             Engine_HiresClipName(info->clip), (double)info->t, (double)info->blend, (info->prevClip == -2) ? "none" : Engine_HiresClipName(info->prevClip),
 	             (double)info->steer, (info->steerClip == -2) ? "none" : Engine_HiresClipName(info->steerClip), (int)d->wheelRotation, run->st.airTicks,
 	             (int)d->kartState, run->st.driftSide, (int)d->driverRank, (double)slot->yawDrawn, (double)((int)d->wheelRotation * 4) * ENG_HC_ANGLE,
 	             (double)slot->rollDrawn, (dt > 0.0) ? (run->step[0] / dt) : 0.0, run->radius[0], (dt > 0.0) ? (way / dt) : 0.0, (int)d->posCurr.x,
-	             (int)d->posCurr.y, (int)d->posCurr.z, c->ownWheels ? "own" : "standard", (double)box[0], (double)box[1], (double)box[2], (double)box[3]);
+	             (int)d->posCurr.y, (int)d->posCurr.z, c->ownWheels ? "own" : "standard", (double)box[0], (double)box[1], (double)box[2], (double)box[3],
+	             (double)tint[0], (double)tint[1], (double)tint[2]);
 }
 
 int Engine_HiresCharOwns(const struct Driver *d)
@@ -2097,7 +2107,15 @@ int Engine_HiresCharRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 	s_hc.draws++;
 	if (Engine_InstanceViewOf(pb) == 0)
 	{
-		EngHc_LogTick(gGT, seat, d, c, &info, &pl.world);
+		// The draw tint of this draw for the line (the same call as the draw's).
+		EngineInstanceDraw tints;
+
+		memset(&tints, 0, sizeof(tints));
+		if (g_cfg_engineHiresCharsLog)
+		{
+			EngCmdl_Tints(inst, idpp, &tints);
+		}
+		EngHc_LogTick(gGT, seat, d, c, &info, &pl.world, tints.tint);
 	}
 	Engine_FxNoteDrawn(ENGINE_FX_BODY);
 	return 1;
@@ -3565,6 +3583,95 @@ int Engine_SelfTestHiresChar(int *checks)
 		HC_CHECK((EngineStatic_UpEdge(24) == 32) && (EngineStatic_UpEdge(4) == 16) && (EngineStatic_UpEdge(32) == 32) && (NativeTex_LevelCount(16, 16) == 5) &&
 		             (NativeTex_LevelCount(32, 32) == 6) && (NativeTex_LevelCount(1024, 1024) == 11),
 		         "small images: 24 -> 32, 4 -> 16; levels 5 (16), 6 (32), 11 (1024)");
+	}
+	// THE DRAW TINT (engine_static_shader.inc): a hi-res driver on dark ground is
+	// darkened by the same factor as the classic driver of the same game state.
+	// Both take their draw tint from EngCmdl_Tints; "ne" multiplies the classic
+	// colour by material tint x draw tint as it is, "ns" by Encode(material tint)
+	// x draw tint (Engine_NsTints, the shader's line mirrored here with the
+	// shared curve RldHiresColor_Encode). Game states: no cue, a quarter, half,
+	// three quarters and the whole way toward a black and a coloured far colour.
+	{
+		static struct Instance inst;
+		static struct InstDrawPerPlayer idpp;
+		static const s16 alphas[5] = {0, 0x400, 0x800, 0xc00, 0x1000};
+		static const u32 farColours[2] = {0u, 0x04006400u}; // (r, g, b) = (0x40, 0x06, 0x40) by >> 20, >> 12, >> 4
+		const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		float worst = 0.0f;
+		float oldWorst = 0.0f;
+		int same = 1;
+		int k;
+		int f;
+		int c;
+
+		for (f = 0; f < 2; f++)
+		{
+			for (k = 0; k < 5; k++)
+			{
+				EngineInstanceDraw tints;
+				float tint[4];
+				float display[4];
+
+				memset(&inst, 0, sizeof(inst));
+				memset(&idpp, 0, sizeof(idpp));
+				memset(&tints, 0, sizeof(tints));
+				inst.funcPtr[0] = (void *)(size_t)RB_RETAIL_INST_SETUP_COLOR;
+				inst.colorRGBA = farColours[f];
+				idpp.alphaScale = alphas[k];
+				EngCmdl_Tints(&inst, &idpp, &tints);
+				Engine_NsTints(white, tints.tint, tint, display);
+				for (c = 0; c < 3; c++)
+				{
+					const float classic = white[c] * tints.tint[c];                    // "ne": v_color = a_color * tint
+					const float hires = RldHiresColor_Encode(tint[c]) * display[c];   // "ns": encodeSrgb(tint) * vramClut
+					const float old = RldHiresColor_Encode(white[c] * tints.tint[c]); // "ns" before: encodeSrgb(material x draw tint)
+					const float d = fabsf(hires - classic);
+					const float dOld = fabsf(old - classic);
+
+					worst = (d > worst) ? d : worst;
+					oldWorst = (dOld > oldWorst) ? dOld : oldWorst;
+				}
+				same = same && (tint[3] == tints.tint[3]) && (display[3] == 1.0f);
+			}
+		}
+		HC_CHECK(worst <= 1e-6f, "draw tint: the hi-res factor equals the classic one in every game state");
+		HC_CHECK(oldWorst > 0.2f, "draw tint: the old encoded factor was off by more than 0.2 somewhere (half way to black: 0.74 for 0.5)");
+		HC_CHECK(same, "draw tint: alpha the product, the display tint's w 1");
+		// The static model draws with a draw tint of 1: Encode(m) x 1 is exactly
+		// the old Encode(m x 1); a material tint m with a draw tint t gives
+		// Encode(m) x t; alpha m.a x t.a.
+		{
+			static const float ms[4] = {0.0f, 0.2f, 0.5f, 1.0f};
+			const float one[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+			const float t[4] = {0.5f, 0.25f, 0.75f, 0.5f};
+			int exact = 1;
+			int product = 1;
+
+			for (k = 0; k < 4; k++)
+			{
+				const float m[4] = {ms[k], ms[k], ms[k], 0.5f};
+				float tint[4];
+				float display[4];
+
+				Engine_NsTints(m, one, tint, display);
+				for (c = 0; c < 3; c++)
+				{
+					exact = exact && ((RldHiresColor_Encode(tint[c]) * display[c]) == RldHiresColor_Encode(m[c] * one[c]));
+				}
+				exact = exact && (tint[3] == 0.5f);
+				Engine_NsTints(m, t, tint, display);
+				for (c = 0; c < 3; c++)
+				{
+					product = product && (fabsf(RldHiresColor_Encode(tint[c]) * display[c] - RldHiresColor_Encode(m[c]) * t[c]) <= 1e-6f);
+				}
+				product = product && (tint[3] == 0.25f);
+			}
+			HC_CHECK(exact, "draw tint 1 (the static model): the colour exactly as before");
+			HC_CHECK(product, "material tint on the curve times the draw tint as it is; alpha the product");
+		}
+		// The shader is the line mirrored above (a change of one without the other fails here).
+		HC_CHECK(strstr(ctr_native_static_shader, "v_color = vec4(vertexColour * encodeSrgb(tint.rgb) * vramClut.rgb, a_color.a * tint.a);") != NULL,
+		         "program ns multiplies by the draw tint of vramClut as it is");
 	}
 	failures += EngHc_SelfTestLoader(checks);
 #undef HC_CHECK

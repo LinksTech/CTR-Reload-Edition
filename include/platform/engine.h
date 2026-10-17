@@ -249,10 +249,20 @@ typedef struct
 //                in between the two mix with 0.5 + 0.5 n.y - a hemisphere light)
 //   params.x     0 = no texture (the colour is vertex colour x tint), 1 = the
 //                native texture of slot 0, as in "ne"
+//   tint         rgb the MATERIAL tint alone (linear, put on the display curve),
+//                a the material alpha x the draw alpha (Engine_NsTints)
+//   vramClut     rgb the DRAW tint ("ns" has no CLUT): the game's colour of the
+//                draw (a driver's depth cue toward the ground's far colour,
+//                EngCmdl_Tints), a factor on display values as "ne" applies it to
+//                the classic driver - never put on the curve; w 1
 // The tangent frame comes from the screen derivatives of the world position and
 // the texture coordinates (no tangents in the vertex); the colour is
-// texel x vertex colour x tint x (ambient(n) + diffuse * max(0, n . sun)).
+// texel x vertex colour x tint x draw tint x (ambient(n) + diffuse * max(0, n . sun)).
 #define ENGINE_PROGRAM_NS 2
+// The uniform tints of a draw of "ns" from the material's and the draw's
+// (platform/engine_render.c): tint = the material tint (alpha: the product),
+// displayTint = the draw tint (w 1). Pure.
+void Engine_NsTints(const float materialTint[4], const float drawTint[4], float tint[4], float displayTint[4]);
 #define ENGINE_PROGRAM_COUNT 3
 
 // Decoded tpage word: x base (multiple of 64), y base (0 or 256), colour depth
@@ -639,7 +649,8 @@ void Engine_TextureMaterial(EngineMaterial *m, u32 texture);
 // bytes, field for field the GLSL block "NeBlock", one text for every engine
 // program: ENGINE_UNIFORM_BLOCK_GLSL in platform/native_shaders.inc):
 //   clipFromModel  finished clip matrix (PSX ortho * screen-from-model)
-//   tint           RGBA multiplier (material tint * draw tint)
+//   tint           RGBA multiplier (material tint * draw tint; "ns": the
+//                  material tint, the draw tint in vramClut - Engine_NsTints)
 //   params         x texSource (0 none, 1 native, 2 VRAM), y sRGB (1: re-encode
 //                  a native sRGB texel to gamma), z alphaCutoff (discard below,
 //                  0 = none), w stpPass (0 all texels, 1 only texels WITHOUT
@@ -650,7 +661,7 @@ void Engine_TextureMaterial(EngineMaterial *m, u32 texture);
 //                  material, w table flags (track mosaic, P1: 1 = LOD fallback
 //                  to level 2)
 //   vramPage       x page x (VRAM words), y page y, z depth 0/1/2, w 0
-//   vramClut       x clut x, y clut y, z..w 0
+//   vramClut       x clut x, y clut y, z..w 0 ("ns": rgb the draw tint, w 1)
 //   split          the water-line plane in model units (EngineDraw.split)
 //   params3        x program (EngineMaterial.program), y frame time in seconds
 //                  (gGT->timer / 30 of the bank's frame, Engine_FrameTime), z, w

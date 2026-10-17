@@ -766,6 +766,26 @@ internal BlendMode Engine_RenderBlendMode(u8 blend)
 	}
 }
 
+// The two tints of a draw of "ns" (include/platform/engine.h, ENGINE_PROGRAM_NS).
+// The material tint is a linear value (glTF baseColorFactor): "ns" puts it on
+// the display curve. The draw tint is the game's colour of the draw (the depth
+// cue and fade of a driver, EngCmdl_Tints): a factor on display values, the way
+// "ne" multiplies it for the classic driver (v_color = a_color * tint). So it
+// goes apart, in vramClut ("ns" reads no CLUT), and is not put on the curve.
+// Alpha is the product, as for every program. Pure (the selftest calls it).
+void Engine_NsTints(const float materialTint[4], const float drawTint[4], float tint[4], float displayTint[4])
+{
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		tint[i] = materialTint[i];
+		displayTint[i] = drawTint[i];
+	}
+	tint[3] = materialTint[3] * drawTint[3];
+	displayTint[3] = 1.0f;
+}
+
 // One range (or the one dynamic range): uniforms, texture, blend, draw state and
 // the draw call(s). first/count are indices of the bound index buffer when
 // `indexed`, else vertices of the bound dynamic buffer from `vertexOffset`.
@@ -835,10 +855,13 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	u.params3[2] = material->programParam[0];
 	u.params3[3] = material->programParam[1];
 	memcpy(u.params4, draw->user, sizeof(u.params4));
-	// "ns" reads no VRAM page: its STYLE travels in that vec4 (engine.h, ENGINE_PROGRAM_NS).
+	// "ns" reads no VRAM page: its STYLE travels in that vec4 (engine.h, ENGINE_PROGRAM_NS);
+	// nor a CLUT: the draw tint travels in that one, apart from the material tint (Engine_NsTints).
+	// A material of "ns" has a native texture or none, never VRAM, so the block below leaves both.
 	if (material->program == ENGINE_PROGRAM_NS)
 	{
 		memcpy(u.vramPage, draw->user2, sizeof(u.vramPage));
+		Engine_NsTints(material->tint, draw->tint, u.tint, u.vramClut);
 	}
 	if (vram)
 	{

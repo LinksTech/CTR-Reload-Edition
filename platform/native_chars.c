@@ -137,6 +137,8 @@
 
 #include <SDL3/SDL.h>
 
+#include <errno.h>
+
 // The envelope reader, then the character format on top of it (the same two
 // files the packer compiles, tools/rldpack.c).
 #include <rldtrack.inc>
@@ -300,6 +302,9 @@ global_variable int s_charDevSeatEntry[NATIVE_CHAR_SEATS];
 // (1-based) is entry s_charRosterFiles + n - 1.
 global_variable int s_charRosterCount;
 global_variable int s_charRosterFiles;
+
+// The last REFUSED line, without the line end (NativeChar_GivenSelfTest reads it).
+global_variable char s_charLastRefusal[2 * NATIVE_CHAR_PATH_MAX + 128];
 
 // The entries whose CHRI flags set RLDCHAR_FLAG_FULL_HEIGHT. 0 - every run
 // without such a file - lets NativeChar_ModelFullHeight answer at once.
@@ -542,9 +547,10 @@ internal int NativeChar_BuildPath(char *dst, size_t dstSize)
 }
 
 // One line, the wording a measuring tool reads: REFUSED <file>: <WORD> (<rule>) <detail>.
+// (The detail holds a whole path: "file not found: <path>".)
 internal void NativeChar_Refuse(const char *file, const char *word, const char *rule, const char *format, ...)
 {
-	char detail[256];
+	char detail[NATIVE_CHAR_PATH_MAX + 64];
 	va_list args;
 
 	va_start(args, format);
@@ -552,7 +558,26 @@ internal void NativeChar_Refuse(const char *file, const char *word, const char *
 	va_end(args);
 	detail[sizeof(detail) - 1] = '\0';
 
-	Platform_Log("[CTR Char] REFUSED %s: %s (%s) %s\n", file, word, rule, detail);
+	snprintf(s_charLastRefusal, sizeof(s_charLastRefusal), "REFUSED %s: %s (%s) %s", file, word, rule, detail);
+	Platform_Log("[CTR Char] %s\n", s_charLastRefusal);
+}
+
+// 1 when the --char file is not there at all (no file of that name, or no
+// folder on the way): the read then says "file not found: <path>" instead of
+// the reader's DAMAGED (envelope) "cannot be opened". Any other reason a file
+// cannot be opened (a folder, no access) stays the reader's.
+internal int NativeChar_GivenMissing(const char *path)
+{
+	FILE *f;
+
+	errno = 0;
+	f = fopen(path, "rb");
+	if (f != NULL)
+	{
+		fclose(f);
+		return 0;
+	}
+	return (errno == ENOENT) ? 1 : 0;
 }
 
 // --dev-char-seats: the instances the load just ended dropped, one line per
@@ -1294,7 +1319,10 @@ internal void NativeChar_ScanFolder(void)
 	}
 }
 
-// --char: this one file and no folder.
+// --char: this one file and no folder. A file that is not there says so with
+// the path it was looked for at ("file not found: <path>", the word NOT FOUND
+// instead of DAMAGED); a file that is there but broken is the reader's as
+// before. Only --char can name a missing file: --chars-dir lists its files.
 internal void NativeChar_LoadGivenFile(void)
 {
 	struct NativeCharFile loaded;
@@ -1309,7 +1337,11 @@ internal void NativeChar_LoadGivenFile(void)
 		return;
 	}
 
-	if (NativeChar_ReadFile(path, s_charFile, &loaded))
+	if (NativeChar_GivenMissing(path))
+	{
+		NativeChar_Refuse(s_charFile, "NOT FOUND", "path", "file not found: %s", path);
+	}
+	else if (NativeChar_ReadFile(path, s_charFile, &loaded))
 	{
 		NativeChar_Admit(&loaded, s_charFile, path);
 	}
@@ -5479,5 +5511,90 @@ int NativeChar_NativeSelfTest(const char *dir)
 	}
 
 	printf("char native selftest passed: %d files, %d checks, 0 failures\n", files, checks);
+	return 0;
+}
+
+// --char-given-selftest <folder>: see include/platform/native_chars.h. Each
+// case sets --char (and --chars-dir) the way main.c does and runs the read of
+// --char itself (NativeChar_LoadGivenFile); its REFUSED line is compared whole.
+// Nothing may be admitted: the roster stays without files.
+internal void NativeChar_GivenExpect(int *checks, int *failures, int ok, const char *what)
+{
+	(*checks)++;
+	if (!ok)
+	{
+		(*failures)++;
+		printf("char given selftest: %s FAILED (last line: %s)\n", what, s_charLastRefusal);
+	}
+}
+
+int NativeChar_GivenSelfTest(const char *dir)
+{
+	char missing[NATIVE_CHAR_PATH_MAX];
+	char broken[NATIVE_CHAR_PATH_MAX];
+	char expected[2 * NATIVE_CHAR_PATH_MAX + 128];
+	int checks = 0;
+	int failures = 0;
+	FILE *f;
+
+	SDL_CreateDirectory(dir);
+	if (!NativePath_Join(missing, sizeof(missing), NativeStr8_FromCString(dir), NATIVE_STR8_LIT("missing.rldchar")) ||
+	    !NativePath_Join(broken, sizeof(broken), NativeStr8_FromCString(dir), NATIVE_STR8_LIT("broken.rldchar")))
+	{
+		printf("char given selftest FAILED: the folder name %s is too long\n", dir);
+		return 1;
+	}
+	remove(missing);
+	f = fopen(broken, "wb");
+	if (f == NULL)
+	{
+		printf("char given selftest FAILED: %s cannot be written\n", broken);
+		return 1;
+	}
+	fputs("not a container\n", f);
+	fclose(f);
+
+	// 1. The test start of Reload Studio: an absolute --char that is not there.
+	NativeChar_SetFolder("");
+	NativeChar_SetFile(missing);
+	s_charLastRefusal[0] = '\0';
+	NativeChar_LoadGivenFile();
+	snprintf(expected, sizeof(expected), "REFUSED %s: NOT FOUND (path) file not found: %s", missing, missing);
+	NativeChar_GivenExpect(&checks, &failures, strcmp(s_charLastRefusal, expected) == 0, "an absolute --char that is not there: file not found with its path");
+	NativeChar_GivenExpect(&checks, &failures, strstr(s_charLastRefusal, "DAMAGED") == NULL, "a missing file never says DAMAGED");
+
+	// 2. A name inside --chars-dir that is not there: the path it was looked for at.
+	NativeChar_SetFolder(dir);
+	NativeChar_SetFile("missing.rldchar");
+	s_charLastRefusal[0] = '\0';
+	NativeChar_LoadGivenFile();
+	snprintf(expected, sizeof(expected), "REFUSED missing.rldchar: NOT FOUND (path) file not found: %s", missing);
+	NativeChar_GivenExpect(&checks, &failures, strcmp(s_charLastRefusal, expected) == 0, "a --char in --chars-dir that is not there: file not found with the joined path");
+
+	// 3. A file that is there but broken: DAMAGED (envelope) as before.
+	NativeChar_SetFolder("");
+	NativeChar_SetFile(broken);
+	s_charLastRefusal[0] = '\0';
+	NativeChar_LoadGivenFile();
+	snprintf(expected, sizeof(expected), "REFUSED %s: DAMAGED (envelope) ", broken);
+	NativeChar_GivenExpect(&checks, &failures, strncmp(s_charLastRefusal, expected, strlen(expected)) == 0, "a broken file that is there: DAMAGED (envelope)");
+	NativeChar_GivenExpect(&checks, &failures, strstr(s_charLastRefusal, "not found") == NULL, "a broken file never says not found");
+
+	// 4. A folder in place of the file: it is there, so not "not found".
+	NativeChar_SetFile(dir);
+	s_charLastRefusal[0] = '\0';
+	NativeChar_LoadGivenFile();
+	NativeChar_GivenExpect(&checks, &failures, (strstr(s_charLastRefusal, ": DAMAGED (") != NULL) && (strstr(s_charLastRefusal, "not found") == NULL),
+	                       "a folder as --char: DAMAGED, not not found");
+
+	NativeChar_GivenExpect(&checks, &failures, s_charRosterFiles == 0, "nothing admitted");
+	remove(broken);
+
+	if (failures != 0)
+	{
+		printf("char given selftest FAILED: %d checks, %d failures\n", checks, failures);
+		return 1;
+	}
+	printf("char given selftest passed: %d checks, 0 failures\n", checks);
 	return 0;
 }

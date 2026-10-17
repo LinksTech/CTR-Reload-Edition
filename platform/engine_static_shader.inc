@@ -11,7 +11,8 @@
 // bend.
 //
 // THE UNIFORMS IT READS
-//   tint        RGBA multiplier (material tint x draw tint), as in "ne"
+//   tint        rgb the material tint (linear), a material alpha x draw alpha
+//   vramClut    rgb the draw tint (a display factor; THE DRAW TINT below)
 //   params.x    1 = the base colour texture of slot 0, 0 = none (the colour is
 //               vertex colour x tint), as in "ne"
 //   params.y    1 = re-encode the texture (it is sampled linear) like "ne"
@@ -42,6 +43,16 @@
 // encoded values is the encoded product (exact for a pure power curve, within a
 // few levels for sRGB). "ne" multiplies them as they are (the look of the flat
 // model stays as it was).
+//
+// THE DRAW TINT (Engine_NsTints, platform/engine_render.c) is the game's colour
+// of the draw: for a hi-res driver the depth cue toward the ground's far colour
+// that the classic driver gets from the same function (EngCmdl_Tints). It is a
+// factor on display values - "ne" multiplies the classic driver's colour by it
+// as it is - so "ns" multiplies by it as it is, after the material tint is on
+// the curve, never encoding it. (Until the round of 2026-10-17 it was multiplied
+// into the material tint and encoded with it: on dark ground a draw tint of 0.5
+// darkened a hi-res driver only to 0.74, the classic one to 0.5.) The static
+// model draws with a draw tint of 1: its colour is the same as before.
 //
 // PSX BLEND (the hi-res drivers, round of 2026-10-17; params3.z 4..6, set only
 // by platform/engine_hires_char.c for a textured material of a file whose
@@ -86,10 +97,11 @@ global_variable const char *ctr_native_static_shader =
     "}\n"
     "void main() {\n"
     "	v_uv = a_texcoord;\n"
-    // LINEAR FACTORS: the vertex colour and the tint on the display curve, alpha as it is.
+    // LINEAR FACTORS: the vertex colour and the material tint on the display curve, alpha as it is.
     // PSX BLEND (params3.z >= 4): the vertex colour is the PS1 byte, read as byte / 128.
+    // THE DRAW TINT (vramClut.rgb): a display factor, as it is.
     "	vec3 vertexColour = (params3.z > 3.5) ? (a_color.rgb * (255.0 / 128.0)) : encodeSrgb(a_color.rgb);\n"
-    "	v_color = vec4(vertexColour * encodeSrgb(tint.rgb), a_color.a * tint.a);\n"
+    "	v_color = vec4(vertexColour * encodeSrgb(tint.rgb) * vramClut.rgb, a_color.a * tint.a);\n"
     "	v_world = a_position;\n"
     "	v_normal = a_uvBox.xyz / 127.5 - 1.0;\n"
     "	v_hasNormal = a_uvBox.w;\n"

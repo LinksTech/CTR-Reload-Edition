@@ -830,6 +830,13 @@ if(BUILD_TESTING)
     set_tests_properties(test_start_other_dev_switch PROPERTIES PASS_REGULAR_EXPRESSION "switch --chars-dir requires --dev")
     add_test(NAME test_start_with_dev_any_level COMMAND $<TARGET_FILE:ctr_native> --dev --char ${CMAKE_CURRENT_BINARY_DIR}/test-start/a.rldchar --level 30 --driver 15 --dev-race-mode stop)
     set_tests_properties(test_start_with_dev_any_level PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-race-mode expects tt or adventure")
+    # THE READ OF --char ON A MISSING FILE (platform/native_chars.c,
+    # NativeChar_LoadGivenFile): a --char that is not there says "file not found:
+    # <path>" - absolute as the test start of Reload Studio gives it, and a name in
+    # --chars-dir -, never DAMAGED; a broken file and a folder still say DAMAGED.
+    # The selftest makes its files in the build folder and compares whole lines.
+    add_test(NAME char_given_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --char-given-selftest ${CMAKE_CURRENT_BINARY_DIR}/selftest/char-given)
+    set_tests_properties(char_given_selftest PROPERTIES PASS_REGULAR_EXPRESSION "char given selftest passed: 7 checks, 0 failures")
     add_test(NAME hires_filter_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine-hires-chars --engine-hires-chars-filter blurry --dev-race-mode stop)
     set_tests_properties(hires_filter_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-hires-chars-filter expects nearest or linear")
     add_test(NAME engine_static_grade_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-model m.glb --engine-static-style lowpoly --engine-static-grade 4,1 --dev-race-mode stop)

@@ -324,6 +324,13 @@ int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldChar
 // expectation its name gives. No window, no data. 0 = passed.
 int NativeChar_NativeSelfTest(const char *dir);
 
+// --char-given-selftest <folder> (main.c, ctest char_given_selftest): the read
+// of --char (NativeChar_LoadGivenFile) on a missing file - absolute as the
+// test start of Reload Studio gives it, and a name inside --chars-dir - which
+// must say "file not found: <path>", and on a broken file and a folder, which
+// must still say DAMAGED. Writes only into <folder> (created). 0 = passed.
+int NativeChar_GivenSelfTest(const char *dir);
+
 // game/DrawTires.c, the solid wheels and their reflection: 1 when model is the
 // model of a loaded file whose CHRI flags set RLDCHAR_FLAG_NO_WHEELS (the race
 // seat and the driver select preview alike), else 0 - also for NULL, retail

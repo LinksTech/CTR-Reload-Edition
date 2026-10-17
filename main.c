@@ -441,7 +441,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hires-anim", "", "with --engine-hires-dir: the animated test body of tools/hires_blender_driver.py (anim.hra, anim.hrt in that folder) instead of body.hrm - pose frames for steering, air and drift picked from game state, one log line per tick (prototype Z4)"},
-    {"--engine-hires-chars-log", "", "measuring only, not with --no-hires-chars: one line per logic tick and hi-res seat ('[CTR Engine] hires char: vb ...': the state read, the clip drawn and its time, the fade weight, the wheels read back from the drawn matrices)"},
+    {"--engine-hires-chars-log", "", "measuring only, not with --no-hires-chars: one line per logic tick and hi-res seat ('[CTR Engine] hires char: vb ...': the state read, the clip drawn and its time, the fade weight, the wheels read back from the drawn matrices, the draw tint)"},
     {"--engine-hires-chars-filter", "<nearest|linear>", "measuring only, not with --no-hires-chars: the hi-res drivers' textures point sampled (nearest) or trilinear with anisotropy (linear, the default) - the comparison image of the two"},
     {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
     {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
@@ -467,6 +467,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
     {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
+    {"--char-given-selftest", "<dir>", "the read of --char on a missing file (absolute, and a name in --chars-dir: 'file not found: <path>'), a broken file and a folder (DAMAGED), files only inside dir (created), then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
     {"--make-test-disc", "<dir>", "write the synthetic good-*/bad-* disc images of the disc self-test into dir, then end"},
@@ -3396,6 +3397,14 @@ int main(int argc, char *argv[])
 		if ((strcmp(argv[argIndex], "--char-native-selftest") == 0) && ((argIndex + 1) < argc))
 		{
 			return NativeChar_NativeSelfTest(argv[argIndex + 1]);
+		}
+
+		// The read of --char on a missing, a broken file and a folder, up here for
+		// the same reason: it only reads and writes files in the folder it is
+		// given (ctest char_given_selftest, platform/native_chars.c).
+		if ((strcmp(argv[argIndex], "--char-given-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeChar_GivenSelfTest(argv[argIndex + 1]);
 		}
 
 		// The GPU set of a custom character without a device (step 4c,
