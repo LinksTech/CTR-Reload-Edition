@@ -261,9 +261,10 @@ static int RldHires_WheelByName(const char *name)
 #define RLDHIRES_UNITS_PER_METRE 64.0f      // kart model units per glTF metre
 
 // THE BUDGET of one hi-res driver: measured in the load run of this round (H5);
-// placeholder until then. Over it, the driver falls back to its classic model
+// placeholder until then (the triangles set high enough that the load run can
+// load every variant it measures). Over it, the driver falls back to its classic model
 // (HRG-27, RldHires_CheckBudget), with a line in the log and the Studio.
-#define RLDHIRES_BUDGET_TRIANGLES 100000u                     // all drawn primitives, wheels included
+#define RLDHIRES_BUDGET_TRIANGLES 400000u                     // all drawn primitives, wheels included
 #define RLDHIRES_BUDGET_TEXTURE_EDGE 2048u                    // the largest edge after the round-up (RldHires_UpEdge)
 #define RLDHIRES_BUDGET_TEXTURE_BYTES (64u * 1024u * 1024u)   // RGBA8 level 0 of every image, summed
 
@@ -1186,7 +1187,7 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 	int *order = NULL;   // the visited nodes, depth first
 	int orderCount = 0;
 	u8 *inWheel = NULL;  // 1 = in the subtree of a wheel node
-	int *stack = NULL;
+	int *nodeStack = NULL;
 	int found[RLDHIRES_WHEEL_COUNT];
 	int wheelOk = 1;
 	int seenNormal = 0;
@@ -1349,13 +1350,13 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 			pushes += scene->nodes_count;
 		}
 		order = (int *)malloc(gd->nodes_count * sizeof(int));
-		stack = (int *)malloc(pushes * sizeof(int));
+		nodeStack = (int *)malloc(pushes * sizeof(int));
 		inWheel = (u8 *)calloc(gd->nodes_count, 1);
 		m->drawNodes = (int *)malloc(gd->nodes_count * sizeof(int));
-		if ((order == NULL) || (stack == NULL) || (inWheel == NULL) || (m->drawNodes == NULL))
+		if ((order == NULL) || (nodeStack == NULL) || (inWheel == NULL) || (m->drawNodes == NULL))
 		{
 			free(order);
-			free(stack);
+			free(nodeStack);
 			free(inWheel);
 			RldHires_Say(rep, "HRG-7", "out of memory reading the nodes");
 			return 0;
@@ -1374,10 +1375,10 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 				{
 					continue;
 				}
-				stack[top++] = (int)cgltf_node_index(gd, start);
+				nodeStack[top++] = (int)cgltf_node_index(gd, start);
 				while (top > 0)
 				{
-					const int ni = stack[--top];
+					const int ni = nodeStack[--top];
 					const cgltf_node *node = &gd->nodes[ni];
 					cgltf_size c;
 
@@ -1393,7 +1394,7 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 
 						if (!seen[ci])
 						{
-							stack[top++] = ci;
+							nodeStack[top++] = ci;
 						}
 					}
 				}
@@ -1463,10 +1464,10 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 		{
 			RldHires_Say(rep, "HRG-31", "wheel node '%s' has child nodes - they are not drawn", s_rldHiresWheelName[i]);
 		}
-		stack[top++] = found[i];
+		nodeStack[top++] = found[i];
 		while (top > 0)
 		{
-			const int ni = stack[--top];
+			const int ni = nodeStack[--top];
 			const cgltf_node *node = &gd->nodes[ni];
 			cgltf_size c;
 
@@ -1481,7 +1482,7 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 
 				if (!inWheel[ci])
 				{
-					stack[top++] = ci;
+					nodeStack[top++] = ci;
 				}
 			}
 		}
@@ -1839,7 +1840,7 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 	}
 
 	free(order);
-	free(stack);
+	free(nodeStack);
 	free(inWheel);
 
 	localErrors = rep->errors - errorsBefore;
