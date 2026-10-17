@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 505" width="640" height="505" font-family="sans-serif">
+<rect width="640" height="505" rx="12" fill="#f2f3f5"/>
+<rect x="20" y="18" width="600" height="469" rx="8" fill="#2b2f36" stroke="#14171a" stroke-width="1.5"/>
+<rect x="20" y="18" width="600" height="30" rx="8" fill="#3a3f47" stroke="#14171a" stroke-width="1.5"/>
+<text x="36" y="38" font-size="14" font-weight="bold" fill="#e6e8eb">Outliner</text>
+<rect x="21" y="47" width="598" height="25" fill="#303540"/>
+<rect x="40" y="54" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+<text x="62" y="64" font-size="14" fill="#e6e8eb">CreatorKit</text>
+<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">export root</text>
+<path d="M70.5 78L77 90 64 90z" fill="#7ed99b" stroke="#3b8f57" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="86" y="89" font-size="14" fill="#e6e8eb">creator_rig</text>
+<rect x="21" y="97" width="598" height="25" fill="#303540"/>
+<rect x="64" y="104" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+<text x="86" y="114" font-size="14" fill="#e6e8eb">Figure</text>
+<rect x="88" y="129" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="139" font-size="14" fill="#e6e8eb">puppet</text>
+<rect x="21" y="147" width="598" height="25" fill="#303540"/>
+<rect x="64" y="154" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+<text x="86" y="164" font-size="14" fill="#e6e8eb">Kart</text>
+<rect x="88" y="179" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="189" font-size="14" fill="#e6e8eb">kart_body</text>
+<rect x="21" y="197" width="598" height="25" fill="#303540"/>
+<rect x="88" y="204" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="214" font-size="14" fill="#e6e8eb">kart_steer_wheel</text>
+<rect x="88" y="229" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="239" font-size="14" fill="#e6e8eb">wheel_fl</text>
+<rect x="21" y="247" width="598" height="25" fill="#303540"/>
+<rect x="88" y="254" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="264" font-size="14" fill="#e6e8eb">wheel_fr</text>
+<rect x="88" y="279" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="289" font-size="14" fill="#e6e8eb">wheel_rl</text>
+<rect x="21" y="297" width="598" height="25" fill="#303540"/>
+<rect x="88" y="304" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
+<text x="110" y="314" font-size="14" fill="#e6e8eb">wheel_rr</text>
+<rect x="40" y="329" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+<text x="62" y="339" font-size="14" fill="#e6e8eb">Guides</text>
+<rect x="21" y="347" width="598" height="25" fill="#303540"/>
+<path d="M70.5 354L70.5 365" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M64 359.5L77 359.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<text x="86" y="364" font-size="14" fill="#e6e8eb">CrashSize</text>
+<path d="M70.5 379L70.5 390" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M64 384.5L77 384.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<text x="86" y="389" font-size="14" fill="#e6e8eb">SeatPoint</text>
+<rect x="21" y="397" width="598" height="25" fill="#303540"/>
+<path d="M70.5 404L70.5 415" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M64 409.5L77 409.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<text x="86" y="414" font-size="14" fill="#e6e8eb">StandSpot</text>
+<path d="M70.5 429L70.5 440" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<path d="M64 434.5L77 434.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
+<text x="86" y="439" font-size="14" fill="#e6e8eb">Front</text>
+<rect x="21" y="447" width="598" height="25" fill="#303540"/>
+<rect x="40" y="454" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+<text x="62" y="464" font-size="14" fill="#e6e8eb">Classic</text>
+<text x="131.4" y="464" font-size="12" font-style="italic" fill="#9aa3ad">only with an old character</text>
+<path d="M540 50L548 50 548 320 540 320" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="556" y="190" font-size="13" font-weight="bold" fill="#6fd08c">exported</text>
+<path d="M540 325L548 325 548 470 540 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="556" y="394.5" font-size="13" font-weight="bold" fill="#c3c9d0">not</text>
+<text x="556" y="410.5" font-size="13" font-weight="bold" fill="#c3c9d0">exported</text>
+</svg>
