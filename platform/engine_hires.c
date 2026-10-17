@@ -1521,7 +1521,7 @@ int Engine_HiresWheels(const struct Driver *d, const struct Instance *inst, cons
 
 	// A hi-res driver of the .rldchar draws its wheels with its body
 	// (engine_hires_char.c): no sprite, nothing more to draw here.
-	if (g_cfg_engineHiresChars && Engine_HiresCharOwns(d))
+	if (g_cfg_engineHiresChars && (Engine_HiresCharOwns(d) || Engine_HiresCharSelectDrawn(inst)))
 	{
 		return 1;
 	}
