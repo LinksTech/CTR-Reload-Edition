@@ -111,6 +111,11 @@ typedef signed int s32;
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 
+// The hi-res driver (chunk CHRG): the format, its rules and their messages,
+// the same file the game and Reload Studio include (include/rldhires.inc).
+// Its self-test is tools/rldpack_hires_test.inc (selftest-hires).
+#include <rldhires.inc>
+
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
 
@@ -686,6 +691,9 @@ static void RldAnim_Usage(FILE *out);
 static int RldWheel_Command(int argc, char **argv);
 static int RldWheel_SelfTest(void);
 static void RldWheel_Usage(FILE *out);
+
+// The hi-res driver, chunk CHRG (tools/rldpack_hires.inc, included next to them).
+static void RldHires_Usage(FILE *out);
 
 
 //========================================================================================
@@ -6388,7 +6396,10 @@ static void Rld_Usage(void)
 	printf("  char-wheel ...              the preview of a wheel model (glTF, OBJ or PLY) for\n");
 	printf("                              Reload Studio, see below (the wheel of a character:\n");
 	printf("                              make-char --wheel-model, preview)\n");
-	printf("  info     <file>             show the format, META and PARM, leaves LEVD/VRMD untouched\n");
+	printf("  hires-check, hires-add, hires-strip ...\n");
+	printf("                              the hi-res driver of a character (a .glb in the\n");
+	printf("                              chunk CHRG, preview), see below\n");
+	printf("  info     <file>           show the format, META and PARM, leaves LEVD/VRMD untouched\n");
 	printf("  verify   <file>             check every chunk against its hash, SNDB and PARM\n");
 	printf("                              with the game's own reader, and warn if the track\n");
 	printf("                              lacks the data of a declared ctr or crystal mode\n");
@@ -6397,6 +6408,8 @@ static void Rld_Usage(void)
 	printf("                              the model, the portrait, the own mask and the\n");
 	printf("                              voices with the game's own rules\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n");
+	printf("  selftest-hires              check the rules of the hi-res driver (chunk CHRG,\n");
+	printf("                              include/rldhires.inc) against built-in models\n");
 	printf("  make-native-tests [--obj] <folder>\n");
 	printf("                              write the test characters of the native model\n");
 	printf("                              (CNET, CTXT; preview) into a folder of a CMake\n");
@@ -6452,6 +6465,7 @@ static void Rld_Usage(void)
 	RldChar_Usage(stdout);
 	RldAnim_Usage(stdout);
 	RldWheel_Usage(stdout);
+	RldHires_Usage(stdout);
 
 	printf("BUILD - REQUIRED\n");
 	printf("  --lev <file>                track geometry (.lev), 16 MB at most\n");
@@ -6617,6 +6631,11 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 #include "rldpack_anim.inc"
 #include "rldpack_wheel.inc"
 
+// The hi-res driver (include/rldhires.inc): hires-check, hires-add, hires-strip,
+// and their self-test, selftest-hires.
+#include "rldpack_hires.inc"
+#include "rldpack_hires_test.inc"
+
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
 static int Rld_MainCommand(int argc, char *argv[]);
@@ -6723,6 +6742,26 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "selftest") == 0)
 	{
 		return Cmd_Selftest();
+	}
+	if (strcmp(argv[1], "selftest-hires") == 0)
+	{
+		return RldHires_SelfTest();
+	}
+	if (strcmp(argv[1], "hires-check") == 0)
+	{
+		return RldHires_CheckCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "hires-add") == 0)
+	{
+		return RldHires_AddCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "hires-strip") == 0)
+	{
+		return RldHires_StripCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "hires-test-files") == 0)
+	{
+		return RldHires_TestFilesCommand(argc - 2, &argv[2]);
 	}
 	if (strcmp(argv[1], "make-native-tests") == 0)
 	{

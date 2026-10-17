@@ -375,11 +375,36 @@ if(BUILD_TESTING)
     # step against fixed cases. The hashing is self-written in this tree, so it
     # has to prove itself.
     add_test(NAME rldpack_selftest COMMAND $<TARGET_FILE:rldpack> selftest)
+    # The hi-res driver (chunk CHRG, include/rldhires.inc): every rule HRG-n
+    # fired and not fired on GLBs made in code, the clip chains, the budget, and
+    # a container without CHRG read as before (tools/rldpack_hires_test.inc).
+    add_test(NAME rldhires_selftest COMMAND $<TARGET_FILE:rldpack> selftest-hires)
+    set_tests_properties(rldhires_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "hires selftest passed: [0-9]+ checks, 0 failures"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    # hires-check, hires-add and hires-strip on files: the same bytes twice,
+    # strip of add is the character again byte for byte, replace, a model with
+    # an error writes nothing (cmake/run_rldhires_files.cmake).
+    add_test(NAME rldhires_files
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/rldhires
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_rldhires_files.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(rldhires_files PROPERTIES
+        PASS_REGULAR_EXPRESSION "rldhires files passed: [0-9]+ checks"
+        TIMEOUT 300)
     # The same self-test through the rldpack inside Reload Studio: proves that the
     # built-in version is the same one and talks over the pipe.
     if(MSVC)
         add_test(NAME reloadstudio_rldpack_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest)
         set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
+        # And the hi-res rules (include/rldhires.inc) inside Reload Studio: the same code.
+        add_test(NAME reloadstudio_rldhires_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest-hires)
+        set_tests_properties(reloadstudio_rldhires_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "hires selftest passed: [0-9]+ checks, 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL")
 
         # The textures of the Studio's 3D preview (tools/reloadstudio/rs_tex.c):
         # rldpack's make-char and char-wheel write the preview blocks, rs_tex.c
