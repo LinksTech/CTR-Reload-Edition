@@ -232,6 +232,9 @@ internal struct
 	const struct Instance *selectInst; // the driver select instance drawn hi-res in the frame selectFrame
 	u32 selectFrame;
 	int selectLogged; // the character last logged there + 1
+	u32 selectFrames; // frames the select instance was drawn hi-res
+	u32 selectMisses; // frames it was not (a custom model without a hi-res character, or a refused submit)
+	int selectMissLogged;
 	EngHcSeatRun seats[ENGINE_HIRES_SLOT_SEATS];
 	int seatChar[ENGINE_HIRES_SLOT_SEATS];
 	int lastRaceEntry[ENGINE_HIRES_SLOT_SEATS];
@@ -2119,6 +2122,24 @@ internal int EngHc_SelectRoute(struct Instance *inst, struct InstDrawPerPlayer *
 
 	if (ch < 0)
 	{
+		// The first miss on a custom model is logged (a retail model is no miss).
+		int entry;
+
+		for (entry = 0; entry < NativeChar_RosterFileCount(); entry++)
+		{
+			if ((const struct Model *)NativeChar_EntryModel(entry) == inst->model)
+			{
+				s_hc.selectMisses++;
+				if (!s_hc.selectMissLogged)
+				{
+					s_hc.selectMissLogged = 1;
+					Platform_Log("[CTR Engine] hires char select: vb %d, entry %d (%s) shown with no hi-res character loaded (%s) - the classic model\n",
+					             Platform_GetVBlankCount(), entry, NativeChar_EntryFile(entry),
+					             NativeChar_EntryHasChrg(entry) ? "its CHRG was refused or not loaded" : "the file has no CHRG");
+				}
+				break;
+			}
+		}
 		return 0;
 	}
 	memset(&s, 0, sizeof(s));
@@ -2141,8 +2162,18 @@ internal int EngHc_SelectRoute(struct Instance *inst, struct InstDrawPerPlayer *
 			Platform_Log("[CTR Engine] hires char select: vb %d, %s, clip menu drawn as %s\n", Platform_GetVBlankCount(), s_hc.chars[ch].file,
 			             Engine_HiresClipName(Engine_HiresCharResolveClip(ch, ENGINE_HIRES_CLIP_MENU, NULL)));
 		}
+		s_hc.selectFrames++;
 		Engine_FxNoteDrawn(ENGINE_FX_BODY);
 		return 1;
+	}
+	s_hc.selectMisses++;
+	if (!s_hc.selectMissLogged)
+	{
+		s_hc.selectMissLogged = 1;
+		Platform_Log("[CTR Engine] hires char select: vb %d, %s refused at the submit (view %d, handler 0x%x, slot capacity %u of %u vertices, level ready %d) - the "
+		             "classic model\n",
+		             Platform_GetVBlankCount(), s_hc.chars[ch].file, Engine_InstanceViewOf(pb), (unsigned)(u32)idpp->unkEC, s_hc.slots[ENG_HC_SLOT_SELECT].capacity,
+		             s_hc.chars[ch].vertexCount, s_hc.levelReady);
 	}
 	return 0;
 }
@@ -2276,9 +2307,9 @@ void Engine_HiresSeatForceClip(int seat, int clip)
 internal void EngHc_Report(void)
 {
 	Platform_Log("[CTR Engine] hires chars at exit: loaded %u, refused %u; body draws %u (mirrored %u), declined %u; forced submits %u; skins %u, vertices "
-	             "skinned %llu, skin time %.1f ms in all (%.3f ms per skin); seat ticks %u, tick lines %u; host peak of the loader %u KB\n",
+	             "skinned %llu, skin time %.1f ms in all (%.3f ms per skin); seat ticks %u, tick lines %u; driver select drawn %u, missed %u; host peak of the loader %u KB\n",
 	             s_hc.loaded, s_hc.refused, s_hc.draws, s_hc.mirrorDraws, s_hc.declined, s_hc.submits, s_hc.skins, (unsigned long long)s_hc.skinnedVertices,
-	             s_hc.skinMs, (s_hc.skins > 0u) ? (s_hc.skinMs / (double)s_hc.skins) : 0.0, s_hc.ticks, s_hc.lines, s_hc.hostPeak / 1024u);
+	             s_hc.skinMs, (s_hc.skins > 0u) ? (s_hc.skinMs / (double)s_hc.skins) : 0.0, s_hc.ticks, s_hc.lines, s_hc.selectFrames, s_hc.selectMisses, s_hc.hostPeak / 1024u);
 }
 
 // The first error of a report (rule, text), or the first message.
