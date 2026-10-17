@@ -8,6 +8,25 @@ include(CheckCCompilerFlag)
 # tools/package/package.sh reads this line to name the package.
 set(CTR_NATIVE_VERSION "0.7.5 Beta")
 
+# The version of the tools, Reload Studio and rldpack together - one number for
+# both, defined only on the next line: "rldpack <version> (<build id>)" in
+# rldpack --version, "<version> (<build id>)" in the sidebar of Reload Studio,
+# "Reload Studio <version> (<build id>)" in its help, and the version resources
+# of both exes. The game keeps CTR_NATIVE_VERSION, the container format its own
+# numbers (RLD_VERSION_MAJOR/MINOR in include/rldtrack.inc). The parts
+# major.minor.patch are taken from this line for the version resources.
+set(CTR_TOOLS_VERSION "0.9.0")
+if(NOT CTR_TOOLS_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
+    message(FATAL_ERROR "CTR_TOOLS_VERSION must be <major>.<minor>.<patch>, not '${CTR_TOOLS_VERSION}'")
+endif()
+# Given to every target that compiles rldpack.c, Reload Studio or their version
+# resources (tools/rldpack.rc, tools/reloadstudio/reloadstudio.rc).
+set(CTR_TOOLS_VERSION_DEFINES
+    CTR_TOOLS_VERSION=\"${CTR_TOOLS_VERSION}\"
+    CTR_TOOLS_VERSION_MAJOR=${CMAKE_MATCH_1}
+    CTR_TOOLS_VERSION_MINOR=${CMAKE_MATCH_2}
+    CTR_TOOLS_VERSION_PATCH=${CMAKE_MATCH_3})
+
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR
         "CTR Native currently requires a 32-bit target. "
@@ -174,7 +193,7 @@ target_include_directories(ctr_native PRIVATE ${CMAKE_SOURCE_DIR}/externals/cglt
 # its own, so that nothing else of SDL comes along.
 add_executable(rldpack tools/rldpack.c tools/rldpack_image.c platform/native_disc_image.c)
 target_compile_definitions(rldpack PRIVATE CTR_NATIVE
-    CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+    CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\" ${CTR_TOOLS_VERSION_DEFINES})
 # Build ID from generated/ctr_build_id.h (target ctr_build_id, above).
 target_include_directories(rldpack PRIVATE ${CTR_BUILD_ID_DIR})
 add_dependencies(rldpack ctr_build_id)
@@ -247,11 +266,12 @@ if(MSVC)
         tools/reloadstudio/reloadstudio.rc
         tools/reloadstudio/reloadstudio.manifest
     )
-    # The same version and build ID as the game, for the title and the pairing
-    # check - from generated/ctr_build_id.h, new on every build (target
-    # ctr_build_id).
+    # The tools version (CTR_TOOLS_VERSION, above) for the sidebar, the help and
+    # the version resource; the game's version for the help ("for CTR Reload
+    # ..."); the same build ID as the game for the title and the pairing check -
+    # from generated/ctr_build_id.h, new on every build (target ctr_build_id).
     target_compile_definitions(ReloadStudio PRIVATE CTR_NATIVE
-        CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+        CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\" ${CTR_TOOLS_VERSION_DEFINES})
     target_include_directories(ReloadStudio PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
     add_dependencies(ReloadStudio ctr_build_id)
     # The same floating point flags as rldpack (see there).
@@ -379,6 +399,22 @@ if(BUILD_TESTING)
     # step against fixed cases. The hashing is self-written in this tree, so it
     # has to prove itself.
     add_test(NAME rldpack_selftest COMMAND $<TARGET_FILE:rldpack> selftest)
+    # rldpack --version: "rldpack <CTR_TOOLS_VERSION> (<build id>)" and the
+    # line "container format <major>.<minor>", the numbers read here from
+    # include/rldtrack.inc - the tools version and the format each from its one
+    # definition. The game's version test (ctr_native_version) is below.
+    file(STRINGS ${CMAKE_SOURCE_DIR}/include/rldtrack.inc ctr_rld_format_lines
+         REGEX "^#define RLD_VERSION_(MAJOR|MINOR) [0-9]+$")
+    string(REGEX REPLACE ".*RLD_VERSION_MAJOR ([0-9]+).*" "\\1" ctr_rld_major "${ctr_rld_format_lines}")
+    string(REGEX REPLACE ".*RLD_VERSION_MINOR ([0-9]+).*" "\\1" ctr_rld_minor "${ctr_rld_format_lines}")
+    string(REPLACE "." "\\." ctr_tools_version_re "${CTR_TOOLS_VERSION}")
+    set(ctr_rldpack_version_re
+        "^rldpack ${ctr_tools_version_re} \\([^)]+\\)\r?\ncontainer format ${ctr_rld_major}\\.${ctr_rld_minor}\r?\n$")
+    add_test(NAME rldpack_version COMMAND $<TARGET_FILE:rldpack> --version)
+    set_tests_properties(rldpack_version PROPERTIES PASS_REGULAR_EXPRESSION "${ctr_rldpack_version_re}")
+    # "version" is the same command.
+    add_test(NAME rldpack_version_word COMMAND $<TARGET_FILE:rldpack> version)
+    set_tests_properties(rldpack_version_word PROPERTIES PASS_REGULAR_EXPRESSION "${ctr_rldpack_version_re}")
     # The hi-res driver (chunk CHRG, include/rldhires.inc): every rule HRG-n
     # fired and not fired on GLBs made in code, the clip chains, the budget, and
     # a container without CHRG read as before (tools/rldpack_hires_test.inc).
@@ -404,6 +440,15 @@ if(BUILD_TESTING)
     if(MSVC)
         add_test(NAME reloadstudio_rldpack_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest)
         set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
+        # The rldpack inside Reload Studio has the same version.
+        add_test(NAME reloadstudio_rldpack_version COMMAND $<TARGET_FILE:ReloadStudio> --rldpack --version)
+        set_tests_properties(reloadstudio_rldpack_version PROPERTIES PASS_REGULAR_EXPRESSION "${ctr_rldpack_version_re}")
+        # The help of Reload Studio (--help into a pipe): its version, the game's
+        # and the container format.
+        string(REPLACE "." "\\." ctr_native_version_re "${CTR_NATIVE_VERSION}")
+        add_test(NAME reloadstudio_version COMMAND $<TARGET_FILE:ReloadStudio> --help)
+        set_tests_properties(reloadstudio_version PROPERTIES PASS_REGULAR_EXPRESSION
+            "^Reload Studio ${ctr_tools_version_re} \\([^)]+\\) -[^\n]*\r?\nfor CTR Reload ${ctr_native_version_re}, container format ${ctr_rld_major}\\.${ctr_rld_minor}\\.")
         # And the hi-res rules (include/rldhires.inc) inside Reload Studio: the same code.
         add_test(NAME reloadstudio_rldhires_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest-hires)
         set_tests_properties(reloadstudio_rldhires_selftest PROPERTIES
@@ -424,7 +469,7 @@ if(BUILD_TESTING)
             platform/rldpack.manifest
         )
         target_compile_definitions(rs_tex_selftest PRIVATE CTR_NATIVE
-            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\" ${CTR_TOOLS_VERSION_DEFINES})
         target_include_directories(rs_tex_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
         add_dependencies(rs_tex_selftest ctr_build_id)
         target_compile_options(rs_tex_selftest PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
@@ -449,7 +494,7 @@ if(BUILD_TESTING)
             platform/rldpack.manifest
         )
         target_compile_definitions(rs_hires_selftest PRIVATE CTR_NATIVE
-            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\" ${CTR_TOOLS_VERSION_DEFINES})
         target_include_directories(rs_hires_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
         add_dependencies(rs_hires_selftest ctr_build_id)
         target_compile_options(rs_hires_selftest PRIVATE ${CTR_RLDPACK_FP_OPTIONS})

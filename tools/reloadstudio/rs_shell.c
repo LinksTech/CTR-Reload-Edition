@@ -84,6 +84,26 @@
 #include <wchar.h>
 #include <corecrt_startup.h>
 
+// The container format (RLD_VERSION_MAJOR/MINOR) for the help, from the file
+// that defines it for the game, rldpack and the Studio's other readers. All of
+// it is static: what this file does not use the compiler drops (the warnings
+// about unused parts as in rs_hires_model.c).
+typedef unsigned char u8;
+typedef unsigned short u16;
+typedef unsigned int u32;
+typedef unsigned long long u64;
+typedef signed short s16;
+typedef signed int s32;
+typedef signed long long s64;
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4100 4189 4244 4245 4267 4505)
+#endif
+#include <rldtrack.inc>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
 // rs_rldpack.c: the main of tools/rldpack.c.
 int Rldpack_Main(int argc, char *argv[]);
 
@@ -101,7 +121,7 @@ int Rldpack_Main(int argc, char *argv[]);
 // from a page again when the sidebar grows.
 #define RS_SIDEBAR_NARROW 60
 #define RS_WIDE_MIN (RS_SIDEBAR_W + 1064)
-#define RS_SIDEBAR_FULL_H 476   // five entries (46 px each) above the version and the footer
+#define RS_SIDEBAR_FULL_H 430   // four entries (46 px each) above the version and the footer
 #define RS_MIN_CLIENT_W 480
 #define RS_MIN_CLIENT_H 320
 #define RS_START_W 1340
@@ -3648,15 +3668,40 @@ static int Rs_SideCompact(void)
     return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H);
 }
 
+// The pages the sidebar lists: Track, Cups, Character, Test in game. The page
+// "Hi-Res (Preview)" is not among them since the page Character builds hi-res
+// drivers itself (the routes Low-Poly and Hi-Res, rs_charroute.h). It is still
+// created with the others, and automation reaches it with "page hires" - for
+// its verbs and self-tests (reloadstudio.h); a user never sees it.
+static int Rs_NavShown(int id)
+{
+    return id != RS_PAGE_HIRES;
+}
+
+// The place of a listed page in the sidebar (0 = the first entry).
+static int Rs_NavSlot(int id)
+{
+    int i, slot = 0;
+    for (i = 0; i < id; i++)
+        slot += Rs_NavShown(i);
+    return slot;
+}
+
+// The entry of page i; an empty rectangle for a page the sidebar does not list
+// (nothing is drawn there, a click or a tooltip never lands on it).
 static RECT Rs_NavRect(int i)
 {
     RECT r;
     RECT client;
     int compact = Rs_SideCompact();
+    if (i < 0 || i >= RS_PAGE_COUNT || !Rs_NavShown(i)) {
+        SetRectEmpty(&r);
+        return r;
+    }
     GetClientRect(g_sidebar, &client);
     r.left = Rs_Px(g_narrow ? 8 : 12);
     r.right = client.right - r.left;
-    r.top = Rs_Px(compact ? 72 : 112) + i * Rs_Px(compact ? 42 : 46);
+    r.top = Rs_Px(compact ? 72 : 112) + Rs_NavSlot(i) * Rs_Px(compact ? 42 : 46);
     r.bottom = r.top + Rs_Px(40);
     return r;
 }
@@ -3673,7 +3718,12 @@ static RECT Rs_ThemeRect(void)
     r.left = Rs_Px(g_narrow ? 8 : 12);
     r.right = client.right - r.left;
     if (Rs_SideCompact()) {
-        RECT last = Rs_NavRect(RS_PAGE_COUNT - 1);
+        int i, lastId = 0;
+        RECT last;
+        for (i = 0; i < RS_PAGE_COUNT; i++)
+            if (Rs_NavShown(i))
+                lastId = i;
+        last = Rs_NavRect(lastId);
         r.top = last.bottom + Rs_Px(8);
         r.bottom = r.top + Rs_Px(36);
     } else {
@@ -3765,8 +3815,9 @@ static void Rs_SidebarPaint(HWND hwnd)
             t.bottom = Rs_Px(80);
             SelectObject(mem, Rs_Font(RS_FONT_SMALL));
             SetTextColor(mem, RGB(150, 156, 170));
-            DrawTextW(mem, L"CTR Reload track tools", -1, &t, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-            // Version and build ID, free up to the navigation (from 112)
+            DrawTextW(mem, L"CTR Reload tools", -1, &t, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            // The tools version (rldpack's too) and the build ID, free up to the
+            // navigation (from 112)
             t.top = Rs_Px(76);
             t.bottom = Rs_Px(96);
             SetTextColor(mem, RGB(120, 126, 140));
@@ -3779,6 +3830,8 @@ static void Rs_SidebarPaint(HWND hwnd)
         RECT r = Rs_NavRect(i);
         RECT t;
         int sel = i == g_current;
+        if (!Rs_NavShown(i))
+            continue;
         if (sel || i == g_hoverNav)
             Rs_FillRound(mem, &r, Rs_Px(8), sel ? RGB(46, 50, 62) : RGB(36, 39, 49),
                          sel ? RGB(46, 50, 62) : RGB(36, 39, 49));
@@ -4213,10 +4266,14 @@ static int Rs_DumpControls(const wchar_t *path)
         fprintf(f, "tip\t%d\t", g_pageTip[i].id);
         Rs_DumpText(f, g_pageTip[i].text);
     }
+    // The entries the sidebar shows (a page it does not list has none).
     for (i = 0; i <= RS_NAV_THEME; i++) {
         RECT r = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
         const wchar_t *name = i == RS_NAV_THEME ? (g_dark ? L"Light mode" : L"Dark mode") : g_defs[i]->navName;
-        long edge = g_narrow ? 0 : r.left + Rs_Px(46) +
+        long edge;
+        if (i != RS_NAV_THEME && !Rs_NavShown(i))
+            continue;
+        edge = g_narrow ? 0 : r.left + Rs_Px(46) +
                     Rs_TextSize(dc, Rs_Font(i == g_current ? RS_FONT_BOLD : RS_FONT_BODY), name, 0,
                                 DT_SINGLELINE | DT_NOPREFIX).cx;
         fprintf(f, "side\t%ls\t%ld\t%ld\t%ld\t%ld\t%ld\n", i == RS_NAV_THEME ? L"theme" : g_pageWords[i],
@@ -4672,9 +4729,17 @@ static int Rs_RunAsRldpack(int argc, wchar_t **wargv)
     return r;
 }
 
+// The first lines of the help name three versions, each from its one
+// definition: the tools (Reload Studio and rldpack, CTR_TOOLS_VERSION), the game
+// they are for (CTR_NATIVE_VERSION) and the container format they write - the
+// numbers s_rldTrackFormat is made of in include/rldtrack.inc, not a copy.
+#define RS_STR2(x) #x
+#define RS_STR(x)  RS_STR2(x)
+#define RS_FORMAT_W RS_WIDEN(RS_STR(RLD_VERSION_MAJOR)) L"." RS_WIDEN(RS_STR(RLD_VERSION_MINOR))
+
 static const wchar_t g_helpText[] =
     L"Reload Studio " RS_VERSION_W L" (" RS_BUILD_ID_W L") - track containers, cups and characters\n"
-    L"for CTR Reload.\n"
+    L"for CTR Reload " RS_GAME_VERSION_W L", container format " RS_FORMAT_W L".\n"
     L"\n"
     L"Usage: ReloadStudio.exe [options]\n"
     L"\n"
@@ -4899,6 +4964,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     } else if (Rs_PageByWord(cfg) >= 0) {
         startPage = Rs_PageByWord(cfg);
     }
+    // "page=hires" from a Studio that still listed the page "Hi-Res (Preview)":
+    // the page Character builds hi-res drivers now.
+    if (!Rs_NavShown(startPage))
+        startPage = RS_PAGE_CHAR;
     Rs_ShowPage(startPage);
     ShowWindow(g_main, g_automating ? SW_SHOWNORMAL : show);
     UpdateWindow(g_main);

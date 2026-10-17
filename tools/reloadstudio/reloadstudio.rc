@@ -4,15 +4,16 @@
 // that is handed to strangers should say what it is called, where it comes from
 // and which version it is. A code signature is still missing.
 //
-// The strings FileVersion/ProductVersion say "0.7.5 Beta" like the game
-// (CTR_NATIVE_VERSION in CMakeLists.txt, kept in step here by hand). The
-// build ID is in the window title, not here.
+// The version is the tools version, shared with rldpack: CTR_TOOLS_VERSION and
+// its parts CTR_TOOLS_VERSION_MAJOR/MINOR/PATCH, passed by CMakeLists.txt from
+// its one line set(CTR_TOOLS_VERSION ...). The game's version is its own
+// (CTR_NATIVE_VERSION). The build ID is in the window title, not here.
 
 #include <winver.h>
 
-#define RELOADSTUDIO_VERSION_MAJOR 0
-#define RELOADSTUDIO_VERSION_MINOR 7
-#define RELOADSTUDIO_VERSION_PATCH 5
+#define RELOADSTUDIO_VERSION_MAJOR CTR_TOOLS_VERSION_MAJOR
+#define RELOADSTUDIO_VERSION_MINOR CTR_TOOLS_VERSION_MINOR
+#define RELOADSTUDIO_VERSION_PATCH CTR_TOOLS_VERSION_PATCH
 #define RELOADSTUDIO_VERSION_BUILD 0
 
 VS_VERSION_INFO VERSIONINFO
@@ -29,14 +30,14 @@ BEGIN
 		BLOCK "040904b0"
 		BEGIN
 			VALUE "CompanyName",      "CTR Reload"
-			VALUE "FileDescription",  "Reload Studio - track containers and cups"
-			VALUE "FileVersion",      "0.7.5 Beta"
+			VALUE "FileDescription",  "Reload Studio - track containers, cups and characters"
+			VALUE "FileVersion",      CTR_TOOLS_VERSION
 			VALUE "InternalName",     "ReloadStudio"
 			VALUE "LegalCopyright",   "CTR Reload"
 			VALUE "OriginalFilename", "ReloadStudio.exe"
 			VALUE "ProductName",      "CTR Reload"
-			VALUE "ProductVersion",   "0.7.5 Beta"
-			VALUE "Comments",         "Builds .rldtrack containers with rldpack (format 4.1), edits cups.txt, tests tracks in the game."
+			VALUE "ProductVersion",   CTR_TOOLS_VERSION
+			VALUE "Comments",         "Builds .rldtrack containers and .rldchar characters with rldpack, edits cups.txt, tests tracks and characters in the game."
 		END
 	END
 	BLOCK "VarFileInfo"

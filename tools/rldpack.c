@@ -6367,28 +6367,53 @@ static int Cmd_Selftest(void)
 
 //========================================================================================
 
-// The help names EVERY argument build and make know. An argument an author
-// can only learn about from the source is no argument - an early version of
-// this help left out --author, and the first track built consequently had an
-// empty author field.
-static void Rld_Usage(void)
-{
+// THREE VERSIONS, EACH WRITTEN ONCE:
+//   the tools   CTR_TOOLS_VERSION, set(CTR_TOOLS_VERSION ...) in CMakeLists.txt -
+//               rldpack and Reload Studio share it ("rldpack 0.9.0 (<build id>)")
+//   the game    CTR_NATIVE_VERSION, set(CTR_NATIVE_VERSION ...) in CMakeLists.txt
+//   the format  RLD_VERSION_MAJOR/MINOR in include/rldtrack.inc (s_rldTrackFormat)
+// The tools version has no fallback here: a build that does not pass it would
+// show a number nobody set.
+#ifndef CTR_TOOLS_VERSION
+#error "CTR_TOOLS_VERSION comes from CMakeLists.txt (set(CTR_TOOLS_VERSION ...)) - build with CMake"
+#endif
 #ifndef CTR_NATIVE_VERSION
 #define CTR_NATIVE_VERSION "0.7.5 Beta"
 #endif
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
-	// The same version and build ID as the game and Reload Studio. The build ID stays
-	// an argument of its own: the packaging script looks for it in ReloadStudio.exe as a
-	// string that ends there (tools/package/package.sh), not in this help.
-	printf("rldpack - packer for .rldtrack track containers (format 4.1) and .rldchar character containers - CTR Reload %s (%s)\n\n",
-	       CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
+
+// rldpack --version (and "version"): the tools version with the build ID - the
+// same ID as the game and Reload Studio of the same build - and the container
+// format this packer writes.
+static int Rld_Version(void)
+{
+	printf("rldpack %s (%s)\n", CTR_TOOLS_VERSION, CTR_NATIVE_BUILD_ID);
+	printf("container format %u.%u\n", (unsigned)s_rldTrackFormat.major, (unsigned)s_rldTrackFormat.minorWritten);
+	return 0;
+}
+
+// The help names EVERY argument build and make know. An argument an author
+// can only learn about from the source is no argument - an early version of
+// this help left out --author, and the first track built consequently had an
+// empty author field.
+static void Rld_Usage(void)
+{
+	// The build ID stays an argument of its own: the packaging script looks for it
+	// in ReloadStudio.exe as a string that ends there (tools/package/package.sh),
+	// not in this help.
+	printf("rldpack %s (%s) - packer for .rldtrack track containers (format %u.%u) and\n"
+	       ".rldchar character containers, for CTR Reload %s\n\n",
+	       CTR_TOOLS_VERSION, CTR_NATIVE_BUILD_ID, (unsigned)s_rldTrackFormat.major,
+	       (unsigned)s_rldTrackFormat.minorWritten, CTR_NATIVE_VERSION);
 
 	printf("  The same program runs inside Reload Studio: where this help says\n");
 	printf("  \"rldpack <command>\", \"ReloadStudio.exe --rldpack <command>\" works the same.\n\n");
 
 	printf("COMMANDS\n");
+	printf("  --version                   the version of rldpack (also: version) and the\n");
+	printf("                              container format it writes\n");
 	printf("  make     <folder>           build a container from a track folder, see below\n");
 	printf("  build    ...                build a container from single files, see below\n");
 	printf("  make-char ...               build a character (.rldchar) from a glTF, OBJ or PLY\n");
@@ -6714,6 +6739,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 		fprintf(stderr, "         the SIGN chunk was taken out of the format.\n");
 		fprintf(stderr, "         See the head of include/rldtrack.inc. You need no key.\n");
 		return 2;
+	}
+	if ((strcmp(argv[1], "--version") == 0) || (strcmp(argv[1], "version") == 0))
+	{
+		return Rld_Version();
 	}
 	if (strcmp(argv[1], "build") == 0)
 	{

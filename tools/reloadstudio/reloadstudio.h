@@ -64,14 +64,21 @@
 // ---------------------------------------------------------------------------
 // Version and build ID
 //
-// CMakeLists.txt sets the version, the build ID comes from ctr_build_id.h,
-// generated on every build (cmake/CtrBuildId.cmake) - both as for the
-// game (narrow strings). The game answers --version with
-// "CTR Reload <version> (<build id>)"; the
-// test page demands the same ID as here, otherwise game and
-// Reload Studio do not belong together. "unknown" (build without git) does not check.
+// Reload Studio carries the tools version, shared with rldpack:
+// set(CTR_TOOLS_VERSION ...) in CMakeLists.txt is its only definition (no
+// fallback here - a build without it stops). The game has its own version
+// (CTR_NATIVE_VERSION, "CTR Reload 0.7.5 Beta"), which the help names as the
+// game these tools are for. The build ID comes from ctr_build_id.h, generated
+// on every build (cmake/CtrBuildId.cmake) - the same for the game, rldpack and
+// Reload Studio of one build (narrow strings). The game answers --version with
+// "CTR Reload <version> (<build id>)"; the test page demands the same ID as
+// here, otherwise game and Reload Studio do not belong together. "unknown"
+// (build without git) does not check.
 // ---------------------------------------------------------------------------
 #include "ctr_build_id.h"
+#ifndef CTR_TOOLS_VERSION
+#error "CTR_TOOLS_VERSION comes from CMakeLists.txt (set(CTR_TOOLS_VERSION ...)) - build with CMake"
+#endif
 #ifndef CTR_NATIVE_VERSION
 #define CTR_NATIVE_VERSION "0.7.5 Beta"
 #endif
@@ -80,8 +87,9 @@
 #endif
 #define RS_WIDEN2(x) L##x
 #define RS_WIDEN(x)  RS_WIDEN2(x)
-#define RS_VERSION_W  RS_WIDEN(CTR_NATIVE_VERSION)     // L"0.7.5 Beta"
-#define RS_BUILD_ID_W RS_WIDEN(CTR_NATIVE_BUILD_ID)    // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
+#define RS_VERSION_W      RS_WIDEN(CTR_TOOLS_VERSION)     // L"0.9.0", the tools version
+#define RS_GAME_VERSION_W RS_WIDEN(CTR_NATIVE_VERSION)    // L"0.7.5 Beta", the game's version
+#define RS_BUILD_ID_W     RS_WIDEN(CTR_NATIVE_BUILD_ID)   // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
 
 // Message when there is no game data next to the game (pages Track and Test).
 #define RS_TEXT_NO_GAME_DATA \
