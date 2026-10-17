@@ -460,7 +460,11 @@
 //                                 (Rs_TestCharacter: in automation it only logs
 //                                 the command line); FAIL without a build of
 //                                 the fields as they are, or when it did not start
-//   preview hires|classic         the switch above the preview (Low-Poly, Hi-Res only)
+//   preview hires|lowpoly|classic the switch above the preview (Low-Poly, Hi-Res only):
+//                                 hires and lowpoly both its first side, which
+//                                 names the route ("Low-Poly" or "Hi-Res");
+//                                 "report" says "preview: low-poly|hi-res|classic
+//                                 fallback|classic (Vanilla)"
 //   vcolor on|off|psx|gltf|auto   the vertex colours of a Low-Poly or Hi-Res
 //                                 model with COLOR_0: on/off as the switch
 //                                 "Vertex color blending" (on = psx), psx|gltf|off

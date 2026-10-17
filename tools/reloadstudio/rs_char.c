@@ -230,7 +230,8 @@
 // background and floor, the same in both colour schemes), with its idle clip
 // playing on the page's timer (RsHires_AnimFrame, as the page Hi-Res plays a
 // clip; in automation its first frame, so that shots are the same every run),
-// and above it the switch "Hi-Res | Classic fallback" (the fallback:
+// and above it the switch "Low-Poly | Classic fallback" or "Hi-Res | Classic fallback"
+// (the route's model, Char_PreviewText; the fallback:
 // make-char --preview, drawn as Vanilla's, without the stage).
 //
 // THE VERTEX COLOURS of a CHRG route (rs_charroute.h, include/rldhires_color.inc):
@@ -467,7 +468,7 @@
 #define CHAR_ID_TEST           212   // "Test in game" (step Build, after a build)
 #define CHAR_ID_REBUILD        213   // "Build again" beside it
 #define CHAR_ID_TEST_NOTE      214   // what Test in game did, or why not
-#define CHAR_ID_PREVIEW_SWITCH 215   // 215..216: Hi-Res | Classic fallback above the preview (CHRG routes)
+#define CHAR_ID_PREVIEW_SWITCH 215   // 215..216: Low-Poly/Hi-Res | Classic fallback above the preview (CHRG routes)
 #define CHAR_ID_OUT_NOTE       217   // where the build goes, below the output field
 #define CHAR_ID_VBLEND         218   // "Vertex color blending" on the step Model (a CHRG route, a model with COLOR_0)
 #define CHAR_ID_VBLEND_NOTE    219   // its line: what the mode does and why it is set
@@ -660,7 +661,6 @@ static const wchar_t *const g_charExtrasWords[CHAR_EXTRAS_COUNT] = { L"import", 
 static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Import", L"Wheels", L"Animations", L"Options" };
 // The order of the cards on the switch of Advanced (the IDs keep the order above).
 static const int g_charExtrasOrder[CHAR_EXTRAS_COUNT] = { CHAR_EXTRAS_OPTIONS, CHAR_EXTRAS_IMPORT, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_WHEELS };
-static const wchar_t *const g_charPreviewTexts[2] = { L"Hi-Res", L"Classic fallback" };
 // The list "Vertex colors" of Advanced (a CHRG route): its entries in this
 // order, the mode of each (RS_HIRES_VCOL_*).
 #define CHAR_VMODES 3
@@ -928,7 +928,7 @@ static struct {
     int *listMsg;                   // entry of the list -> index into pageMsg
     int listCount;
     // A CHRG route: the in-process check of the .glb (RsHires_CheckFile), the
-    // preview switch Hi-Res | Classic fallback, the idle clip playing.
+    // preview switch Low-Poly/Hi-Res | Classic fallback, the idle clip playing.
     struct RsHiresCheck hires;
     int hiresChecked;               // hires holds the check of hiresPath
     int hiresPng;                   // ... as converted to PNG ("Convert JPEG textures to PNG" was on)
@@ -1098,6 +1098,31 @@ static int Char_Chrg(void)
     return p && p->chrg;
 }
 
+// The name of the model a CHRG route builds, as its card says it
+// ("Low-Poly", "Hi-Res"): the first side of the switch above the preview,
+// the notes below the preview and the line of the build name it.
+static const wchar_t *Char_ChrgTitle(void)
+{
+    const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
+    return p && p->chrg ? p->title : L"Hi-Res";
+}
+
+// The two sides of the switch above the preview of a CHRG route: the
+// route's model | Classic fallback.
+static const wchar_t *Char_PreviewText(int classic)
+{
+    return classic ? L"Classic fallback" : Char_ChrgTitle();
+}
+
+// The tip of "Classic fallback" on that switch, naming the route's model.
+static void Char_PreviewTip(void)
+{
+    wchar_t tip[160];
+    swprintf(tip, 160, L"The classic model made from the same file: the game draws it wherever the %ls model is not drawn.",
+             Char_ChrgTitle());
+    Rs_SetTip(g_char.previewSwitch[1], tip);
+}
+
 // Show kart wheels: on the step Model itself for Vanilla. A CHRG route has no
 // such choice - the classic fallback gets --wheels off by itself when the
 // hi-res model brings its own four wheels (Char_MakeArgs), so the control is
@@ -1147,7 +1172,7 @@ static void Char_ExtrasFix(void)
 }
 
 // The controls a route does not need: hidden (not greyed out). Vanilla has
-// no "Upscale small textures" and no switch Hi-Res | Classic fallback; a CHRG
+// no "Upscale small textures" and no switch Low-Poly/Hi-Res | Classic fallback; a CHRG
 // route has no size (the hi-res model keeps its own size), no repair or
 // reduction choices (its fallback is made with RsCharHires_FallbackArgs), no
 // Show kart wheels (above), none of the OBJ's choices (the textures folder,
@@ -5347,7 +5372,7 @@ static void Char_ApplyPreview(int seq)
     memset(g_char.previewTris, 0, sizeof(g_char.previewTris));
     Char_TempPath(path, CHAR_VAL, seq, L".rldpv");
     // A CHRG route keeps the classic fallback's picture for the switch
-    // Hi-Res | Classic fallback (Char_PreviewShow follows in Char_CheckDone).
+    // Low-Poly/Hi-Res | Classic fallback (Char_PreviewShow follows in Char_CheckDone).
     if (Char_Chrg())
         Char_ClassicKeep(Rs_FileExists(path) ? path : NULL);
     // The label above the model: the view's own for Vanilla; the classic
@@ -6183,20 +6208,23 @@ static void Char_HiresStop(void)
 // The note below the preview of a CHRG route.
 static void Char_ChrgViewNote(void)
 {
+    wchar_t text[160];
     if (!g_char.viewNote)
         return;
     g_char.viewPartCount = 0;
     g_char.viewFirst = -1;
     if (g_char.previewClassic) {
-        Char_ViewNotePart(g_char.classicPv ? L"The classic fallback: the game draws it wherever the hi-res driver is not drawn."
-                                           : L"No classic fallback yet - see the messages of the step Model.");
+        swprintf(text, 160, L"The classic fallback: the game draws it wherever the %ls model is not drawn.", Char_ChrgTitle());
+        Char_ViewNotePart(g_char.classicPv ? text : L"No classic fallback yet - see the messages of the step Model.");
         Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
         Char_ViewNotePart(CHAR_VIEW_SHADE_TEXT);
     } else {
-        Char_ViewNotePart(!g_char.hires.read ? L"Nothing to draw - see the messages of the step Model."
-                          : g_char.hires.animReady && g_char.hires.clips > 0
-                              ? L"The hi-res model as the game draws it, with its textures - its idle animation plays."
-                              : L"The hi-res model as the game draws it, with its textures. It has no animations: it stands still.");
+        swprintf(text, 160,
+                 g_char.hires.animReady && g_char.hires.clips > 0
+                     ? L"The %ls model as the game draws it, with its textures - its idle animation plays."
+                     : L"The %ls model as the game draws it, with its textures. It has no animations: it stands still.",
+                 Char_ChrgTitle());
+        Char_ViewNotePart(!g_char.hires.read ? L"Nothing to draw - see the messages of the step Model." : text);
         Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
     }
     Char_ViewNoteShow(RS_COL_MUTED);
@@ -6298,7 +6326,7 @@ static void Char_HiresTick(HWND page)
     RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
 }
 
-// The switch Hi-Res | Classic fallback above the preview.
+// The switch Low-Poly/Hi-Res | Classic fallback above the preview.
 static void Char_PreviewSwitch(HWND page, int classic)
 {
     int i;
@@ -7399,6 +7427,7 @@ static void Char_ChainDone(HWND page, int exitCode)
 {
     const wchar_t *args[RS_HIRES_PACK_ARGS > RS_HIRES_UPSCALE_ARGS ? RS_HIRES_PACK_ARGS : RS_HIRES_UPSCALE_ARGS];
     const wchar_t *model = g_char.chainPng ? g_char.chainPngPath : g_char.chainModel;   // the model after hires-png
+    wchar_t what[64];
     int n, step = g_char.chainStep;
 
     if (step == CHAR_CHAIN_CLASSIC) {
@@ -7441,7 +7470,8 @@ static void Char_ChainDone(HWND page, int exitCode)
             return;
         }
         n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : model, g_char.chainOut, g_char.chainVcol, args);
-        if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, L"Packing the hi-res model..."))
+        swprintf(what, 64, L"Packing the %ls model...", Char_ChrgTitle());
+        if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, what))
             return;
         Char_ChainFailed(page, L"Packing", -1);
         return;
@@ -8280,6 +8310,8 @@ static void Char_RouteTexts(void)
                                       : L"A glTF (.glb, recommended), OBJ or PLY of driver, steering wheel and kart"));
     swprintf(label, 96, L"Building: %ls", p ? p->title : L"-");
     Rs_SetText(g_char.routeLabel, label);
+    Rs_SetText(g_char.previewSwitch[0], Char_PreviewText(0));
+    Char_PreviewTip();
 }
 
 // The route chosen (a card, the automation verb "route"): the steps of that
@@ -8463,7 +8495,8 @@ static void Char_ReportFlow(FILE *f)
     if (p)
         Char_Put(f, L"preset: chrg %d, triangle target %llu, texture edge target %u", p->chrg, p->triangleTarget, p->textureEdgeTarget);
     Char_Put(f, L"details: %ls", g_char.showRaw ? L"shown" : L"hidden");
-    Char_Put(f, L"preview: %ls", !Char_Chrg() ? L"classic (Vanilla)" : g_char.previewClassic ? L"classic fallback" : L"hi-res");
+    Char_Put(f, L"preview: %ls", !Char_Chrg() ? L"classic (Vanilla)" : g_char.previewClassic ? L"classic fallback"
+             : g_char.route == RS_ROUTE_LOWPOLY ? L"low-poly" : L"hi-res");
     Char_Put(f, L"preview stage: %ls", RsView_GetStage(g_char.view) ? L"neutral" : L"the view's own");
     if (Char_Chrg()) {
         static const wchar_t *const whyWords[] = { L"no COLOR_0", L"PS1-like", L"white is neutral", L"not decidable - the route's" };
@@ -9855,7 +9888,7 @@ static void Char_Create(HWND page)
     Rs_SetTip(g_char.msgs, L"The messages of this step. Click one about a card of Advanced to open it.");
     // THE GUIDED FLOW: step 0 with its three cards, the route in the head of
     // the steps with "Change type", Advanced of the step Model, "Upscale small
-    // textures" (CHRG routes), the switch Hi-Res | Classic fallback.
+    // textures" (CHRG routes), the switch Low-Poly/Hi-Res | Classic fallback.
     g_char.route = RS_ROUTE_NONE;
     g_char.choosing = 1;
     g_char.routeAsk = Rs_Label(page, CHAR_ID_ROUTE_ASK, L"What do you want to build?", RS_FONT_SECTION);
@@ -9921,9 +9954,8 @@ static void Char_Create(HWND page)
     g_char.vcolMode = g_char.vcolSuggested = -1;
     g_char.chainVcol = -1;
     for (i = 0; i < 2; i++)
-        g_char.previewSwitch[i] = Char_TabButton(page, CHAR_ID_PREVIEW_SWITCH + i, g_charPreviewTexts[i], RS_FONT_SECTION);
-    Rs_SetTip(g_char.previewSwitch[1], L"The classic model made from the same file: the game draws it wherever the hi-res driver "
-                                       L"is not drawn.");
+        g_char.previewSwitch[i] = Char_TabButton(page, CHAR_ID_PREVIEW_SWITCH + i, Char_PreviewText(i), RS_FONT_SECTION);
+    Char_PreviewTip();
     // Advanced: its switch, the card Import, then the cards of the preview
     // features.
     for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
@@ -10696,7 +10728,7 @@ static void Char_LayAdvSwitch(const RECT *card)
 
 // The card "Preview" from top to bottom: the 3D view as tall as the card
 // allows. The pose choice is in the title line of the card; a CHRG route has
-// the switch Hi-Res | Classic fallback there (the pose then only for the
+// the switch Low-Poly/Hi-Res | Classic fallback there (the pose then only for the
 // classic fallback).
 static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
 {
@@ -10717,7 +10749,7 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
         width = in.right - in.left;
         poseW = Rs_Px(150) < width ? Rs_Px(150) : width;
         for (i = 0, x = in.left; i < 2; i++) {
-            int bw = Char_TextWidth(g_char.previewSwitch[i], g_charPreviewTexts[i]) + Rs_Px(16);
+            int bw = Char_TextWidth(g_char.previewSwitch[i], Char_PreviewText(i)) + Rs_Px(16);
             MoveWindow(g_char.previewSwitch[i], x, in.top - Rs_Px(4), bw, Rs_Px(32), TRUE);
             x += bw + Rs_Px(2);
         }
@@ -10739,7 +10771,7 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     for (i = 0, x = card.left + Rs_Px(10); i < 2; i++) {
-        int bw = Char_TextWidth(g_char.previewSwitch[i], g_charPreviewTexts[i]) + Rs_Px(20);
+        int bw = Char_TextWidth(g_char.previewSwitch[i], Char_PreviewText(i)) + Rs_Px(20);
         MoveWindow(g_char.previewSwitch[i], x, card.top + Rs_Px(8), bw, Rs_Px(36), TRUE);
         x += bw + Rs_Px(4);
     }
@@ -11643,7 +11675,7 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         else if (id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES)
             Char_DrawRouteCard(di, id - CHAR_ID_ROUTE);
         else if (id >= CHAR_ID_PREVIEW_SWITCH && id < CHAR_ID_PREVIEW_SWITCH + 2)
-            Char_DrawSwitch(di, g_charPreviewTexts[id - CHAR_ID_PREVIEW_SWITCH], (id - CHAR_ID_PREVIEW_SWITCH) == g_char.previewClassic);
+            Char_DrawSwitch(di, Char_PreviewText(id - CHAR_ID_PREVIEW_SWITCH), (id - CHAR_ID_PREVIEW_SWITCH) == g_char.previewClassic);
         else if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
             Char_DrawSwitch(di, g_charExtrasTexts[id - CHAR_ID_EXTRAS], id - CHAR_ID_EXTRAS == g_char.extrasCard);
         else if (id >= CHAR_ID_LOOK_SWITCH && id < CHAR_ID_LOOK_SWITCH + CHAR_LOOK_CARDS)
@@ -11914,20 +11946,21 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         }
         return Char_TestInGame(page) ? RS_AUTO_DONE : RS_AUTO_FAIL;
     }
-    // "preview hires|classic": the switch above the preview of a CHRG route.
+    // "preview hires|lowpoly|classic": the switch above the preview of a CHRG
+    // route (hires and lowpoly both mean its first side, the route's model).
     if (wcscmp(verb, L"preview") == 0) {
         int classic = _wcsicmp(arg, L"classic") == 0;
         if (!Char_Chrg()) {
             Rs_AutoLog(L"  preview: only Low-Poly and Hi-Res have a hi-res picture");
             return RS_AUTO_FAIL;
         }
-        if (!classic && _wcsicmp(arg, L"hires") != 0) {
-            Rs_AutoLog(L"  preview: say hires or classic");
+        if (!classic && _wcsicmp(arg, L"hires") != 0 && _wcsicmp(arg, L"lowpoly") != 0) {
+            Rs_AutoLog(L"  preview: say hires, lowpoly or classic");
             return RS_AUTO_FAIL;
         }
         Char_PreviewSwitch(page, classic);
         UpdateWindow(page);
-        Rs_AutoLog(L"  preview: %ls", g_charPreviewTexts[classic]);
+        Rs_AutoLog(L"  preview: %ls", Char_PreviewText(classic));
         return RS_AUTO_DONE;
     }
     // "vcolor on|off|psx|gltf|auto": the vertex colours of a CHRG route's

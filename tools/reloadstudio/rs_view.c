@@ -2600,10 +2600,21 @@ static void RsView_PoseBox(const struct RsViewPoseData *p, long long box[6])
     }
 }
 
+// The pixels a marker of RsView_Marker covers: its ring and cross reach
+// Rs_Px(5) + 3 pixels from its centre.
+static void RsView_MarkerRect(int x, int y, RECT *out)
+{
+    const int reach = Rs_Px(5) + 3;
+    SetRect(out, x - reach, y - reach, x + reach + 1, y + reach + 1);
+}
+
 // A label centred above the highest projected corner of a box given in 1/16
-// units, turned and moved sideways by off.
+// units, turned and moved sideways by off. Where its text would cover one of
+// the markers in avoid (the exhaust points of the look, RsView_Render), the
+// label goes up above them - the markers stay where they are: they show where
+// the game puts smoke and flames.
 static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const long long *lo, const long long *hi,
-                            long long off, int labelH, const wchar_t *text)
+                            long long off, int labelH, const wchar_t *text, const RECT *avoid, int avoidCount)
 {
     struct RsViewVert c8;
     long long minX = 0, maxX = 0, minY = 0;
@@ -2623,6 +2634,32 @@ static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const
     r.right = r.left + 2 * Rs_Px(80);
     r.bottom = (int)(minY / RS_VIEW_SUB) - Rs_Px(2);
     r.top = r.bottom - labelH;
+    if (avoidCount > 0 && text && text[0]) {
+        RECT calc = { 0, 0, 0, 0 }, textRc, hit;
+        HGDIOBJ oldFont = SelectObject(v->mem, Rs_Font(RS_FONT_SMALL));
+        int tries, half, textH;
+        DrawTextW(v->mem, text, -1, &calc, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(v->mem, oldFont);
+        half = (calc.right - calc.left) / 2 + Rs_Px(2);
+        if (half > (r.right - r.left) / 2)
+            half = (r.right - r.left) / 2;
+        textH = calc.bottom - calc.top;
+        // Each pass moves the label up above the markers its text covers;
+        // one pass more than markers is the most it can take.
+        for (tries = 0; tries <= avoidCount; tries++) {
+            const int cx = (r.left + r.right) / 2;
+            int moved = 0;
+            SetRect(&textRc, cx - half, r.bottom - textH, cx + half, r.bottom);
+            for (k = 0; k < avoidCount; k++)
+                if (IntersectRect(&hit, &textRc, &avoid[k]) && avoid[k].top - Rs_Px(2) < r.bottom) {
+                    r.bottom = avoid[k].top - Rs_Px(2);
+                    moved = 1;
+                }
+            r.top = r.bottom - labelH;
+            if (!moved)
+                break;
+        }
+    }
     RsView_DrawText(v, &r, text, RS_FONT_SMALL, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
 }
 
@@ -2896,6 +2933,10 @@ static void RsView_Render(HWND view, struct RsView *v)
     // preview picture). Nothing of it without a native model.
     LARGE_INTEGER renderStart, nativeStart, nativeEnd, wheelStart, wheelEndT, renderEnd, freq;
     int nativeTimed = 0;
+    // The pixels of the exhaust markers drawn: the label above the model
+    // keeps clear of them (RsView_BoxLabel).
+    RECT marks[4];
+    int markCount = 0;
 
     QueryPerformanceCounter(&renderStart);
     nativeStart = renderStart;
@@ -3088,9 +3129,11 @@ static void RsView_Render(HWND view, struct RsView *v)
             RsView_Project(&s.cam, v->lookPoint[k][0] < 0 ? -RS_VIEW_FLAME_X : RS_VIEW_FLAME_X, RS_VIEW_FLAME_Y,
                            RS_VIEW_FLAME_Z, s.offModel, 1, &c);
             RsView_Marker(v, (int)(c.x >> 4), (int)(c.y >> 4), RS_VIEW_FLAME_RGB, 1);
+            RsView_MarkerRect((int)(c.x >> 4), (int)(c.y >> 4), &marks[markCount++]);
         }
         RsView_Project(&s.cam, v->lookPoint[k][0], v->lookPoint[k][1], v->lookPoint[k][2], s.offModel, 1, &c);
         RsView_Marker(v, (int)(c.x >> 4), (int)(c.y >> 4), rgb, 0);
+        RsView_MarkerRect((int)(c.x >> 4), (int)(c.y >> 4), &marks[markCount++]);
     }
 
     GdiFlush();   // the bits are done; GDI writes the text on top
@@ -3100,7 +3143,7 @@ static void RsView_Render(HWND view, struct RsView *v)
                                   RsView_TenthsSub(RS_VIEW_DRIVER_HEAD_Z0) };
         const long long hi[3] = { RsView_TenthsSub(RS_VIEW_DRIVER_HEAD_X), RsView_TenthsSub(RsView_DriverTop(v)),
                                   RsView_TenthsSub(RS_VIEW_DRIVER_HEAD_Z1) };
-        RsView_BoxLabel(v, &s, lo, hi, s.offDummy, labelH, L"Crash size");
+        RsView_BoxLabel(v, &s, lo, hi, s.offDummy, labelH, L"Crash size", NULL, 0);
     }
     if (v->loaded && v->native.triangles > 0 && !(v->setIndex >= 0 && v->setIndex < v->setCount)) {
         // Above the model: its native box in the pose shown (RsView_Parse),
@@ -3110,13 +3153,14 @@ static void RsView_Render(HWND view, struct RsView *v)
         RsView_BoxLabel(v, &s, nativeBox, nativeBox + 3, s.offModel, labelH,
                         v->modelLabel ? v->modelLabel
                         : native      ? L"Native model"
-                                      : ((v->native.flags & RS_TEX_NATIVE_BLEND) ? L"Classic model (blend material)" : L"Classic model"));
+                                      : ((v->native.flags & RS_TEX_NATIVE_BLEND) ? L"Classic model (blend material)" : L"Classic model"),
+                        marks, markCount);
     } else if (v->loaded && v->modelLabel && !(v->setIndex >= 0 && v->setIndex < v->setCount) && RsView_ShownPose(v)->count > 0) {
         // A model without a native part has no label of its own; the page's
         // label above the box of the pose shown.
         long long box[6];
         RsView_PoseBox(RsView_ShownPose(v), box);
-        RsView_BoxLabel(v, &s, box, box + 3, s.offModel, labelH, v->modelLabel);
+        RsView_BoxLabel(v, &s, box, box + 3, s.offModel, labelH, v->modelLabel, marks, markCount);
     }
     if (!v->loaded) {
         // The dummy alone: the window text above it.
