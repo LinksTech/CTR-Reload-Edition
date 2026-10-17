@@ -202,10 +202,26 @@
 //
 // THE PREVIEW is shown from step 1 on, on every step. Vanilla: the classic
 // model as before. A CHRG route: the picture of the .glb as its check drew it
-// (textured, the engine's filter) with its idle clip playing on the page's
-// timer (RsHires_AnimFrame, as the page Hi-Res plays a clip; in automation
-// its first frame, so that shots are the same every run), and above it the
-// switch "Hi-Res | Classic fallback" (the fallback: make-char --preview).
+// (textured, the engine's filter, the engine's light and the vertex colours
+// in the mode chosen) on the view's neutral stage (RsView_SetStage: grey
+// background and floor, the same in both colour schemes), with its idle clip
+// playing on the page's timer (RsHires_AnimFrame, as the page Hi-Res plays a
+// clip; in automation its first frame, so that shots are the same every run),
+// and above it the switch "Hi-Res | Classic fallback" (the fallback:
+// make-char --preview, drawn as Vanilla's, without the stage).
+//
+// THE VERTEX COLOURS of a CHRG route (rs_charroute.h, include/rldhires_color.inc):
+// a model with COLOR_0 has the switch "Vertex color blending" on its step
+// Model, ON = PSX blend (grey 128 is neutral, as on the PS1), OFF = ignored,
+// and below it one line that says why it is set (RsCharHires_ColourLine);
+// Advanced (card Options) holds all three modes, glTF (white is neutral) the
+// third - the switch then shows neither on nor off. A model without COLOR_0
+// has none of it and the build passes no switch. When a model is checked the
+// mode is the suggestion (RsCharHires_SuggestColours: PS1-like -> PSX, other
+// colours -> glTF, not decidable -> the route's); a mode the author chose
+// stays with that model (CHAR_VCOL_CHOICES models remembered). The mode is
+// the picture's at once (RsHires_SetColourMode), the messages' (HRG-36 a
+// warning in glTF only) and the build's: hires-add --vertex-colors <mode>.
 //
 // Layout: the steps as tabs on the left, the 3D preview always on the right,
 // the bar with Back and Next (and while rldpack runs its progress and Cancel)
@@ -427,6 +443,12 @@
 #define CHAR_ID_TEST_NOTE      214   // what Test in game did, or why not
 #define CHAR_ID_PREVIEW_SWITCH 215   // 215..216: Hi-Res | Classic fallback above the preview (CHRG routes)
 #define CHAR_ID_OUT_NOTE       217   // where the build goes, below the output field
+#define CHAR_ID_VBLEND         218   // "Vertex color blending" on the step Model (a CHRG route, a model with COLOR_0)
+#define CHAR_ID_VBLEND_NOTE    219   // its line: what the mode does and why it is set
+#define CHAR_ID_VMODE_LABEL    220   // Advanced, card Options of a CHRG route: "Vertex colors" PSX | glTF | Off
+#define CHAR_ID_VMODE          221
+#define CHAR_ID_VMODE_HELP     222
+#define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode the author chose, remembered
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): Advanced of the step Model shows them.
 // The card Import (380..399) is the page's own.
@@ -600,6 +622,12 @@ static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Import", 
 // The order of the cards on the switch of Advanced (the IDs keep the order above).
 static const int g_charExtrasOrder[CHAR_EXTRAS_COUNT] = { CHAR_EXTRAS_OPTIONS, CHAR_EXTRAS_IMPORT, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_WHEELS };
 static const wchar_t *const g_charPreviewTexts[2] = { L"Hi-Res", L"Classic fallback" };
+// The list "Vertex colors" of Advanced (a CHRG route): its entries in this
+// order, the mode of each (RS_HIRES_VCOL_*).
+#define CHAR_VMODES 3
+static const int g_charVModeOrder[CHAR_VMODES] = { RS_HIRES_VCOL_PSX, RS_HIRES_VCOL_GLTF, RS_HIRES_VCOL_OFF };
+static const wchar_t *const g_charVModeTexts[CHAR_VMODES] = { L"PSX - grey 128 is neutral (PS1 shading)", L"glTF - white is neutral",
+                                                              L"Off - vertex colours ignored" };
 #define CHAR_NOT_GLB_TEXT L"Low-Poly and Hi-Res need a .glb - export as glTF Binary."
 #define CHAR_NOT_GLB_FIX  L"How to fix: in Blender, File > Export > glTF 2.0, Format \"glTF Binary (.glb)\", then choose that file."
 static const wchar_t *const g_charLookTexts[CHAR_LOOK_CARDS] = { L"Portrait", L"In the race" };
@@ -815,6 +843,16 @@ static struct {
     int routeImageW, routeImageH;   // the size they were made for
     int advOpen;                    // Advanced of the step Model is open
     HWND advanced, upscale, upscaleHelp;
+    // THE VERTEX COLOURS of a CHRG route: the switch and its line, the three
+    // modes in Advanced; the mode (RS_HIRES_VCOL_*) the picture is drawn in
+    // and the build passes, -1 = the model has no COLOR_0 (none of it shown,
+    // no switch passed); the suggestion and its reason (RS_VCOL_WHY_*); 1 =
+    // the mode is the author's choice; the choices per model.
+    HWND vblend, vblendNote, vmodeLabel, vmode, vmodeHelp;
+    int vcolMode, vcolSuggested, vcolWhy, vcolChosen;
+    struct { wchar_t path[CHAR_VAL]; int mode; } vcolChoice[CHAR_VCOL_CHOICES];
+    int vcolChoiceNext;
+    int chainVcol;                  // the mode the running build passes to hires-add, -1 = none
     HWND test, rebuild, testNote, outNote;
     int builtFresh;                 // the last build is of the fields as they are: Test in game is offered
     // A step shows its problems in its head (red, amber) only once it was
@@ -1057,7 +1095,8 @@ static int Char_RouteHides(HWND c)
 {
     int id = GetDlgCtrlID(c);
     if (!Char_Chrg())
-        return c == g_char.upscale || c == g_char.upscaleHelp || id == CHAR_ID_PREVIEW_SWITCH || id == CHAR_ID_PREVIEW_SWITCH + 1;
+        return c == g_char.upscale || c == g_char.upscaleHelp || id == CHAR_ID_PREVIEW_SWITCH || id == CHAR_ID_PREVIEW_SWITCH + 1 ||
+               (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
            id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT || (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) ||
            (id >= CHAR_ID_FALLBACK && id <= CHAR_ID_NATIVE_LINE) || (id >= CHAR_ID_IMPORT_FIRST && id <= CHAR_ID_IMPORT_LAST) ||
@@ -2479,8 +2518,12 @@ static int Char_TabOfId(int id, int *card)
         return CHAR_TAB_MODEL;
     }
     if ((id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE || id == CHAR_ID_UPSCALE ||
-        id == CHAR_ID_UPSCALE_HELP) {
+        id == CHAR_ID_UPSCALE_HELP || (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP)) {
         *card = CHAR_EXTRAS_OPTIONS;
+        return CHAR_TAB_MODEL;
+    }
+    if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE) {
+        *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
     // Reduce to fit (the button, over the limit) is the fix of the model's
@@ -5238,8 +5281,11 @@ static void Char_ApplyPreview(int seq)
     // Hi-Res | Classic fallback (Char_PreviewShow follows in Char_CheckDone).
     if (Char_Chrg())
         Char_ClassicKeep(Rs_FileExists(path) ? path : NULL);
-    // The label above the model: the view's own for Vanilla.
+    // The label above the model: the view's own for Vanilla; the classic
+    // picture without the stage of the hi-res one.
     RsView_SetModelLabel(g_char.view, Char_Chrg() ? L"Classic fallback" : NULL);
+    if (!Char_Chrg())
+        RsView_SetStage(g_char.view, 0);
     if (!Rs_FileExists(path)) {
         RsView_Clear(g_char.view, L"No preview - rldpack could not convert the model.");
         Char_ViewNote(L"No preview - fix the errors in the message list first.", RS_COL_WARNING);
@@ -5777,6 +5823,100 @@ static void Char_HiresForget(void)
     g_char.classicPvBytes = 0;
 }
 
+// THE VERTEX COLOURS: the mode the author chose for a model, -1 = none.
+static int Char_VcolRemembered(const wchar_t *path)
+{
+    int i;
+    for (i = 0; path && path[0] && i < CHAR_VCOL_CHOICES; i++)
+        if (g_char.vcolChoice[i].path[0] && _wcsicmp(g_char.vcolChoice[i].path, path) == 0)
+            return g_char.vcolChoice[i].mode;
+    return -1;
+}
+
+// Remembers a choice (mode -1: forgets it), the oldest of CHAR_VCOL_CHOICES goes.
+static void Char_VcolRemember(const wchar_t *path, int mode)
+{
+    int i;
+    if (!path || !path[0])
+        return;
+    for (i = 0; i < CHAR_VCOL_CHOICES; i++)
+        if (g_char.vcolChoice[i].path[0] && _wcsicmp(g_char.vcolChoice[i].path, path) == 0)
+            break;
+    if (mode < 0) {
+        if (i < CHAR_VCOL_CHOICES)
+            g_char.vcolChoice[i].path[0] = 0;
+        return;
+    }
+    if (i == CHAR_VCOL_CHOICES) {
+        i = g_char.vcolChoiceNext;
+        g_char.vcolChoiceNext = (g_char.vcolChoiceNext + 1) % CHAR_VCOL_CHOICES;
+        Char_Copy(g_char.vcolChoice[i].path, CHAR_VAL, path);
+    }
+    g_char.vcolChoice[i].mode = mode;
+}
+
+// The switch, the list of Advanced and the line as the mode is.
+static void Char_VcolControls(void)
+{
+    wchar_t line[RS_WIZ_TEXT_MAX];
+    int i;
+    if (g_char.vcolMode < 0)
+        return;
+    SendMessageW(g_char.vblend, BM_SETCHECK,
+                 g_char.vcolMode == RS_HIRES_VCOL_PSX ? BST_CHECKED : g_char.vcolMode == RS_HIRES_VCOL_OFF ? BST_UNCHECKED : BST_INDETERMINATE, 0);
+    for (i = 0; i < CHAR_VMODES; i++)
+        if (g_charVModeOrder[i] == g_char.vcolMode)
+            SendMessageW(g_char.vmode, CB_SETCURSEL, (WPARAM)i, 0);
+    RsCharHires_ColourLine(g_char.vcolMode, g_char.vcolSuggested, g_char.vcolWhy, g_char.route, line, RS_WIZ_TEXT_MAX);
+    Rs_SetText(g_char.vblendNote, line);
+}
+
+// After the hi-res check of a CHRG route (a new one or the one kept, also
+// for another route): the suggestion, and the mode - the author's choice for
+// this model, or the suggestion - for the picture and the build.
+static void Char_VcolUpdate(void)
+{
+    const int was = g_char.vcolMode;
+    int why = RS_VCOL_WHY_NONE, s = -1, chosen;
+    if (Char_Chrg() && g_char.hiresChecked && g_char.hires.read)
+        s = RsCharHires_SuggestColours(&g_char.hires, g_char.route, &why);
+    g_char.vcolSuggested = s;
+    g_char.vcolWhy = why;
+    if (s < 0) {
+        g_char.vcolMode = -1;
+        g_char.vcolChosen = 0;
+    } else {
+        chosen = Char_VcolRemembered(g_char.hiresPath);
+        g_char.vcolChosen = chosen >= 0;
+        g_char.vcolMode = chosen >= 0 ? chosen : s;
+        RsHires_SetColourMode(&g_char.hires, g_char.vcolMode);
+        Char_VcolControls();
+    }
+    if ((was < 0) != (g_char.vcolMode < 0) && g_char.view)
+        Char_Relayout(GetParent(g_char.view));
+    if (Rs_Automating() && s >= 0 && was != g_char.vcolMode)
+        Rs_AutoLog(L"  vertex colors: %ls (%ls; suggested %ls)", RsHires_ColourWord(g_char.vcolMode),
+                   g_char.vcolChosen ? L"the author's choice" : L"the suggestion", RsHires_ColourWord(s));
+}
+
+// The author (or the automation) sets a mode: remembered for this model, the
+// picture drawn again at once, the messages anew (the check's result kept:
+// rldpack does not run again). Returns what Char_Check returns.
+static int Char_VcolSet(HWND page, int mode)
+{
+    if (g_char.vcolMode < 0 || !RsHires_ColourWord(mode))
+        return 0;
+    Char_VcolRemember(g_char.hiresPath, mode);
+    g_char.vcolChosen = 1;
+    g_char.vcolMode = mode;
+    g_char.builtFresh = 0;
+    if (RsHires_SetColourMode(&g_char.hires, mode) && g_char.hiresShown && !g_char.previewClassic)
+        Char_HiresShow();
+    Char_VcolControls();
+    Char_Relayout(page);
+    return Char_Check(page);
+}
+
 // The idle clip stops (another step, the classic fallback, a new check).
 static void Char_HiresStop(void)
 {
@@ -5815,6 +5955,8 @@ static void Char_HiresShow(void)
     const struct RsHiresCheck *c = &g_char.hires;
     g_char.hiresShown = 0;
     Char_HiresStop();
+    // The neutral stage: the colours as they look in the game (RsView_SetStage).
+    RsView_SetStage(g_char.view, 1);
     if (!g_char.hiresChecked || !c->read || !c->preview) {
         wchar_t msg[RS_HIRES_TEXT_MAX + 32];
         swprintf(msg, RS_HIRES_TEXT_MAX + 32, L"Nothing to draw: %ls",
@@ -5827,7 +5969,7 @@ static void Char_HiresShow(void)
     RsView_SetModelLabel(g_char.view, g_char.route == RS_ROUTE_LOWPOLY ? L"Low-Poly model" : L"Hi-Res model");
     RsView_LoadPreviewData(g_char.view, c->preview, c->previewBytes);
     RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
-    RsView_SetWheels(g_char.view, c->wheels < 4);
+    RsView_SetWheels(g_char.view, 0);   // the picture carries the engine's standard wheels itself
     g_char.hiresShown = 1;
     if (c->animReady && c->clips > 0) {
         // In automation the first frame of idle only, without the timer: the
@@ -5852,6 +5994,7 @@ static void Char_ClassicShow(void)
 {
     g_char.hiresShown = 0;
     Char_HiresStop();
+    RsView_SetStage(g_char.view, 0);
     RsView_SetModelLabel(g_char.view, L"Classic fallback");
     if (g_char.classicPv && RsView_LoadPreviewData(g_char.view, g_char.classicPv, g_char.classicPvBytes)) {
         RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
@@ -6765,6 +6908,7 @@ static int Char_CheckRun(HWND page, int force)
         }
         if (model[0])
             Char_HiresEnsure(model);
+        Char_VcolUpdate();      // the suggestion and the mode (also for another route)
     }
     seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
@@ -6917,6 +7061,7 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
     Char_Copy(g_char.chainOut, CHAR_VAL, path);
     Char_FieldPath(g_char.model, g_char.chainModel, CHAR_VAL);
     g_char.chainUpscale = Char_IsChecked(g_char.upscale);
+    g_char.chainVcol = g_char.vcolMode;       // -1: the model has no COLOR_0, no switch
     g_char.chainDerived[0] = 0;
     // The upscaled model beside a temp "output" of the same name: in Rs_TempDir.
     Rs_PathJoin(beside, CHAR_VAL, dir, Rs_PathName(path));
@@ -7005,7 +7150,8 @@ static void Char_ChainDone(HWND page, int exitCode)
             Char_ChainFailed(page, L"Upscaling", exitCode);
             return;
         }
-        n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : g_char.chainModel, g_char.chainOut, args);
+        n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : g_char.chainModel, g_char.chainOut,
+                             g_char.chainVcol, args);
         if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, L"Packing the hi-res model..."))
             return;
         Char_ChainFailed(page, L"Packing", -1);
@@ -7873,6 +8019,8 @@ static int Char_SetRoute(HWND page, int route)
     }
     g_char.route = route;
     Char_HiresStop();           // the idle clip of the route before
+    if (!Char_Chrg())
+        RsView_SetStage(g_char.view, 0);
     g_char.hiresShown = 0;
     g_char.advOpen = 0;
     Rs_SetText(g_char.advanced, L"Advanced options");
@@ -7981,6 +8129,17 @@ static void Char_ReportFlow(FILE *f)
         Char_Put(f, L"preset: chrg %d, triangle target %llu, texture edge target %u", p->chrg, p->triangleTarget, p->textureEdgeTarget);
     Char_Put(f, L"details: %ls", g_char.showRaw ? L"shown" : L"hidden");
     Char_Put(f, L"preview: %ls", !Char_Chrg() ? L"classic (Vanilla)" : g_char.previewClassic ? L"classic fallback" : L"hi-res");
+    Char_Put(f, L"preview stage: %ls", RsView_GetStage(g_char.view) ? L"neutral" : L"the view's own");
+    if (Char_Chrg()) {
+        static const wchar_t *const whyWords[] = { L"no COLOR_0", L"PS1-like", L"white is neutral", L"not decidable - the route's" };
+        if (g_char.vcolMode < 0)
+            Char_Put(f, L"vertex colors: none (the model has no COLOR_0: no switch, hires-add without --vertex-colors)");
+        else
+            Char_Put(f, L"vertex colors: %ls (%ls), suggested %ls (%ls, median %d), switch %ls", RsHires_ColourWord(g_char.vcolMode),
+                     g_char.vcolChosen ? L"chosen by the author" : L"suggested", RsHires_ColourWord(g_char.vcolSuggested),
+                     g_char.vcolWhy >= 0 && g_char.vcolWhy <= 3 ? whyWords[g_char.vcolWhy] : L"?", g_char.hires.vcolMedian,
+                     g_char.vcolMode == RS_HIRES_VCOL_PSX ? L"on" : g_char.vcolMode == RS_HIRES_VCOL_OFF ? L"off" : L"glTF (Advanced)");
+    }
     if (Char_Chrg()) {
         if (g_char.hiresChecked && g_char.hires.read)
             Char_Put(f, L"hires check: %ls, %llu triangles (budget %llu), texture edge %u (budget %u), %d of %d clips, %d wheel nodes, "
@@ -8003,7 +8162,9 @@ static void Char_ReportFlow(FILE *f)
             continue;
         isPrimary = GetPropW(c, L"RsPrimary") != NULL;
         if (_wcsicmp(cls, L"Button") == 0)
-            kind = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX ? L"tick box" : isPrimary ? L"primary button" : L"button";
+            kind = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX || type == BS_3STATE || type == BS_AUTO3STATE ? L"tick box"
+                   : isPrimary                                                                                    ? L"primary button"
+                                                                                                                  : L"button";
         else if (_wcsicmp(cls, L"Edit") == 0)
             kind = L"field";
         else if (_wcsicmp(cls, L"ComboBox") == 0)
@@ -9379,6 +9540,27 @@ static void Char_Create(HWND page)
                                   L"game's smooth filter. The model file itself is not changed.",
                                   RS_FONT_SMALL);
     Rs_SetTextColor(g_char.upscaleHelp, RS_COL_MUTED);
+    // THE VERTEX COLOURS: the switch is a three-state box (the third state
+    // glTF, chosen in Advanced); the page sets its state itself.
+    g_char.vblend = Rs_Check(page, CHAR_ID_VBLEND, L"Vertex color blending");
+    SetWindowLongPtrW(g_char.vblend, GWL_STYLE, (GetWindowLongPtrW(g_char.vblend, GWL_STYLE) & ~(LONG_PTR)BS_TYPEMASK) | BS_3STATE);
+    Rs_SetTip(g_char.vblend, L"On: the vertex colours shade the textures as on the PS1 - grey 128 shows the texture unchanged, "
+                             L"darker shades it, lighter brightens it. Off: the vertex colours are ignored. A third way, glTF "
+                             L"(white is neutral), is under Advanced.");
+    g_char.vblendNote = Rs_Label(page, CHAR_ID_VBLEND_NOTE, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.vblendNote, RS_COL_MUTED);
+    g_char.vmodeLabel = Rs_Label(page, CHAR_ID_VMODE_LABEL, L"Vertex colors", RS_FONT_BOLD);
+    g_char.vmode = Rs_Combo(page, CHAR_ID_VMODE);
+    for (i = 0; i < CHAR_VMODES; i++)
+        SendMessageW(g_char.vmode, CB_ADDSTRING, 0, (LPARAM)g_charVModeTexts[i]);
+    SendMessageW(g_char.vmode, CB_SETCURSEL, 0, 0);
+    g_char.vmodeHelp = Rs_Label(page, CHAR_ID_VMODE_HELP,
+                                L"How the vertex colours meet the textures. PSX: as on the PS1, grey 128 is neutral. glTF: as the "
+                                L"glTF standard says, white is neutral and the colour multiplies. Off: they are ignored.",
+                                RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.vmodeHelp, RS_COL_MUTED);
+    g_char.vcolMode = g_char.vcolSuggested = -1;
+    g_char.chainVcol = -1;
     for (i = 0; i < 2; i++)
         g_char.previewSwitch[i] = Char_TabButton(page, CHAR_ID_PREVIEW_SWITCH + i, g_charPreviewTexts[i], RS_FONT_SECTION);
     Rs_SetTip(g_char.previewSwitch[1], L"The classic model made from the same file: the game draws it wherever the hi-res driver "
@@ -9595,6 +9777,15 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         infoH = Rs_Px(18);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH, TRUE);
     y += infoH + Rs_Px(g_char.compact ? 4 : 8);
+    // A CHRG route, a model with COLOR_0: "Vertex color blending" and its line.
+    if (chrg && g_char.vcolMode >= 0) {
+        int bw = Char_CheckWidth(g_char.vblend);
+        MoveWindow(g_char.vblend, x, y, bw < fieldW ? bw : fieldW, Rs_Px(24), TRUE);
+        y += Rs_Px(26);
+        noteH = Char_NoteHeight(g_char.vblendNote, fieldW);
+        MoveWindow(g_char.vblendNote, x, y, fieldW, noteH, TRUE);
+        y += noteH + Rs_Px(g_char.compact ? 2 : 6);
+    }
     if (!chrg) {
         // An OBJ (or a model not named .ply): the line of what was read right
         // below, then the list of its MTL, textures and groups over the width
@@ -9723,7 +9914,22 @@ static int Char_LayOptions(const RECT *in)
         y += Rs_Px(28);
         noteH = Char_TextHeight(g_char.upscaleHelp, w, CHAR_NOTE_LINES);
         MoveWindow(g_char.upscaleHelp, x, y, w, noteH, TRUE);
-        return y + noteH;
+        y += noteH;
+        // A model with COLOR_0: the three vertex colour modes.
+        if (g_char.vcolMode >= 0) {
+            int lw = Char_TextWidth(g_char.vmodeLabel, L"Vertex colors") + Rs_Px(12);
+            int cw = Char_ComboTextWidth(g_char.vmode) + Rs_Px(28);
+            if (lw + cw > w)
+                cw = w - lw;
+            y += Rs_Px(14);
+            MoveWindow(g_char.vmodeLabel, x, y + Rs_Px(4), lw, Rs_Px(20), TRUE);
+            MoveWindow(g_char.vmode, x + lw, y, cw, Rs_Px(300), TRUE);
+            y += Rs_Px(32);
+            noteH = Char_TextHeight(g_char.vmodeHelp, w, CHAR_NOTE_LINES);
+            MoveWindow(g_char.vmodeHelp, x, y, w, noteH, TRUE);
+            y += noteH;
+        }
+        return y;
     }
     cx = x;
     for (i = 0; i < 4; i++) {
@@ -10294,6 +10500,8 @@ static int Char_Wanted(HWND c)
             return g_char.filesOn && g_char.filesLeast > 0;
         if (c == g_char.vcolorsLabel || c == g_char.vcolors || c == g_char.vcolorsHelp)
             return g_char.objOn;
+        if (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP)
+            return g_char.vcolMode >= 0;
         if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse || c == g_char.texturesClear)
             return g_char.texturesOn;
         return 1;
@@ -10657,6 +10865,18 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED) {
             g_char.builtFresh = 0;
             Char_UpdateButtons();
+        }
+        break;
+    case CHAR_ID_VBLEND:
+        // On (PSX) <-> off; from glTF (Advanced) a click turns it on.
+        if (code == BN_CLICKED && g_char.vcolMode >= 0)
+            Char_VcolSet(page, g_char.vcolMode == RS_HIRES_VCOL_PSX ? RS_HIRES_VCOL_OFF : RS_HIRES_VCOL_PSX);
+        break;
+    case CHAR_ID_VMODE:
+        if (code == CBN_SELCHANGE && g_char.vcolMode >= 0) {
+            LRESULT sel = SendMessageW(g_char.vmode, CB_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < CHAR_VMODES)
+                Char_VcolSet(page, g_charVModeOrder[sel]);
         }
         break;
     case CHAR_ID_TEST:
@@ -11246,6 +11466,34 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         UpdateWindow(page);
         Rs_AutoLog(L"  preview: %ls", g_charPreviewTexts[classic]);
         return RS_AUTO_DONE;
+    }
+    // "vcolor on|off|psx|gltf|auto": the vertex colours of a CHRG route's
+    // model - on and off as the switch "Vertex color blending" (on = psx),
+    // psx, gltf and off as the list of Advanced, auto: the author's choice
+    // forgotten, the suggestion again. FAIL without a model with COLOR_0.
+    if (wcscmp(verb, L"vcolor") == 0) {
+        int mode = _wcsicmp(arg, L"on") == 0 ? RS_HIRES_VCOL_PSX : RsHires_ColourModeOf(arg);
+        if (!Char_Chrg() || g_char.vcolMode < 0) {
+            Rs_AutoLog(L"  vcolor: only a Low-Poly or Hi-Res model with vertex colours (COLOR_0) has the switch");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"auto") == 0) {
+            Char_VcolRemember(g_char.hiresPath, -1);
+            mode = g_char.vcolSuggested;
+        } else if (mode < 0) {
+            Rs_AutoLog(L"  vcolor: say on, off, psx, gltf or auto");
+            return RS_AUTO_FAIL;
+        }
+        r = Char_VcolSet(page, mode);
+        if (_wcsicmp(arg, L"auto") == 0) {
+            Char_VcolRemember(g_char.hiresPath, -1);
+            g_char.vcolChosen = 0;
+            Char_VcolControls();
+        }
+        UpdateWindow(page);
+        Rs_AutoLog(L"  vcolor: %ls (%ls; suggested %ls)", RsHires_ColourWord(g_char.vcolMode),
+                   g_char.vcolChosen ? L"the author's choice" : L"the suggestion", RsHires_ColourWord(g_char.vcolSuggested));
+        return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"tab") == 0)
         return Char_AutoTab(page, arg);

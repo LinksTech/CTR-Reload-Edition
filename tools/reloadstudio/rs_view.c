@@ -342,6 +342,7 @@ struct RsView {
     wchar_t modelKey[RS_VIEW_MESSAGE_CAP];
     // The display toggles (RsView_SetBackground and the rest).
     int light;
+    int stage;                   // RsView_SetStage: the neutral stage of the hi-res preview, 0 = off
     int crashRef;
     int showShadow, showExhaust;
     int showNative;
@@ -469,6 +470,7 @@ struct RsViewVert {
     int z;
     int r, g, b;
     int a;                      // corner alpha (the native model and the wheels: C of rs_tex.h)
+    int l;                      // the corner light of a LIT material (rs_tex.h, the hi-res preview)
     long long u, v;             // texture coordinates, Q16 (only the native model's)
 };
 
@@ -1496,10 +1498,14 @@ static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert
     const long long agz = (long long)a->g * a->z, bgz = (long long)b->g * b->z, cgz = (long long)c->g * c->z;
     const long long abz = (long long)a->b * a->z, bbz = (long long)b->b * b->z, cbz = (long long)c->b * c->z;
     const long long aaz = (long long)a->a * a->z, baz = (long long)b->a * b->z, caz = (long long)c->a * c->z;
+    // A LIT material (the hi-res preview, rs_tex.h): the corner light is
+    // interpolated as C is; any other material does not read it.
+    const int lit = m && m->lit;
+    const long long alz = lit ? (long long)a->l * a->z : 0, blz = lit ? (long long)b->l * b->z : 0, clz = lit ? (long long)c->l * c->z : 0;
     // One colour on all three corners (always without COL0, and every
     // wheel): the perspective mean is that colour, no division needed.
     const int flat = a->r == b->r && a->r == c->r && a->g == b->g && a->g == c->g && a->b == b->b && a->b == c->b &&
-                     a->a == b->a && a->a == c->a;
+                     a->a == b->a && a->a == c->a && (!lit || (a->l == b->l && a->l == c->l));
     struct RsViewEdges e;
     struct RsViewQuot dz, dw0, dw1, dw2, rq[4], sq[4];
     long long px, py, area;
@@ -1537,7 +1543,7 @@ static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert
                     const long long zs = w0 * a->z + w1 * b->z + w2 * c->z;
                     const unsigned char *texel = NULL;
                     unsigned char filtered[4];
-                    int cr = a->r, cg = a->g, cb = a->b, ca = a->a, out;
+                    int cr = a->r, cg = a->g, cb = a->b, ca = a->a, cl = lit ? a->l : 0, out;
                     if (zs > 0) {
                         if (img) {
                             const long long uq = (w0 * auz + w1 * buz + w2 * cuz) / zs;
@@ -1555,6 +1561,8 @@ static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert
                             cg = (int)((w0 * agz + w1 * bgz + w2 * cgz + half) / zs);
                             cb = (int)((w0 * abz + w1 * bbz + w2 * cbz + half) / zs);
                             ca = (int)((w0 * aaz + w1 * baz + w2 * caz + half) / zs);
+                            if (lit)
+                                cl = (int)((w0 * alz + w1 * blz + w2 * clz + half) / zs);
                         }
                     } else if (img) {
                         if (filter) {
@@ -1564,7 +1572,7 @@ static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert
                             texel = RsTex_Texel(img, level, a->u, a->v);
                         }
                     }
-                    out = RsTex_Shade(texel, cr, cg, cb, ca, m);
+                    out = lit ? RsTex_ShadeLit(texel, cr, cg, cb, ca, cl, m) : RsTex_Shade(texel, cr, cg, cb, ca, m);
                     if (out != RS_TEX_DISCARD) {
                         dep[px] = z;
                         pix[px] = (unsigned int)out;
@@ -2343,6 +2351,7 @@ static void RsView_GenNative(const struct RsViewGen *g, int first, int end)
             vert[c].g = k.g;
             vert[c].b = k.b;
             vert[c].a = k.a;
+            vert[c].l = k.l;
         }
         RsView_TriPrep(&g->tris[g->first + tri], &g->rows[2 * (g->first + tri)], vert, 1, RS_VIEW_TRI_TEX, g->maskMode,
                        RsTex_NativeImage(nm, m), &nm->mat[m]);
@@ -2508,6 +2517,39 @@ static const COLORREF s_rsViewBarEdge[2] = { RGB(84, 90, 98), RGB(160, 166, 174)
 static const COLORREF s_rsViewBarText[2] = { RGB(214, 218, 224), RGB(40, 44, 50) };
 #define RS_VIEW_FLAME_RGB 0xFF8C1Au                     // the turbo flame markers
 
+// The neutral stage (RsView_SetStage), the same in both colour schemes of the
+// shell: the author judges the colours of a hi-res model here, so nothing of
+// the stage may tint them. It has a dark and a light form, chosen like the
+// view's own background (RsView_SetBackground, automation "view-bg"; dark at
+// the start): both are neutral, and every pixel of background and floor
+// differs between them while the model stays the same - a dark and a light
+// picture of one camera tell the model's pixels from the stage's (the
+// brightness measurement of the Studio's preview masks the model so). The
+// numbers below are the dark form; the light form is a lighter background
+// (0xAEAEAE to 0xBEBEBE), a lighter floor (0xDCDCDC) and near black text,
+// RGB(24, 24, 24): 9.6:1 against the lightest row. Background and floor are pure greys (R = G = B), the
+// background with a soft vertical falloff from the top row to the bottom row
+// (DIB pixels 0x00RRGGBB, integer steps per row). Mid grey around sRGB 0.45 is
+// the usual neutral for judging colour; the floor is lighter than the whole
+// background so that the kart stands out from it and the ground reads. The
+// text drawn into the picture (labels, the centred message) is near white:
+// its WCAG contrast is 5.79:1 against the top row 0x5E5E5E and 4.56:1
+// against the bottom row 0x6E6E6E (the lightest row, so the worst case). The
+// first idea for the bottom row, 0x7A7A7A, gave only 3.83:1 and was lowered
+// until the contrast reached at least 4.5:1.
+static const unsigned int s_rsViewStageBgTop[2] = { 0x5E5E5Eu, 0xAEAEAEu };
+static const unsigned int s_rsViewStageBgBottom[2] = { 0x6E6E6Eu, 0xBEBEBEu };
+static const unsigned int s_rsViewStageFloor[2] = { 0xA6A6A6u, 0xDCDCDCu };
+static const COLORREF s_rsViewStageText[2] = { RGB(242, 242, 242), RGB(24, 24, 24) };
+
+// The colour of the text drawn into the picture: the theme's own, or the
+// stage's near white while the stage is on. (The bar of the view keeps the
+// theme's colours, s_rsViewBar*, and does not use this.)
+static COLORREF RsView_TextColour(const struct RsView *v)
+{
+    return v->stage ? s_rsViewStageText[v->light ? 1 : 0] : s_rsViewText[v->light ? 1 : 0];
+}
+
 static void RsView_DrawText(struct RsView *v, const RECT *rc, const wchar_t *text, int font, UINT format)
 {
     HGDIOBJ oldFont;
@@ -2515,7 +2557,7 @@ static void RsView_DrawText(struct RsView *v, const RECT *rc, const wchar_t *tex
     if (!text || !*text)
         return;
     SetBkMode(v->mem, TRANSPARENT);
-    SetTextColor(v->mem, s_rsViewText[v->light ? 1 : 0]);
+    SetTextColor(v->mem, RsView_TextColour(v));
     oldFont = SelectObject(v->mem, Rs_Font(font));
     DrawTextW(v->mem, text, -1, &r, format | DT_NOPREFIX);
     SelectObject(v->mem, oldFont);
@@ -2836,7 +2878,7 @@ static void RsView_Render(HWND view, struct RsView *v)
     struct RsViewScene s;
     struct RsViewGen g;
     const unsigned int bg = s_rsViewBg[v->light ? 1 : 0];
-    const unsigned int floorRgb = s_rsViewFloor[v->light ? 1 : 0];
+    const unsigned int floorRgb = v->stage ? s_rsViewStageFloor[v->light ? 1 : 0] : s_rsViewFloor[v->light ? 1 : 0];
     const int labelH = Rs_Px(20);
     // Room at the top: the label above the dummy, and the window text while
     // the dummy stands alone.
@@ -2859,8 +2901,27 @@ static void RsView_Render(HWND view, struct RsView *v)
     nativeStart = renderStart;
     nativeEnd = renderStart;
     GdiFlush();   // GDI must be done with the DIB before its bits are written
-    for (i = 0; i < n; i++)
-        v->pixels[i] = bg;
+    if (v->stage) {
+        // The neutral stage: row y gets, per channel, top + (bottom - top) * y / (h - 1)
+        // (integers only; a view of one row gets the top colour).
+        int y, x;
+        for (y = 0; y < v->h; y++) {
+            unsigned int row = 0;
+            int ch;
+            for (ch = 0; ch < 3; ch++) {
+                const int sh = 8 * ch;
+                const int top = (int)((s_rsViewStageBgTop[v->light ? 1 : 0] >> sh) & 0xFF);
+                const int bottom = (int)((s_rsViewStageBgBottom[v->light ? 1 : 0] >> sh) & 0xFF);
+                const int c = v->h <= 1 ? top : top + (bottom - top) * y / (v->h - 1);
+                row |= (unsigned int)c << sh;
+            }
+            for (x = 0; x < v->w; x++)
+                v->pixels[(size_t)y * (size_t)v->w + (size_t)x] = row;
+        }
+    } else {
+        for (i = 0; i < n; i++)
+            v->pixels[i] = bg;
+    }
     memset(v->depth, 0, n * sizeof(int));   // depth 0 = infinitely far
     memset(v->mask, 0, n);
     v->dirty = 0;
@@ -3021,7 +3082,7 @@ static void RsView_Render(HWND view, struct RsView *v)
     // game puts smoke and flames on them.
     for (k = 0; v->loaded && v->showExhaust && k < v->lookCount && k < 2; k++) {
         struct RsViewVert c;
-        const unsigned int rgb = v->lookGrey ? RsView_Pixel(s_rsViewText[v->light ? 1 : 0])
+        const unsigned int rgb = v->lookGrey ? RsView_Pixel(RsView_TextColour(v))
                                              : RsView_Pixel(k == 0 ? RS_COL_ACCENT : RS_COL_NOTE);
         if (v->lookGrey) {
             RsView_Project(&s.cam, v->lookPoint[k][0] < 0 ? -RS_VIEW_FLAME_X : RS_VIEW_FLAME_X, RS_VIEW_FLAME_Y,
@@ -4763,6 +4824,23 @@ void RsView_SetBackground(HWND view, int light)
         return;
     v->light = light != 0;
     RsView_Changed(view, v);
+}
+
+// The neutral stage: same pattern as RsView_SetBackground; the background
+// choice itself stays untouched and applies again when the stage goes off.
+void RsView_SetStage(HWND view, int on)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v || v->stage == (on != 0))
+        return;
+    v->stage = on != 0;
+    RsView_Changed(view, v);
+}
+
+int RsView_GetStage(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    return v ? v->stage : 0;
 }
 
 // The framing changes with it (the model alone or beside the dummy).

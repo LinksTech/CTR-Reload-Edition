@@ -40,6 +40,19 @@
 //   middles from inst->scale, steer from wheelRotation, roll integrated per
 //   logic tick from speedApprox, wobble from hazardTimer) - the file's wheel
 //   nodes when all four are there, else standard 3D wheels made in code.
+//   VERTEX COLOURS (round of 2026-10-17, decision 11b): the mode in the CHRG
+//   flags (include/rldhires_color.inc) decides what EngineVertex.color holds.
+//   glTF and off: the linear factor x 255, as before (off = 255, white).
+//   PSX blend: the PS1 byte itself (factor 1 = 128); a material of a textured
+//   primitive in PSX blend adds ENG_HC_PSX_BLEND to its programParam[0], and
+//   "ns" then reads the vertex colour as byte / 128 on the display curve and
+//   clamps texel x colour x tint to 1 (platform/engine_static_shader.inc).
+//   A FILE IN PSX BLEND IS DRAWN UNLIT, as the PS1 draws a driver: its shading
+//   is baked into COLOR_0 (the classic custom driver is vertex colour x the
+//   depth cue tint only), so a second light would make it brighter than the
+//   classic model. Every material of such a file - the default one and the
+//   standard wheels' too - draws with shading 2 (unlit). A file in glTF mode
+//   (every CHRG before the mode) or off draws lit, exactly as before.
 
 int g_cfg_engineHiresChars = 0;
 int g_cfg_engineHiresCharsLog = 0;
@@ -85,6 +98,10 @@ int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 #define ENG_HC_STD_HALF_WIDTH 5.0f
 #define ENG_HC_STD_VERTICES (ENG_HC_STD_SEGMENTS * 4 + 2) // tread 2 rings, two side rings, two hubs
 #define ENG_HC_STD_INDICES (ENG_HC_STD_SEGMENTS * 12)
+// The standard wheel's greys on screen (display values 0..255).
+#define ENG_HC_STD_GREY_TREAD 38
+#define ENG_HC_STD_GREY_SIDE 112
+#define ENG_HC_STD_GREY_HUB 170
 // The slots: the API's (seats, forced submits) and one of the engine's own,
 // the driver select preview (EngHc_SelectRoute).
 #define ENG_HC_SLOT_SELECT ENGINE_HIRES_SLOTS
@@ -92,6 +109,9 @@ int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 #define ENG_HC_GRAVE_MAX 64
 #define ENG_HC_TWO_PI 6.283185307179586
 #define ENG_HC_ANGLE (ENG_HC_TWO_PI / 4096.0) // one game angle unit
+// Added to a material's programParam[0] (0 lit, 1 normal map, 2 unlit) when
+// its vertex colours are PSX blend: "ns" reads it (engine_static_shader.inc).
+#define ENG_HC_PSX_BLEND 4.0f
 
 typedef struct
 {
@@ -113,6 +133,8 @@ typedef struct
 	int doubleSided;
 	int unlit;
 	float normalScale;
+	int psxBlend; // 1 = PSX blend: textured in a file of mode PSX (ENG_HC_PSX_BLEND)
+	int psxFile;  // 1 = the file's mode is PSX blend: drawn unlit, as the PS1 draws a driver
 } EngHcMat;
 
 typedef struct
@@ -149,6 +171,7 @@ typedef struct
 	u32 *rigidNode;
 	u32 wheelFirst;
 	u32 paletteCount;
+	int vcolMode; // the vertex colour mode of the file (RLDHIRES_VCOL_*, from the CHRG flags)
 	int ownWheels;
 	int wheelNode[4];
 	float wheelRadius[4];  // model units at the node's rest scale (before the wheel size)
@@ -421,7 +444,15 @@ internal void EngHc_StdWheel(EngHcSrc *src, EngineVertex *base, u32 *indices, u3
 		EngHcSrc *e = &src[v];
 		EngineVertex *b = &base[v];
 		const int tread = (v < (u32)(ENG_HC_STD_SEGMENTS * 4)) && ((v & 1u) == 0u);
-		const u8 grey = tread ? 38 : ((v >= (u32)(ENG_HC_STD_SEGMENTS * 4)) ? 170 : 112);
+		// The greys as they are meant on screen (display values: a dark tread,
+		// lighter sides and hubs). "ns" puts a glTF vertex colour on the display
+		// curve, so the byte stored is the linear value of that grey (within a
+		// level of it on screen; Reload Studio shows the same greys).
+		const u8 grey = RldHiresColor_VertexByte(RLDHIRES_VCOL_GLTF,
+		                                         RldHiresColor_Decode((float)(tread ? ENG_HC_STD_GREY_TREAD
+		                                                                            : ((v >= (u32)(ENG_HC_STD_SEGMENTS * 4)) ? ENG_HC_STD_GREY_HUB
+		                                                                                                                       : ENG_HC_STD_GREY_SIDE)) /
+		                                                              255.0f));
 
 		e->w[0] = 1.0f;
 		e->w[1] = e->w[2] = e->w[3] = 0.0f;
@@ -457,11 +488,21 @@ internal void EngHc_StdWheel(EngHcSrc *src, EngineVertex *base, u32 *indices, u3
 	}
 }
 
+// 1 = the material has a base colour texture (a primitive without a material
+// has none): the PSX blend's "textured", the same test as HRG-36 and Reload
+// Studio's (RldHiresColor_ModeFor).
+internal int EngHc_MaterialTextured(const cgltf_material *g)
+{
+	return (g != NULL) && (g->pbr_metallic_roughness.base_color_texture.texture != NULL);
+}
+
 // One primitive's vertices into src/base from vertex `first`: positions,
-// normals (none = flat: hasNormal 0), texcoords, colours (linear factors, as
-// glTF COLOR_0), palette entries (skinned: JOINTS_0 / WEIGHTS_0 renormalised;
+// normals (none = flat: hasNormal 0), texcoords, colours (COLOR_0 through
+// include/rldhires_color.inc in the primitive's mode vcolMode - already
+// RldHiresColor_ModeFor; glTF: the linear factors as before; no COLOR_0:
+// factor 1), palette entries (skinned: JOINTS_0 / WEIGHTS_0 renormalised;
 // rigid: the one entry).
-internal void EngHc_ReadPrimitive(const cgltf_primitive *prim, int skinned, u32 entry, EngHcSrc *src, EngineVertex *base, u32 first, u32 count)
+internal void EngHc_ReadPrimitive(const cgltf_primitive *prim, int skinned, u32 entry, int vcolMode, EngHcSrc *src, EngineVertex *base, u32 first, u32 count)
 {
 	const cgltf_accessor *pos = cgltf_find_accessor(prim, cgltf_attribute_type_position, 0);
 	const cgltf_accessor *nrm = cgltf_find_accessor(prim, cgltf_attribute_type_normal, 0);
@@ -477,6 +518,7 @@ internal void EngHc_ReadPrimitive(const cgltf_primitive *prim, int skinned, u32 
 		EngineVertex *b = &base[first + v];
 		float t[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 		float c[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		int hasColour = 0;
 		int k;
 
 		memset(s, 0, sizeof(*s));
@@ -495,12 +537,20 @@ internal void EngHc_ReadPrimitive(const cgltf_primitive *prim, int skinned, u32 
 		if ((col != NULL) && (col->count == pos->count))
 		{
 			cgltf_accessor_read_float(col, v, c, cgltf_num_components(col->type));
+			hasColour = 1;
 		}
-		for (k = 0; k < 4; k++)
+		// RGB: the factor of the mode as the engine's vertex byte; without
+		// COLOR_0 the factor 1. Alpha: COLOR_0's as before (off: 1).
+		for (k = 0; k < 3; k++)
 		{
-			const float x = c[k] * 255.0f + 0.5f;
+			const float f = hasColour ? RldHiresColor_Factor(vcolMode, c[k]) : 1.0f;
 
-			b->color[k] = (u8)((x <= 0.0f) ? 0 : ((x >= 255.0f) ? 255 : (int)x));
+			b->color[k] = RldHiresColor_VertexByte(vcolMode, f);
+		}
+		{
+			const float x = ((vcolMode == RLDHIRES_VCOL_OFF) ? 1.0f : c[3]) * 255.0f + 0.5f;
+
+			b->color[3] = (u8)((x <= 0.0f) ? 0 : ((x >= 255.0f) ? 255 : (int)x));
 		}
 		if ((jo != NULL) && (we != NULL) && (jo->count == pos->count) && (we->count == pos->count))
 		{
@@ -582,6 +632,7 @@ internal void EngHc_Materials(EngHcChar *c, const cgltf_data *gltf)
 		m->normalTex = -1;
 		m->factor[0] = m->factor[1] = m->factor[2] = m->factor[3] = 1.0f;
 		m->normalScale = 1.0f;
+		m->psxFile = (c->vcolMode == RLDHIRES_VCOL_PSX);
 		if (i < (u32)gltf->materials_count)
 		{
 			const cgltf_material *g = &gltf->materials[i];
@@ -600,6 +651,7 @@ internal void EngHc_Materials(EngHcChar *c, const cgltf_data *gltf)
 			m->cutoff = (g->alpha_mode == cgltf_alpha_mode_mask) ? g->alpha_cutoff : 0.5f;
 			m->doubleSided = g->double_sided ? 1 : 0;
 			m->unlit = g->unlit ? 1 : 0;
+			m->psxBlend = (RldHiresColor_ModeFor(c->vcolMode, EngHc_MaterialTextured(g)) == RLDHIRES_VCOL_PSX);
 		}
 		else
 		{
@@ -805,6 +857,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		EngHc_FreeCpu(c);
 		return 0;
 	}
+	c->vcolMode = m->vcolMode;
 	EngHc_Materials(c, gltf);
 	if (c->texOverflow)
 	{
@@ -981,7 +1034,8 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			count = (u32)pos->count;
 			ic = (prim->indices != NULL) ? (u32)prim->indices->count : count;
 			ic -= ic % 3u;
-			EngHc_ReadPrimitive(prim, skinned, entry, c->src, c->base, vfirst, count);
+			EngHc_ReadPrimitive(prim, skinned, entry, RldHiresColor_ModeFor(c->vcolMode, EngHc_MaterialTextured(prim->material)), c->src, c->base, vfirst,
+			                    count);
 			for (q = 0; q < ic; q++)
 			{
 				const u32 idx = (prim->indices != NULL) ? (u32)cgltf_accessor_read_index(prim->indices, q) : q;
@@ -1244,6 +1298,15 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 	return 1;
 }
 
+// programParam[0] of a material of "ns": 2 = unlit (KHR_materials_unlit, and
+// every material of a file in PSX blend: unlit as on the PS1), 1 = lit with its
+// normal map, 0 = lit (engine.h, ENGINE_PROGRAM_NS); plus ENG_HC_PSX_BLEND when
+// its vertex colours are PSX blend (engine_static_shader.inc).
+internal float EngHc_ProgramParam0(const EngHcMat *m, int hasNormal)
+{
+	return ((m->unlit || m->psxFile) ? 2.0f : (hasNormal ? 1.0f : 0.0f)) + (m->psxBlend ? ENG_HC_PSX_BLEND : 0.0f);
+}
+
 // This level's materials of a character (the table was reset at the unload).
 internal int EngHc_RegisterMaterials(EngHcChar *c)
 {
@@ -1269,8 +1332,7 @@ internal int EngHc_RegisterMaterials(EngHcChar *c)
 			Engine_TextureMaterial(&em, c->tex[m->baseTex].texture);
 		}
 		em.program = ENGINE_PROGRAM_NS;
-		// 2 = unlit (KHR_materials_unlit), 1 = lit with its normal map, 0 = lit (engine.h, ENGINE_PROGRAM_NS).
-		em.programParam[0] = m->unlit ? 2.0f : (hasNormal ? 1.0f : 0.0f);
+		em.programParam[0] = EngHc_ProgramParam0(m, hasNormal);
 		em.programParam[1] = m->normalScale;
 		em.nativeTexture2 = hasNormal ? c->tex[m->normalTex].texture : 0xffffffffu;
 		c->levelMaterial[k] = Engine_MaterialRegister(&em);
@@ -2387,7 +2449,7 @@ internal int EngHc_FreeCharSlot(const int *needed)
 }
 
 // The checks of a CHRG chunk's bytes (pure; the selftest feeds it made-up
-// chunks): the header, RldHires_Open, RldHires_CheckBudget. 1 = model opened
+// chunks): the header, RldHires_OpenAs, RldHires_CheckBudget. 1 = model opened
 // and within the budget (close it with RldHires_Close in every case; the bytes
 // must live until then); 0 with the first error's rule and text.
 internal int EngHc_CheckChunk(const u8 *bytes, size_t size, RldHiresModel *model, RldHiresReport *rep, const char **rule, char *detail, int detailSize)
@@ -2400,7 +2462,8 @@ internal int EngHc_CheckChunk(const u8 *bytes, size_t size, RldHiresModel *model
 	{
 		return 0;
 	}
-	if (!RldHires_Open(chunk.glb, chunk.glbSize, model, rep) || !RldHires_CheckBudget(model, rep))
+	// In the chunk's vertex colour mode (ParseChunk refused mode 3).
+	if (!RldHires_OpenAs(chunk.glb, chunk.glbSize, RldHiresColor_Mode(chunk.flags), model, rep) || !RldHires_CheckBudget(model, rep))
 	{
 		EngHc_FirstError(rep, rule, detail, detailSize);
 		return 0;
@@ -2459,6 +2522,12 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 		return 0;
 	}
 	c->used = 1;
+	// The vertex colour mode, only when it is not glTF (a file of before logs as before).
+	if (c->vcolMode != RLDHIRES_VCOL_GLTF)
+	{
+		Platform_Log("[CTR Engine] hires char vertex colours: %s: %s\n", c->file,
+		             (c->vcolMode == RLDHIRES_VCOL_PSX) ? "PSX blend (grey 128 is neutral, texture x colour / 128)" : "off (COLOR_0 ignored)");
+	}
 	Platform_Log("[CTR Engine] hires char textures: %s: filter %s, %d texture(s):%s%s\n", c->file,
 	             (g_cfg_engineHiresCharsFilter == ENGINE_TEXTURE_PIXELATED) ? "nearest (--engine-hires-chars-filter)" : "trilinear with anisotropy", c->texCount,
 	             c->texText, (c->nearestAsked > 0) ? "; the file's sampler asks NEAREST (drawn with the filter above)" : "");
@@ -3040,6 +3109,142 @@ internal int EngHc_SelfTestLoader(int *checks)
 			memset(&rep, 0x55, sizeof(rep));
 			HL_CHECK(strcmp(r, "HRG-27") == 0, "the refusal's rule id outlives its report");
 		}
+	}
+
+	// (V) THE VERTEX COLOUR MODE (include/rldhires_color.inc): the test driver
+	// of A with COLOR_0 at sRGB 128 on the body, packed with flags 0, 1, 2. The
+	// expectation is written out: glTF the linear byte of before (0.2158605 x 255
+	// = 55), PSX the PS1 byte (128; the wheels without COLOR_0: factor 1 = 128),
+	// off white; the material's programParam[0] + 4 in PSX only.
+	{
+		static const u8 bodyByte[3] = {55, 128, 255};
+		static const u8 wheelByte[3] = {255, 128, 255};
+		int mode;
+
+		memset(&d, 0, sizeof(d));
+		d.skinned = 1;
+		d.wheels = 4;
+		d.clipMask = 0xfffu;
+		d.texture = 1;
+		d.colour0 = 0.2158605f;
+		glb = EngHiresTest_Glb(&d, &glbSize);
+		for (mode = 0; mode < 3; mode++)
+		{
+			chunk = (glb != NULL) ? RldHires_BuildChunkFlags(glb, (u32)glbSize, (u32)mode, &chunkSize) : NULL;
+			ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+			if (!ok)
+			{
+				printf("engine selftest: hires loader V (mode %d) refused: %s %s\n", mode, rule, detail);
+			}
+			HL_CHECK(ok && (model.vcolMode == mode) && (RldHires_ReportHas(&rep, "HRG-36") == (mode == RLDHIRES_VCOL_GLTF)),
+			         "V: the driver opens in the chunk's mode, HRG-36 in glTF only");
+			memset(&c, 0, sizeof(c));
+			c.indexBuffer = 0xffffffffu;
+			ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+			HL_CHECK(ok, "V: the CPU side is made");
+			if (ok)
+			{
+				HL_CHECK((c.vcolMode == mode) && (c.base[0].color[0] == bodyByte[mode]) && (c.base[3].color[1] == bodyByte[mode]) &&
+				             (c.base[2].color[2] == bodyByte[mode]) && (c.base[0].color[3] == 255),
+				         "V: the body's vertex colour per mode (glTF 55, PSX 128, off 255), alpha 255");
+				HL_CHECK((c.base[4].color[0] == wheelByte[mode]) && (c.base[51].color[2] == wheelByte[mode]),
+				         "V: a primitive without COLOR_0 has the factor 1 (glTF and off 255, PSX 128)");
+				HL_CHECK((c.mats[0].psxBlend == (mode == RLDHIRES_VCOL_PSX)) &&
+				             (EngHc_ProgramParam0(&c.mats[0], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 6.0f : 0.0f)) &&
+				             (EngHc_ProgramParam0(&c.mats[0], 1) == ((mode == RLDHIRES_VCOL_PSX) ? 6.0f : 1.0f)),
+				         "V: the textured material: PSX blend unlit + 4 (6); glTF and off lit as before (0, with a normal map 1)");
+				HL_CHECK((c.matCount == 3) && !c.mats[1].psxBlend && !c.mats[2].psxBlend &&
+				             (EngHc_ProgramParam0(&c.mats[1], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 2.0f : 0.0f)) &&
+				             (EngHc_ProgramParam0(&c.mats[2], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 2.0f : 0.0f)),
+				         "V: the default and the standard wheels' material: unlit in a PSX file (2), lit otherwise (0)");
+				EngHc_FreeCpu(&c);
+			}
+			RldHires_Close(&model);
+			free(chunk);
+		}
+		// PSX blend without a base colour texture: the PS1 shows the colour as it is (glTF's byte, no + 4).
+		free(glb);
+		d.texture = 0;
+		glb = EngHiresTest_Glb(&d, &glbSize);
+		chunk = (glb != NULL) ? RldHires_BuildChunkFlags(glb, (u32)glbSize, 1u, &chunkSize) : NULL;
+		ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+		memset(&c, 0, sizeof(c));
+		c.indexBuffer = 0xffffffffu;
+		ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+		HL_CHECK(ok && (c.base[0].color[0] == 55) && (c.base[4].color[0] == 255) && !c.mats[0].psxBlend && (EngHc_ProgramParam0(&c.mats[0], 0) == 2.0f),
+		         "V: PSX blend on an untextured material reads COLOR_0 as glTF, unlit");
+		if (ok)
+		{
+			EngHc_FreeCpu(&c);
+		}
+		RldHires_Close(&model);
+		// Mode 3 is refused like an unknown bit (HRG-3): the classic model is drawn.
+		if (chunk != NULL)
+		{
+			RldHires_PutLE32(&chunk[4], 3u);
+			ok = EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+			HL_CHECK(!ok && (strcmp(rule, "HRG-3") == 0), "V: vertex colour mode 3 refused (HRG-3)");
+			RldHires_Close(&model);
+		}
+		free(chunk);
+		free(glb);
+	}
+
+	// The standard wheels (three wheel nodes: the four standard ones): their
+	// greys come out on screen as meant (38 tread, 112 side, 170 hub, within a
+	// level), the same bytes in every mode.
+	{
+		static const int meant[3] = {ENG_HC_STD_GREY_TREAD, ENG_HC_STD_GREY_SIDE, ENG_HC_STD_GREY_HUB};
+		static const u32 vertex[3] = {0u, 1u, (u32)(ENG_HC_STD_SEGMENTS * 4)};
+		u8 bytes[3][3];
+		int mode;
+
+		memset(&d, 0, sizeof(d));
+		d.skinned = 1;
+		d.wheels = 3;
+		d.clipMask = 0xfffu;
+		d.texture = 1;
+		glb = EngHiresTest_Glb(&d, &glbSize);
+		for (mode = 0; mode < 3; mode++)
+		{
+			int g;
+			int near = 1;
+
+			chunk = (glb != NULL) ? RldHires_BuildChunkFlags(glb, (u32)glbSize, (u32)mode, &chunkSize) : NULL;
+			ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+			memset(&c, 0, sizeof(c));
+			c.indexBuffer = 0xffffffffu;
+			ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+			HL_CHECK(ok && !c.ownWheels, "V: the standard wheels are made");
+			for (g = 0; ok && (g < 3); g++)
+			{
+				const u8 b = c.base[4u + vertex[g]].color[0];
+				const float shown = RldHiresColor_VertexValue(RLDHIRES_VCOL_GLTF, b) * 255.0f;
+
+				bytes[mode][g] = b;
+				near = near && (fabsf(shown - (float)meant[g]) <= 1.0f) && (c.base[4u + vertex[g]].color[2] == b) && (c.base[4u + vertex[g]].color[3] == 255);
+			}
+			HL_CHECK(ok && near, "V: the standard wheels' greys on screen within a level of 38 / 112 / 170");
+			HL_CHECK(ok && (EngHc_ProgramParam0(&c.mats[c.matCount - 1], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 2.0f : 0.0f)),
+			         "V: the standard wheels unlit in a PSX file, lit otherwise");
+			if (ok)
+			{
+				EngHc_FreeCpu(&c);
+			}
+			RldHires_Close(&model);
+			free(chunk);
+		}
+		HL_CHECK((memcmp(bytes[0], bytes[1], 3) == 0) && (memcmp(bytes[0], bytes[2], 3) == 0), "V: the standard wheels' bytes are the same in every mode");
+		free(glb);
+	}
+
+	// The light Reload Studio previews with (include/rldhires_color.inc) is the engine's default.
+	{
+		static const float sun[6] = ENGINE_STATIC_SUN_DEFAULT;
+
+		HL_CHECK((sun[0] == RLDHIRES_LIGHT_SUN_X) && (sun[1] == RLDHIRES_LIGHT_SUN_Y) && (sun[2] == RLDHIRES_LIGHT_SUN_Z) &&
+		             (sun[3] == RLDHIRES_LIGHT_AMBIENT_ABOVE) && (sun[4] == RLDHIRES_LIGHT_DIFFUSE) && (sun[5] == RLDHIRES_LIGHT_AMBIENT_BELOW),
+		         "the preview light of include/rldhires_color.inc is ENGINE_STATIC_SUN_DEFAULT");
 	}
 
 	// (B) no skin, three wheel nodes (standard wheels), idle and jump, CUBICSPLINE, no texture.

@@ -51,7 +51,10 @@ int RsRoute_FromWord(const wchar_t *word);
 // THE MESSAGES OF A CHRG ROUTE, in plain English, each at the place it is
 // about. A model without clips gives ONE line (no clip list), a model
 // without wheel nodes ONE line; every rule finding of the check keeps its
-// rule ID and gets a "How to fix" sentence.
+// rule ID and gets a "How to fix" sentence. PS1-like vertex colours (HRG-36)
+// are a warning only in the mode glTF (c->vcolMode, the mode the page chose:
+// RsHires_SetColourMode), with the fix "Switch Vertex color blending on.";
+// in PSX blend and off they are no message.
 enum RsWizPlace {
     RS_WIZ_PLACE_MODEL = 0,      // the model field of the step Model
     RS_WIZ_PLACE_ANIMATIONS,     // the line about clips (step Model, below the model)
@@ -73,6 +76,35 @@ struct RsWizMsg {
 // The messages of a check for a route (RS_ROUTE_LOWPOLY or RS_ROUTE_HIRES),
 // most severe first; returns how many were written (at most cap).
 int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMsg *out, int cap);
+
+// THE VERTEX COLOURS of a CHRG route (include/rldhires_color.inc; decision
+// V-E4 of the round's plan). A model with COLOR_0 gets the switch "Vertex
+// color blending" on its step Model: ON = PSX blend (grey 128 is neutral, as
+// on the PS1), OFF = the vertex colours are ignored; the third mode, glTF
+// (white is neutral), is chosen under Advanced. A model without COLOR_0 has
+// no switch, and the build passes none (rldpack writes glTF, the bytes of
+// before). The page sets the switch to the suggestion when a model is
+// chosen; a mode the author chose stays with that model. The suggestion:
+//   PS1-like colours (the check said HRG-36)       PSX     RS_VCOL_WHY_PS1
+//   COLOR_0, not PS1-like                          glTF    RS_VCOL_WHY_WHITE
+//   not decidable (no COLOR_0 on a textured face,  the route's: Low-Poly PSX,
+//   or the check's rows ran over before HRG-36)    Hi-Res glTF  RS_VCOL_WHY_ROUTE
+enum RsVcolWhy {
+    RS_VCOL_WHY_NONE = 0,        // no COLOR_0: no switch
+    RS_VCOL_WHY_PS1,
+    RS_VCOL_WHY_WHITE,
+    RS_VCOL_WHY_ROUTE
+};
+
+// The suggested mode (RS_HIRES_VCOL_*, rs_hires_model.h) of a check for a
+// CHRG route, -1 when the model has no COLOR_0; why (may be NULL) RS_VCOL_WHY_*.
+int RsCharHires_SuggestColours(const struct RsHiresCheck *c, int route, int *why);
+
+// The one short line below the switch: what the mode does and why it is set
+// - the suggestion's reason ("Your vertex colours look like PS1 shading -
+// blending is on."), or, when the author chose another mode, that mode and
+// the suggestion.
+void RsCharHires_ColourLine(int mode, int suggested, int why, int route, wchar_t *out, int cap);
 
 // The extra make-char switches of the classic fallback of a CHRG route
 // (written after the page's own switches); returns the count, at most

@@ -418,7 +418,10 @@
 //             (the switches of the check, without --check and the previews)
 //   hires-upscale <glb> -o <temp folder>\<glb name>-upscaled.glb --machine
 //             (only with "Upscale small textures": RsHires_UpscaleArgs)
-//   hires-add <classic> <glb or upscaled> -o <out> --machine   (RsHires_PackArgs)
+//   hires-add <classic> <glb or upscaled> -o <out> [--vertex-colors psx|gltf|off] --machine
+//             (RsHires_PackArgs; --vertex-colors only for a .glb with COLOR_0:
+//             the mode of the switch "Vertex color blending" - none for a
+//             model without, rldpack then writes mode glTF, the bytes of before)
 //   The temp files are deleted at the end; <out> carries rldpack's bytes.
 // The raw output of the page ("Show details" on the step Build) starts with
 // the command, "ReloadStudio.exe --rldpack make-char ...", quoted as it was
@@ -452,9 +455,23 @@
 //                                 the command line); FAIL without a build of
 //                                 the fields as they are, or when it did not start
 //   preview hires|classic         the switch above the preview (Low-Poly, Hi-Res only)
+//   vcolor on|off|psx|gltf|auto   the vertex colours of a Low-Poly or Hi-Res
+//                                 model with COLOR_0: on/off as the switch
+//                                 "Vertex color blending" (on = psx), psx|gltf|off
+//                                 as the list "Vertex colors" of Advanced, auto:
+//                                 the author's choice forgotten, the suggestion
+//                                 again; the picture is drawn again at once
+//                                 (FAIL on another route or without COLOR_0).
+//                                 A model checked gets the suggestion by itself
+//                                 (logged "vertex colors: <mode> (the suggestion;
+//                                 suggested <mode>)"); a mode chosen stays with
+//                                 that model
 //   "report" writes first "route:", "step:", "advanced:", "upscale small
-//   textures:", "preset:", "details:", "preview:", "hires check:" (a CHRG
-//   route), "test note:", every control shown as "shown <primary button|button|
+//   textures:", "preset:", "details:", "preview:", "preview stage:" (neutral |
+//   the view's own), "vertex colors:" (a CHRG route: the mode, chosen by the
+//   author or suggested, the suggestion with its reason and the median of
+//   HRG-36, the switch on|off|glTF (Advanced); or none without COLOR_0),
+//   "hires check:" (a CHRG route), "test note:", every control shown as "shown <primary button|button|
 //   tick box|field|list>: <id> <text>", "primary buttons shown: <n>" and every
 //   message of the page with its step ("page message: <step>\t<severity>\t<text>\t<detail>").
 // The verbs of before:

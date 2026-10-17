@@ -90,6 +90,11 @@
 #define RS_TEX_WHEEL_TRI_BYTES 44               // 3 x {s16 x, y, z, s32 u, s32 v}, u8 flags, u8 0
 
 #define RS_TEX_NATIVE_BLEND 0x1u                // RsTexNative.flags: a blend material - the game draws the classic model
+// RsTexNative.flags (RLDPN2 only): after the triangles one light byte per
+// corner (triangles x 3, the corners in their order; RS_TEX_LIGHT_ONE = 1) -
+// the light of a LIT material (RS_TEX_MATERIAL_LIT). The Studio's hi-res
+// preview writes it (rs_hires_model.c); rldpack never does.
+#define RS_TEX_NATIVE_LIT 0x2u
 #define RS_TEX_DISCARD (-1)                     // RsTex_Shade: the mask leaves the pixel out
 
 enum { RS_TEX_WRAP_REPEAT = 0, RS_TEX_WRAP_CLAMP = 1, RS_TEX_WRAP_MIRROR = 2 };
@@ -117,20 +122,36 @@ struct RsTexMaterial {
     int alphaMode;                              // RS_TEX_ALPHA_*
     int nearest;                                // the material's flag "always nearest" (the preview is nearest anyway)
     int filtered;                               // flag 0x2 (RS_TEX_MATERIAL_FILTERED): sampled as the engine samples a hi-res driver
+    int lit;                                    // flag 0x4 (RS_TEX_MATERIAL_LIT): C / 128, the corner light, RsTex_ShadeLit
 };
 
 // The material flag byte (byte 7 of a material): bit 0 "always nearest" (CNET),
 // bit 1 the engine's hi-res filter - trilinear with anisotropy 16, in linear
 // light for sRGB (RsTex_FilterSetup, RsTex_FilterTexel). rldpack never sets
 // bit 1; the Hi-Res page of the Studio does (rs_hires_model.c).
+// Bit 2, LIT: the material is drawn as the engine draws a hi-res driver
+// (program "ns", platform/engine_static_shader.inc), with the corner light of
+// RS_TEX_NATIVE_LIT (RsTex_ShadeLit):
+//   out = min(T x C x M, white) x L, clamped to white
+// with C counted as C / 128 (128 = the texel unchanged, 255 = 255/128: the
+// display value of the vertex colour factor, which PSX blend lifts up to
+// twice, include/rldhires_color.inc) and L = l / 128 the light of the corner
+// (128 = 1; the engine's light reaches about 1.35 on the side of the sun).
+// The product is clamped before the light, as the engine does in PSX blend;
+// in glTF and off the factor is at most 1, so the clamp changes nothing there.
+// rldpack never sets bit 2; the hi-res preview of the Studio does
+// (rs_hires_model.c).
 #define RS_TEX_MATERIAL_NEAREST 0x1u
 #define RS_TEX_MATERIAL_FILTERED 0x2u
+#define RS_TEX_MATERIAL_LIT 0x4u
+#define RS_TEX_LIGHT_ONE 128                    // C and l of a LIT material: 128 = 1
 #define RS_TEX_ANISO_MAX 16                     // the engine's hi-res sampler (engine_vram.c, EngTex_Sampling: 16)
 
 // One corner as RsTex_NativeCorner and RsTex_WheelCorner give it.
 struct RsTexCorner {
     long long u, v;                             // Q16 of the texture, v from the top
     int r, g, b, a;                             // C: COL0, or 255 (a wheel: always 255)
+    int l;                                      // the corner light (RS_TEX_NATIVE_LIT), RS_TEX_LIGHT_ONE without
 };
 
 // The native model of a preview file (RLDPN3 or RLDPN2). Positions are
@@ -153,6 +174,7 @@ struct RsTexNative {
     const unsigned char *tris;                  // RLDPN2: triangles x RS_TEX_NATIVE_TRI_BYTES, in the file
     const unsigned char *vtx;                   // RLDPN3: vertices x RS_TEX_NATIVE_VERTEX_BYTES
     const unsigned char *idx;                   // RLDPN3: triangles x RS_TEX_NATIVE_INDEX_BYTES
+    const unsigned char *light;                 // RLDPN2 with RS_TEX_NATIVE_LIT: triangles x 3 corner lights, else NULL
     size_t bytes;                               // the textures with all their levels
 };
 
@@ -287,6 +309,40 @@ static inline int RsTex_Shade(const unsigned char *texel, int cr, int cg, int cb
         r = ((unsigned int)cr * m->rgba[0] + 127u) / 255u;
         g = ((unsigned int)cg * m->rgba[1] + 127u) / 255u;
         b = ((unsigned int)cb * m->rgba[2] + 127u) / 255u;
+    }
+    return (int)((r << 16) | (g << 8) | b);
+}
+
+// One channel of a LIT material: min(T x C x M, 255) with C / 128, then x l /
+// 128, clamped (at most 255 x 255 x 255, within 32 bits).
+static inline unsigned int RsTex_LitChannel(unsigned int t, unsigned int c, unsigned int m, unsigned int l)
+{
+    unsigned int p = (t * c * m + 16320u) / 32640u;   // T/255 x C/128 x M/255 x 255
+    p = p > 255u ? 255u : p;
+    p = (p * l + 64u) / 128u;
+    return p > 255u ? 255u : p;
+}
+
+// The pixel of a LIT material (RS_TEX_MATERIAL_LIT): RsTex_Shade's alpha rule,
+// the colour of the engine's hi-res driver with the corner light l
+// (interpolated like C). Any other material: RsTex_Shade, l unused.
+static inline int RsTex_ShadeLit(const unsigned char *texel, int cr, int cg, int cb, int ca, int l, const struct RsTexMaterial *m)
+{
+    unsigned int r, g, b;
+    if (!m->lit)
+        return RsTex_Shade(texel, cr, cg, cb, ca, m);
+    if (texel) {
+        if (m->alphaMode != RS_TEX_ALPHA_OPAQUE && 2u * texel[3] * (unsigned int)ca * m->rgba[3] < 16581375u)
+            return RS_TEX_DISCARD;
+        r = RsTex_LitChannel(texel[0], (unsigned int)cr, m->rgba[0], (unsigned int)l);
+        g = RsTex_LitChannel(texel[1], (unsigned int)cg, m->rgba[1], (unsigned int)l);
+        b = RsTex_LitChannel(texel[2], (unsigned int)cb, m->rgba[2], (unsigned int)l);
+    } else {
+        if (m->alphaMode != RS_TEX_ALPHA_OPAQUE && 2u * (unsigned int)ca * m->rgba[3] < 65025u)
+            return RS_TEX_DISCARD;
+        r = RsTex_LitChannel(255u, (unsigned int)cr, m->rgba[0], (unsigned int)l);
+        g = RsTex_LitChannel(255u, (unsigned int)cg, m->rgba[1], (unsigned int)l);
+        b = RsTex_LitChannel(255u, (unsigned int)cb, m->rgba[2], (unsigned int)l);
     }
     return (int)((r << 16) | (g << 8) | b);
 }

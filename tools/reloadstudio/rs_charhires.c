@@ -134,7 +134,8 @@ static const struct RsHrgSay s_say[] = {
     { L"HRG-33", RS_WIZ_PLACE_SIZE, TEXT_ROW, NULL, L"Reduce the model in Blender (Decimate modifier)." },
     { L"HRG-34", RS_WIZ_PLACE_SIZE, TEXT_ROW, NULL, L"Join the mesh objects in Blender (select them, Ctrl+J) or use fewer bones." },
     { L"HRG-35", RS_WIZ_PLACE_SIZE, TEXT_ROW, NULL, L"Use fewer different textures: let materials share their images." },
-    { L"HRG-36", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Paint vertex colours with white as neutral, or remove the colour attribute in Blender." },
+    { L"HRG-36", RS_WIZ_PLACE_MODEL, TEXT_OWN, L"Your vertex colours look like PS1 shading - blended as glTF, the kart will look too dark.",
+      L"Switch Vertex color blending on." },
 };
 
 #define RS_SAY_COUNT ((int)(sizeof(s_say) / sizeof(s_say[0])))
@@ -227,6 +228,10 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
                 wheelRow = i;
             continue;
         }
+        // PS1-like vertex colours: a warning while they are blended as glTF,
+        // nothing in PSX blend (they are read right) or off (ignored).
+        if (wcscmp(r->rule, L"HRG-36") == 0 && c->vcolMode != RS_HIRES_VCOL_GLTF)
+            continue;
         say = RsCharHires_Say(r->rule);
         if (wcscmp(r->rule, L"HRG-27") != 0) {
             for (j = i + 1; j < c->rowCount; j++)
@@ -247,7 +252,8 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
                 RsCharHires_Sentence(line, head, NULL);
             }
         }
-        RsCharHires_Put(&list[count++], r->severity, say ? say->place : RS_WIZ_PLACE_MODEL, r->rule, line, say ? say->fix : RS_FIX_UNKNOWN);
+        RsCharHires_Put(&list[count++], wcscmp(r->rule, L"HRG-36") == 0 ? RS_SEV_WARNING : r->severity, say ? say->place : RS_WIZ_PLACE_MODEL,
+                        r->rule, line, say ? say->fix : RS_FIX_UNKNOWN);
     }
 
     // The clips: one line. The check reached them when it said HRG-19, or
@@ -301,6 +307,63 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
         count = cap;
     memcpy(out, list, (size_t)count * sizeof(*out));
     return count;
+}
+
+// ---------------------------------------------------------------------------
+// The vertex colours (rs_charroute.h, THE VERTEX COLOURS)
+
+int RsCharHires_SuggestColours(const struct RsHiresCheck *c, int route, int *why)
+{
+    int w = RS_VCOL_WHY_NONE, mode = -1;
+    if (c && c->read && c->vcolPresent) {
+        if (c->vcolPs1) {
+            w = RS_VCOL_WHY_PS1;
+            mode = RS_HIRES_VCOL_PSX;
+        } else if (c->vcolMedian >= 0 && c->rowsDropped == 0 && c->vcolChecked == RS_HIRES_VCOL_GLTF) {
+            // Measured on textured faces, and the check (in glTF, where it says
+            // HRG-36) had room to say it: not PS1-like.
+            w = RS_VCOL_WHY_WHITE;
+            mode = RS_HIRES_VCOL_GLTF;
+        } else {
+            w = RS_VCOL_WHY_ROUTE;
+            mode = route == RS_ROUTE_LOWPOLY ? RS_HIRES_VCOL_PSX : RS_HIRES_VCOL_GLTF;
+        }
+    }
+    if (why)
+        *why = w;
+    return mode;
+}
+
+void RsCharHires_ColourLine(int mode, int suggested, int why, int route, wchar_t *out, int cap)
+{
+    static const wchar_t *const what[RS_HIRES_VCOL_MODES] = {
+        L"glTF blending: white shows the texture unchanged",
+        L"Blending is on: grey 128 shows the texture unchanged, as on the PS1",
+        L"Blending is off: the vertex colours are ignored",
+    };
+    static const wchar_t *const word[RS_HIRES_VCOL_MODES] = { L"glTF (Advanced)", L"on", L"off" };
+    if (!out || cap <= 0)
+        return;
+    out[0] = 0;
+    if (mode < 0 || mode >= RS_HIRES_VCOL_MODES || why == RS_VCOL_WHY_NONE)
+        return;
+    if (mode != suggested && suggested >= 0 && suggested < RS_HIRES_VCOL_MODES) {
+        swprintf(out, (size_t)cap, L"%ls. Your choice - suggested: %ls.", what[mode], word[suggested]);
+        return;
+    }
+    switch (why) {
+    case RS_VCOL_WHY_PS1:
+        swprintf(out, (size_t)cap, L"Your vertex colours look like PS1 shading - blending is on.");
+        break;
+    case RS_VCOL_WHY_WHITE:
+        swprintf(out, (size_t)cap, L"Your vertex colours use white as neutral - they are blended as glTF (Advanced).");
+        break;
+    default:
+        swprintf(out, (size_t)cap, mode == RS_HIRES_VCOL_PSX ? L"Your model has vertex colours - blending is on, as usual for %ls."
+                                                             : L"Your model has vertex colours - they are blended as glTF (white is neutral), as usual for %ls.",
+                 route == RS_ROUTE_LOWPOLY ? L"Low-Poly" : L"Hi-Res");
+        break;
+    }
 }
 
 // ---------------------------------------------------------------------------

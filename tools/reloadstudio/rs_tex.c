@@ -130,6 +130,7 @@ static int RsTex_Material(const unsigned char *p, int textures, struct RsTexMate
     m->alphaMode = p[6];
     m->nearest = (p[7] & RS_TEX_MATERIAL_NEAREST) != 0u;
     m->filtered = (p[7] & RS_TEX_MATERIAL_FILTERED) != 0u;
+    m->lit = (p[7] & RS_TEX_MATERIAL_LIT) != 0u;
     return m->texture >= -1 && m->texture < textures && m->alphaMode <= RS_TEX_ALPHA_BLEND;
 }
 
@@ -216,7 +217,7 @@ int RsTex_ParseNative(const unsigned char *data, size_t bytes, size_t at, struct
     out->flags = RsTex_U32(data + at);
     count = RsTex_U32(data + at + 4);
     at += 8;
-    if ((out->flags & ~RS_TEX_NATIVE_BLEND) != 0u) {
+    if ((out->flags & ~(RS_TEX_NATIVE_BLEND | RS_TEX_NATIVE_LIT)) != 0u || (three && (out->flags & RS_TEX_NATIVE_LIT))) {
         swprintf(why, (size_t)whyCap, L"the native model has flags 0x%x this version does not know", out->flags);
         goto refused;
     }
@@ -310,6 +311,10 @@ int RsTex_ParseNative(const unsigned char *data, size_t bytes, size_t at, struct
     }
     out->tris = data + at;
     at += (size_t)tris * RS_TEX_NATIVE_TRI_BYTES;
+    if ((out->flags & RS_TEX_NATIVE_LIT) && bytes - at >= (size_t)tris * 3u) {
+        out->light = data + at;
+        at += (size_t)tris * 3u;
+    }
     if (at != bytes) {
         swprintf(why, (size_t)whyCap, L"%u bytes follow after the native model", (unsigned)(bytes - at));
         goto refused;
@@ -421,6 +426,7 @@ void RsTex_NativeCorner(const struct RsTexNative *n, int tri, int c, struct RsTe
     out->g = p[9];
     out->b = p[10];
     out->a = p[11];
+    out->l = n->light ? n->light[(size_t)tri * 3u + (size_t)c] : RS_TEX_LIGHT_ONE;
 }
 
 void RsTex_NativePosition(const struct RsTexNative *n, int pose, int tri, int c, int xyz[3])

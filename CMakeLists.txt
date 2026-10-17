@@ -1072,7 +1072,7 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
     # good file and one negative case per rule), the per-tick log evaluation
     # (clip per state, blend ramps, wheels), the budget evaluation (p99 per
     # variant of one load run) and the review sheets, each on synthetic data.
-    foreach(hires_tool hires_glb_check hires_tick_eval hires_budget_eval hires_sheet hires_chars_dir)
+    foreach(hires_tool hires_glb_check hires_tick_eval hires_budget_eval hires_sheet hires_chars_dir hires_brightness)
         add_test(
             NAME ${hires_tool}_selftest
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/${hires_tool}.py selftest

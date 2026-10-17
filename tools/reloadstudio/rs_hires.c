@@ -281,7 +281,7 @@ static int Hires_ShowClipFrame(void)
         RsView_LoadPreviewData(g_hires.view, bytes, size);
     }
     RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
-    RsView_SetWheels(g_hires.view, g_hires.check.wheels < 4);
+    RsView_SetWheels(g_hires.view, 0);   // the picture carries the standard wheels (rs_hires_model.c)
     g_hires.shownTris = n;
     return n;
 }
@@ -446,7 +446,7 @@ static void Hires_ShowView(void)
         RsView_SetModelKey(g_hires.view, g_hires.checkedPath);
         RsView_LoadPreviewData(g_hires.view, c->preview, c->previewBytes);
         RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
-        RsView_SetWheels(g_hires.view, c->wheels < 4);
+        RsView_SetWheels(g_hires.view, 0);
         return;
     }
     if (!c->read) {
@@ -549,7 +549,9 @@ static int Hires_StartAdd(HWND page, const wchar_t *model)
     int n;
     Hires_Field(g_hires.character, ch, HIRES_PATH);
     Hires_Field(g_hires.out, out, HIRES_PATH);
-    n = RsHires_PackArgs(ch, model, out, args);
+    // The page Hi-Res (automation and self-tests only) packs without the
+    // switch --vertex-colors: mode glTF, the bytes of before (its ctest).
+    n = RsHires_PackArgs(ch, model, out, -1, args);
     g_hires.jobUpscale = 0;
     g_hires.job = Rs_RunRldpack(page, args, n);
     if (!g_hires.job) {

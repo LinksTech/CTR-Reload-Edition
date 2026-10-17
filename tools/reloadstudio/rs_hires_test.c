@@ -14,6 +14,16 @@
 // karts made here (Kt_Glb) and the switches of the classic fallback. With
 // --write <folder> it writes the karts and switches of the byte test of the
 // routes (cmake/run_rs_charroute.cmake) instead.
+//
+// THE VERTEX COLOURS (include/rldhires_color.inc, rs_charroute.h): the
+// suggestion of a mode on karts made here (PS1-like COLOR_0 -> PSX, white-ish
+// -> glTF, none -> no switch, on untextured faces only -> the route's), the
+// warning HRG-36 in glTF only, and the picture's colour in every mode against
+// RldHiresColor_Apply of RldHiresColor_Factor - the preview's product within
+// 2 levels of the shared function (RS_TEX_MATERIAL_LIT holds C and the light
+// in steps of 1/128) - also through the view's own formula (RsTex_ShadeLit).
+// The light: the engine's (RLDHIRES_LIGHT_*), after the product is clamped,
+// as the engine's PSX blend does.
 
 #include "reloadstudio.h"
 #include "rs_hires_model.h"
@@ -32,6 +42,17 @@
 #pragma warning(push, 0)
 #endif
 #include <cgltf.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+// The one way to read COLOR_0 (the same functions rs_hires_model.c calls):
+// the self-test computes what the picture must show with them.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4505)
+#endif
+#include <rldhires_color.inc>
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
@@ -105,15 +126,17 @@ static void CheckGood(const struct RsHiresCheck *c, const char *what)
     if (c->preview && c->previewBytes >= 16u + 30u) {
         const unsigned char *t = c->preview + 16;
         // The body triangle (0,0,0), (1,0,0), (0,1,0) m of the self-test model:
-        // 1 m = 1024 file units. Its normals +Z, the light (0.4, 0.8, 0.6)
-        // normalised: 0.5 + 0.5 x 0.5571 = 0.7786 of white (the test PNG has
-        // no pixels to decode, so the base colour factor 1 alone) = 199.
+        // 1 m = 1024 file units. Its normals +Z: the engine's light (THE
+        // PREVIEW LIGHT of include/rldhires_color.inc) is the ambient half way
+        // (0.875) and the sun's 0.40 x 0.399 = 1.035 - above white, so white
+        // (the test PNG has no pixels to decode, the base colour factor 1
+        // alone, no COLOR_0) stays white: 255.
         snprintf(line, sizeof(line), "%s: the body triangle in file units (1 m = 1024)", what);
         Check(ReadS16(t) == 0 && ReadS16(t + 2) == 0 && ReadS16(t + 4) == 0 && ReadS16(t + 10) == 1024 && ReadS16(t + 12) == 0 &&
                   ReadS16(t + 20) == 0 && ReadS16(t + 22) == 1024,
               line);
-        snprintf(line, sizeof(line), "%s: the corner colour is lit white (199) and one-sided", what);
-        Check(t[6] == 199 && t[7] == 199 && t[8] == 199 && t[9] == 0, line);
+        snprintf(line, sizeof(line), "%s: the corner colour is lit white (255: the engine's light 1.035) and one-sided", what);
+        Check(t[6] == 255 && t[7] == 255 && t[8] == 255 && t[9] == 0, line);
         // A wheel (node 3, wheel_fl at (0.5, 0.25, 0.5) m): its first corner.
         snprintf(line, sizeof(line), "%s: wheel_fl stands at its node (512, 256, 512)", what);
         Check(ReadS16(t + 30) == 512 && ReadS16(t + 32) == 256 && ReadS16(t + 34) == 512, line);
@@ -264,6 +287,7 @@ struct KtSpec {
     int wheels;     // wheel nodes: 0, 2 (the front ones) or 4, a box of 12 triangles each
     int png;        // the edge of a real RGBA PNG on every face (<= 100), 0 = a plain colour
     int pngHeader;  // the edge of a PNG with its header only (for the checks), 0 = none
+    int vcol;       // COLOR_0 on the body: every corner this sRGB byte (grey), 0 = no COLOR_0
 };
 
 // A box of grid x grid quads per face into positions, normals, UVs and indices.
@@ -365,7 +389,7 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
     struct KtBuf bin = { 0 }, views = { 0 }, acc = { 0 }, json = { 0 }, glb = { 0 };
     struct KtBuf pos = { 0 }, nrm = { 0 }, uv = { 0 }, idx = { 0 }, tmp = { 0 };
     int viewCount = 0, accCount = 0, aPos, aNrm, aUv, aIdx, aJnt = -1, aWgt = -1, aIbm = -1, aIn = -1, aOut = -1, image = -1;
-    int wPos = -1, wNrm = -1, wUv = -1, wIdx = -1, i;
+    int wPos = -1, wNrm = -1, wUv = -1, wIdx = -1, aCol = -1, i;
     const int wheels = sp->wheels;
     const int rootNode = sp->skin ? 1 : -1;
     const int wheelNode = sp->skin ? 2 : 1;
@@ -379,6 +403,16 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
     aNrm = Kt_View(&bin, &views, &acc, &viewCount, &accCount, &nrm, 5126, verts, "VEC3", NULL);
     aUv = Kt_View(&bin, &views, &acc, &viewCount, &accCount, &uv, 5126, verts, "VEC2", NULL);
     aIdx = Kt_Indices(&bin, &views, &acc, &viewCount, &accCount, &idx, verts);
+    if (sp->vcol > 0) {
+        // The sRGB byte as the linear float an exporter writes.
+        const float lin = RldHiresColor_Decode((float)sp->vcol / 255.0f), one = 1.0f;
+        tmp.n = 0;
+        for (i = 0; i < (int)verts; i++) {
+            Kt_F(&tmp, lin), Kt_F(&tmp, lin), Kt_F(&tmp, lin);
+            Kt_Put(&tmp, &one, 4);
+        }
+        aCol = Kt_View(&bin, &views, &acc, &viewCount, &accCount, &tmp, 5126, verts, "VEC4", NULL);
+    }
     if (sp->skin) {
         static const float identity[16] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 };
         static const float one[4] = { 1, 0, 0, 0 };
@@ -437,6 +471,8 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
     Kt_Text(&json, "],\"meshes\":[{\"name\":\"body\",\"primitives\":[{\"attributes\":{\"POSITION\":%d,\"NORMAL\":%d,\"TEXCOORD_0\":%d", aPos, aNrm, aUv);
     if (sp->skin)
         Kt_Text(&json, ",\"JOINTS_0\":%d,\"WEIGHTS_0\":%d", aJnt, aWgt);
+    if (aCol >= 0)
+        Kt_Text(&json, ",\"COLOR_0\":%d", aCol);
     Kt_Text(&json, "},\"indices\":%d,\"material\":0}]}", aIdx);
     if (wheels)
         Kt_Text(&json, ",{\"name\":\"wheel\",\"primitives\":[{\"attributes\":{\"POSITION\":%d,\"NORMAL\":%d,\"TEXCOORD_0\":%d},\"indices\":%d,\"material\":0}]}",
@@ -530,6 +566,16 @@ static int Kt_Has(const struct RsWizMsg *m, int n, int severity, int place, cons
     return 0;
 }
 
+// A line of that rule, of any severity and place.
+static int Kt_HasRule(const struct RsWizMsg *m, int n, const wchar_t *rule)
+{
+    int i;
+    for (i = 0; i < n; i++)
+        if (wcscmp(m[i].rule, rule) == 0)
+            return 1;
+    return 0;
+}
+
 static int Kt_RowsOf(const struct RsHiresCheck *c, const wchar_t *rule)
 {
     int i, k = 0;
@@ -541,6 +587,153 @@ static int Kt_RowsOf(const struct RsHiresCheck *c, const wchar_t *rule)
 #define KT_NO_CLIPS L"Your model has no animations yet - it will stand still. Optional."
 #define KT_NO_WHEELS L"Your model has no wheels of its own - the game adds standard wheels. Optional."
 #define KT_TARGET_FIX L"Use Hi-Res instead, or reduce the model in Blender"
+
+// What the picture must show for one channel: the shared rule -
+// RldHiresColor_Apply of RldHiresColor_Factor (the display product, clamped)
+// - times the light, clamped, as a byte.
+static int Kt_Expect(int mode, float colour0, unsigned texel, float light)
+{
+    // PSX blend is drawn unlit (the engine draws such a file as the PS1 drew its drivers).
+    const float lit = RldHiresColor_Apply(RldHiresColor_Factor(mode, colour0), (float)texel / 255.0f) * (mode == RS_HIRES_VCOL_PSX ? 1.0f : light);
+    const float v = (lit < 1.0f ? lit : 1.0f) * 255.0f + 0.5f;
+    return (int)v;
+}
+
+// THE VERTEX COLOURS: the suggestion, the messages, the picture per mode.
+static void Kt_SelfTestColours(void)
+{
+    static const float c0s[] = { 0.0f, 0.02f, 0.2159f, 0.5f, 0.8f, 1.0f };
+    static const unsigned texels[] = { 0u, 37u, 90u, 128u, 200u, 255u };
+    static const float lights[] = { 0.8f, 1.0f, 1.35f };
+    struct RsHiresCheck c;
+    struct RsWizMsg m[96];
+    struct RsTexMaterial mat;
+    int mode, i, j, worst = 0, worstView = 0, why = -1, n;
+    char line[200];
+
+    // 1. The picture's channel against the shared rule, every mode, three
+    // lights (below, level, the sun's side): the byte of the picture and the
+    // view's own product (RsTex_ShadeLit, a LIT material) within 2.
+    memset(&mat, 0, sizeof(mat));
+    mat.rgba[0] = mat.rgba[1] = mat.rgba[2] = mat.rgba[3] = 255;
+    mat.texture = 0;
+    mat.lit = 1;
+    for (mode = 0; mode < RS_HIRES_VCOL_MODES; mode++)
+        for (i = 0; i < (int)(sizeof(c0s) / sizeof(c0s[0])); i++)
+            for (j = 0; j < (int)(sizeof(texels) / sizeof(texels[0])); j++) {
+                int k;
+                for (k = 0; k < 3; k++) {
+                    int corner = 0, got, view, d;
+                    const unsigned char t[4] = { (unsigned char)texels[j], (unsigned char)texels[j], (unsigned char)texels[j], 255 };
+                    const int want = Kt_Expect(mode, c0s[i], texels[j], lights[k]);
+                    const int l = mode == RS_HIRES_VCOL_PSX ? 128 : (int)(lights[k] * 128.0f + 0.5f);   // PSX: unlit
+                    got = RsHires_PreviewChannel(mode, 1, c0s[i], texels[j], 1.0f, lights[k], &corner);
+                    view = RsTex_ShadeLit(t, corner, corner, corner, 255, l, &mat) & 0xFF;
+                    d = abs(got - want);
+                    worst = d > worst ? d : worst;
+                    d = abs(view - want);
+                    worstView = d > worstView ? d : worstView;
+                }
+            }
+    snprintf(line, sizeof(line), "the picture's colour in every mode = Apply(Factor, texel) x light, clamped: within 2 (picture %d, view %d)",
+             worst, worstView);
+    Check(worst <= 2 && worstView <= 2, line);
+    printf("  rs_hires: the picture against RldHiresColor_Apply x Factor x light, 3 modes x 6 colours x 6 texels x 3 lights: %d level(s) "
+           "at most (view %d)\n",
+           worst, worstView);
+    {
+        int a = 0, b = 0, k = 0;
+        RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, RldHiresColor_Decode(128.0f / 255.0f), 100u, 1.0f, 1.0f, &a);
+        RsHires_PreviewChannel(RS_HIRES_VCOL_GLTF, 0, 0.0f, 100u, 1.0f, 1.0f, &b);
+        RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 0, 0.0f, 100u, 1.0f, 1.0f, &k);
+        Check(a == 128 && b == 128 && k == 128, "PSX grey 128 and no COLOR_0 (in every mode) are neutral: C = 128 (x 1)");
+        RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, 1.0f, 100u, 1.0f, 1.0f, &a);
+        Check(a == 255, "PSX white lights up to twice: C = 255 (255/128)");
+        RsHires_PreviewChannel(RS_HIRES_VCOL_OFF, 1, 0.0f, 100u, 1.0f, 1.0f, &a);
+        Check(a == 128, "off: black COLOR_0 is ignored");
+        Check(RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, 1.0f, 200u, 1.0f, 0.8f, NULL) == 255 &&
+                  RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, RldHiresColor_Decode(128.0f / 255.0f), 200u, 1.0f, 1.35f, NULL) == 200,
+              "PSX blend is unlit: texel 200 x 255/128 clamps to white, grey 128 shows the texel as it is, whatever the light");
+        Check(abs(RsHires_PreviewChannel(RS_HIRES_VCOL_GLTF, 1, 1.0f, 200u, 1.0f, 0.8f, NULL) - 160) <= 1,
+              "glTF stays lit: texel 200 x white x 0.8 = 160");
+    }
+
+    // 2. The suggestion and the switch, on karts made here (16 x 16 texture).
+    {
+        static const struct KtSpec ps1 = { 1, 0, 0, 0, 16, 0, 128 }, white = { 1, 0, 0, 0, 16, 0, 235 }, none = { 1, 0, 0, 0, 16, 0, 0 },
+                                   flat = { 1, 0, 0, 0, 0, 0, 128 };
+        unsigned char before[64];
+        size_t keepAt;
+        int r;
+        Kt_Check(&ps1, &c);
+        r = RsCharHires_SuggestColours(&c, RS_ROUTE_HIRES, &why);
+        Check(c.vcolPresent == 1 && c.vcolPs1 == 1 && c.vcolMedian == 128 && c.vcolMode == RS_HIRES_VCOL_GLTF,
+              "PS1-like kart: COLOR_0 there, HRG-36 said (median 128), checked in glTF");
+        Check(r == RS_HIRES_VCOL_PSX && why == RS_VCOL_WHY_PS1, "PS1-like kart: PSX suggested (Hi-Res too)");
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_MODEL, L"HRG-36", NULL, L"Switch Vertex color blending on."),
+              "PS1-like kart in glTF: the warning HRG-36 with its fix");
+        keepAt = c.previewKeepAt;
+        memcpy(before, c.preview + keepAt, sizeof(before));
+        {
+            const int glTFbyte = c.preview[16 + 6];
+            Check(RsHires_SetColourMode(&c, RS_HIRES_VCOL_PSX) == 1 && RsHires_SetColourMode(&c, RS_HIRES_VCOL_PSX) == 0 &&
+                      c.vcolMode == RS_HIRES_VCOL_PSX,
+                  "RsHires_SetColourMode: 1 when the mode changes, 0 when it is that mode already");
+            Check(c.preview && c.previewKeepAt == keepAt && memcmp(before, c.preview + keepAt, sizeof(before)) == 0,
+                  "another mode: the textures and materials stay where and what they were (the view keeps them)");
+            snprintf(line, sizeof(line), "PSX blend makes the PS1-like kart brighter than glTF (corner %d against %d)", c.preview[16 + 6], glTFbyte);
+            Check(c.preview[16 + 6] > glTFbyte + 40, line);
+        }
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(!Kt_HasRule(m, n, L"HRG-36"), "PS1-like kart in PSX blend: no HRG-36");
+        Check(RsCharHires_SuggestColours(&c, RS_ROUTE_HIRES, &why) == RS_HIRES_VCOL_PSX && why == RS_VCOL_WHY_PS1,
+              "the suggestion does not change with the mode drawn");
+        RsHires_CheckFree(&c);
+
+        Kt_Check(&white, &c);
+        r = RsCharHires_SuggestColours(&c, RS_ROUTE_LOWPOLY, &why);
+        Check(c.vcolPresent == 1 && c.vcolPs1 == 0 && r == RS_HIRES_VCOL_GLTF && why == RS_VCOL_WHY_WHITE,
+              "white-ish COLOR_0 (sRGB 235): glTF suggested (Low-Poly too)");
+        RsHires_SetColourMode(&c, RS_HIRES_VCOL_PSX);
+        Check(RsCharHires_SuggestColours(&c, RS_ROUTE_LOWPOLY, &why) == RS_HIRES_VCOL_GLTF && why == RS_VCOL_WHY_WHITE,
+              "white-ish COLOR_0 drawn in PSX blend: the suggestion stays glTF");
+        RsHires_CheckFree(&c);
+
+        Kt_Check(&none, &c);
+        r = RsCharHires_SuggestColours(&c, RS_ROUTE_LOWPOLY, &why);
+        Check(c.vcolPresent == 0 && r == -1 && why == RS_VCOL_WHY_NONE, "no COLOR_0: no switch (no suggestion)");
+        RsHires_CheckFree(&c);
+
+        Kt_Check(&flat, &c);
+        Check(c.vcolPresent == 1 && c.vcolMedian == -1 && RsCharHires_SuggestColours(&c, RS_ROUTE_LOWPOLY, &why) == RS_HIRES_VCOL_PSX &&
+                  why == RS_VCOL_WHY_ROUTE && RsCharHires_SuggestColours(&c, RS_ROUTE_HIRES, &why) == RS_HIRES_VCOL_GLTF,
+              "COLOR_0 on untextured faces only: not decidable - Low-Poly PSX, Hi-Res glTF");
+        RsHires_CheckFree(&c);
+    }
+
+    // 3. The line below the switch.
+    {
+        wchar_t text[RS_WIZ_TEXT_MAX];
+        RsCharHires_ColourLine(RS_HIRES_VCOL_PSX, RS_HIRES_VCOL_PSX, RS_VCOL_WHY_PS1, RS_ROUTE_HIRES, text, RS_WIZ_TEXT_MAX);
+        Check(wcscmp(text, L"Your vertex colours look like PS1 shading - blending is on.") == 0, "the line of a PS1-like model");
+        RsCharHires_ColourLine(RS_HIRES_VCOL_OFF, RS_HIRES_VCOL_PSX, RS_VCOL_WHY_PS1, RS_ROUTE_HIRES, text, RS_WIZ_TEXT_MAX);
+        Check(wcsstr(text, L"Your choice - suggested: on.") != NULL, "the author's other mode: said, and the suggestion");
+        RsCharHires_ColourLine(RS_HIRES_VCOL_PSX, -1, RS_VCOL_WHY_NONE, RS_ROUTE_HIRES, text, RS_WIZ_TEXT_MAX);
+        Check(text[0] == 0, "no COLOR_0: no line");
+    }
+
+    // 4. The pack step with the mode.
+    {
+        const wchar_t *a[RS_HIRES_PACK_ARGS];
+        Check(RsHires_PackArgs(L"in.rldchar", L"model.glb", L"out.rldchar", RS_HIRES_VCOL_PSX, a) == 8 && wcscmp(a[5], L"--vertex-colors") == 0 &&
+                  wcscmp(a[6], L"psx") == 0 && wcscmp(a[7], L"--machine") == 0,
+              "the pack step with a mode: hires-add ... -o <out> --vertex-colors psx --machine");
+        Check(wcscmp(RsHires_ColourWord(RS_HIRES_VCOL_GLTF), L"gltf") == 0 && wcscmp(RsHires_ColourWord(RS_HIRES_VCOL_OFF), L"off") == 0 &&
+                  RsHires_ColourWord(3) == NULL && RsHires_ColourModeOf(L"psx") == RS_HIRES_VCOL_PSX && RsHires_ColourModeOf(L"on") == -1,
+              "the words of the modes are rldpack's (gltf, psx, off)");
+    }
+}
 
 static void Kt_SelfTestRoutes(const wchar_t *folder)
 {
@@ -699,13 +892,22 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
             own += wcsstr(m[rule].text, L"inding of rule") == NULL && wcsstr(m[rule].text, L"ver budget") == NULL;
             kept += wcsncmp(m[rule].rule, L"HRG-", 4) == 0;
         }
-        Check(n == 35 && lines == 35 && fixes == 35 && kept == 35, "every rule HRG-1..36 but the folded 19 and 20: a line with its rule ID and its own fix");
+        // HRG-36 (PS1-like vertex colours) is a warning in glTF mode (vcolMode 0 here), whatever the row says.
+        Check(n == 35 && lines == 34 && fixes == 35 && kept == 35, "every rule HRG-1..36 but the folded 19 and 20: a line with its rule ID and its own fix");
+        Check(Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_MODEL, L"HRG-36", NULL, L"Switch Vertex color blending on."),
+              "HRG-36 in glTF mode: a warning, the fix switches Vertex color blending on");
         Check(Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_MODEL, L"HRG-16", L"Finding of rule 16 (and 1 more).", NULL) &&
                   Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-27", L"Finding of rule 27.", NULL) &&
                   Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-27", L"Over budget: a texture edge of 4096, the limit is 2048.", NULL),
               "one rule twice is one line (and 1 more); the budget keeps a line per limit");
-        Check(own == 5 && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_MODEL, L"HRG-12", L"The model has more than one armature.", NULL),
-              "the container rules HRG-1..4 and HRG-12 say the Studio's own sentence");
+        Check(own == 6 && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_MODEL, L"HRG-12", L"The model has more than one armature.", NULL),
+              "the container rules HRG-1..4, HRG-12 and HRG-36 say the Studio's own sentence");
+        c.vcolMode = RS_HIRES_VCOL_PSX;
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(n == 34 && !Kt_HasRule(m, n, L"HRG-36"), "HRG-36 in PSX blend: no line");
+        c.vcolMode = RS_HIRES_VCOL_OFF;
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(n == 34 && !Kt_HasRule(m, n, L"HRG-36"), "HRG-36 with the vertex colours off: no line");
         Check(Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_WHEELS, L"HRG-31", NULL, NULL) && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_ANIMATIONS, L"HRG-21", NULL, NULL) &&
                   Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-17", NULL, NULL) && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-35", NULL, NULL),
               "the places: wheel details at the wheels, clip names at the animations, textures and limits at the size");
@@ -735,9 +937,10 @@ static int Kt_Write(const wchar_t *folder)
     } karts[] = {
         { L"route-bare.glb", { 2, 1, 0, 0, 16, 0 } },     // skinned, no clips, no wheels, a 16 x 16 texture (upscaled on Low-Poly)
         { L"route-wheels.glb", { 2, 1, 12, 4, 16, 0 } },  // skinned, 12 clips, its own 4 wheels (the page adds --wheels off)
+        { L"route-vcol.glb", { 2, 1, 0, 0, 16, 0, 128 } }, // as route-bare, with PS1-like COLOR_0 (grey 128): the page suggests PSX
     };
     int i, route, ok = 1;
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < (int)(sizeof(karts) / sizeof(karts[0])); i++) {
         wchar_t path[1024];
         size_t size = 0;
         unsigned char *glb = Kt_Glb(&karts[i].sp, &size);
@@ -882,8 +1085,14 @@ int wmain(int argc, wchar_t **argv)
         struct RsTexNative nat;
         wchar_t why[256];
         const unsigned char *flat = c.preview + 16;
-        Check(flat[6] == 100 && flat[7] == 0 && flat[16] == 100 && flat[17] == 0 && flat[26] == 100 && flat[27] == 0,
-              "flat picture: the three corners of the body are red (texel 255 x C 100 = 100), no green");
+        // COLOR_0 at sRGB 128 in glTF mode: the factor 0.2159, on the display
+        // curve 128/255, x the light of a +Z normal (1.0346): 132.
+        const float lightZ = RsHires_Light((const float[3]){ 0.0f, 0.0f, 1.0f });
+        const int want = Kt_Expect(RS_HIRES_VCOL_GLTF, RldHiresColor_Decode(128.0f / 255.0f), 255u, lightZ);
+        Check(lightZ > 1.034f && lightZ < 1.035f, "the engine's light on a +Z normal: ambient 0.875 + sun 0.40 x 0.399 = 1.0346");
+        Check(abs(flat[6] - want) <= 2 && flat[7] == 0 && abs(flat[16] - want) <= 2 && flat[17] == 0 && abs(flat[26] - want) <= 2 && flat[27] == 0 &&
+                  want == 132,
+              "flat picture: the three corners of the body are red (texel 255 x 128/255 x 1.0346 = 132, within 2), no green");
         Check(RsTex_ParseNative(c.preview, c.previewBytes, c.previewKeepAt, &nat, why, 256) == 1, "the view reads the textured model");
         if (nat.triangles == 5) {
             const struct RsTexImage *img = RsTex_NativeImage(&nat, RsTex_NativeMaterialOf(&nat, 0));
@@ -896,8 +1105,10 @@ int wmain(int argc, wchar_t **argv)
             Check(nat.textureCount == 1 && img != NULL && img->w == 16 && img->h == 16, "textured model: the body's material samples the 16 x 16 texture");
             Check(nat.mat[RsTex_NativeMaterialOf(&nat, 0)].filtered == 1 && nat.mat[RsTex_NativeMaterialOf(&nat, 0)].nearest == 0,
                   "textured model: the material asks for the engine's hi-res filter (trilinear, anisotropic), not nearest");
-            Check(k0.r == 100 && k0.g == 100 && k0.b == 100 && k0.a == 255,
-                  "COLOR_0 as the engine applies it: linear 0.2159 -> byte 55 -> display curve 128, lit 0.7786: C = 100");
+            Check(k0.r == 64 && k0.g == 64 && k0.b == 64 && k0.a == 255 && k0.l == 132,
+                  "COLOR_0 as the engine applies it: linear 0.2159 -> display curve 128/255 = C 64 of 128, the light 1.0346 = 132 of 128");
+            Check(nat.mat[RsTex_NativeMaterialOf(&nat, 0)].lit == 1 && (nat.flags & RS_TEX_NATIVE_LIT) && nat.light != NULL,
+                  "textured model: a LIT material with a light per corner (RS_TEX_MATERIAL_LIT, RS_TEX_NATIVE_LIT)");
             if (img) {
                 mid = RsTex_Texel(img, 0, (k0.u + k1.u + k2.u) / 3, (k0.v + k1.v + k2.v) / 3);
                 corner = RsTex_Texel(img, 0, k0.u, k0.v);
@@ -925,7 +1136,19 @@ int wmain(int argc, wchar_t **argv)
           "hires-warn.glb: the clip warning");
     Check(c.wheels == 0 && c.clips == 11 && c.clipState[6] == RS_HIRES_CLIP_FALLBACK && c.clipVia[6] == 0 && c.clipFullLock[6] == 0,
           "hires-warn.glb: no wheels, 'hit' falls back to 'idle'");
-    Check(c.previewTriangles == 1, "hires-warn.glb: the picture has the body only (the found wheels are not drawn)");
+    Check(c.previewTriangles == 1 + 4 * 80, "hires-warn.glb: the picture has the body and the engine's 4 standard wheels of 80 triangles (not the found ones)");
+    if (c.preview && c.previewTriangles == 321) {
+        // The first standard wheel's first corner (a tread vertex, grey 38 shown
+        // as the display value) in glTF mode, lit: no texel, the white default material.
+        const unsigned char *t = c.preview + 16 + 30;   // after the body triangle (3 records of 10 bytes)
+        float n[3] = { 0.0f, 1.0f, 0.0f };
+        const int want = (int)(38.0f / 255.0f * RsHires_Light(n) * 255.0f + 0.5f);
+        char what[160];
+        snprintf(what, sizeof(what), "a standard wheel's tread: its byte 38 as the display value, lit in glTF (%d, want %d)", t[6], want);
+        Check(abs(t[6] - want) <= 2 && t[6] == t[7] && t[7] == t[8] && t[9] == 1, what);
+        Check(RsHires_SetColourMode(&c, RS_HIRES_VCOL_PSX) == 1 && c.preview[16 + 30 + 6] == 38,
+              "a standard wheel in PSX blend: unlit, its byte 38 as it is");
+    }
     RsHires_CheckFree(&c);
 
     // The clip hull (include/rldhires_hull.inc) in the Studio's check: clips that
@@ -947,7 +1170,7 @@ int wmain(int argc, wchar_t **argv)
     Check(RsHires_CheckFile(path, &c) == 0 && c.read == 0 && c.why[0] != 0 && c.preview == NULL, "a missing file says why");
     RsHires_CheckFree(&c);
 
-    Check(RsHires_PackArgs(L"in.rldchar", L"model.glb", L"out.rldchar", args) == 6 && wcscmp(args[0], L"hires-add") == 0 &&
+    Check(RsHires_PackArgs(L"in.rldchar", L"model.glb", L"out.rldchar", -1, args) == 6 && wcscmp(args[0], L"hires-add") == 0 &&
               wcscmp(args[1], L"in.rldchar") == 0 && wcscmp(args[2], L"model.glb") == 0 && wcscmp(args[3], L"-o") == 0 &&
               wcscmp(args[4], L"out.rldchar") == 0 && wcscmp(args[5], L"--machine") == 0,
           "the pack step is rldpack hires-add <character> <model> -o <out> --machine");
@@ -968,14 +1191,15 @@ int wmain(int argc, wchar_t **argv)
     }
     Path(path, argv[1], L"hires-tex-upscaled.glb");
     Check(RsHires_CheckFile(path, &c) == 1 && c.usable == 1 && c.previewTextured == 1 && c.textures == 1 && c.textureEdge == 64u &&
-              c.errors == 0 && c.warnings == 0,
-          "hires-tex-upscaled.glb (the Studio's upscale step): usable, no error or warning, its texture 64 x 64, textured preview");
+              c.errors == 0 && c.warnings == 1,
+          "hires-tex-upscaled.glb (the Studio's upscale step): usable, no error, one warning (HRG-36: its COLOR_0 128 read in glTF mode), its texture 64 x 64, textured preview");
     RsHires_CheckFree(&c);
 
     Check(wcscmp(RsHires_ClipName(0), L"idle") == 0 && wcscmp(RsHires_ClipName(11), L"menu") == 0 && wcscmp(RsHires_ClipName(12), L"?") == 0,
           "clip names");
 
     Kt_SelfTestRoutes(argv[1]);
+    Kt_SelfTestColours();
 
     printf("rs_hires selftest %s: %d checks, %d failures\n", s_failures ? "FAILED" : "passed", s_checks, s_failures);
     return s_failures != 0;

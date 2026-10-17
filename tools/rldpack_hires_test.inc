@@ -62,6 +62,7 @@ struct HrTestSpec
 	int sameImageNormal;    // material 0 uses its base colour image as normal map too
 	int clampTexture;       // a second material uses the same image through a clamping sampler
 	float colour0;          // > 0: the body's three vertices get COLOR_0 (linear grey of this value)
+	int vcolMode;           // the vertex colour mode the model is opened for (RldHires_OpenAs); 0 = glTF
 };
 
 static int s_hrChecks;
@@ -733,7 +734,8 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	return glb;
 }
 
-// Opens the GLB of a spec. Returns RldHires_Open's answer; rep is cleared first.
+// Opens the GLB of a spec (RldHires_OpenAs in the spec's vertex colour mode).
+// Returns its answer; rep is cleared first.
 // The model is closed again unless keep is given.
 static int HrTest_Open(const struct HrTestSpec *sp, RldHiresReport *rep, RldHiresModel *keep, u8 **glbKeep)
 {
@@ -748,7 +750,7 @@ static int HrTest_Open(const struct HrTestSpec *sp, RldHiresReport *rep, RldHire
 		HrTest_Check(0, "out of memory building a test GLB");
 		return 0;
 	}
-	ok = RldHires_Open(glb, size, &m, rep);
+	ok = RldHires_OpenAs(glb, size, sp->vcolMode, &m, rep);
 	if (keep != NULL)
 	{
 		*keep = m;
@@ -1223,6 +1225,239 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 	return 0;
 }
 
+// HIRES-ADD PER VERTEX COLOUR MODE: the switch --vertex-colors, the check in
+// the mode (HRG-36 only in glTF), and the container hires-add writes - the
+// mode in the CHRG flags and nothing else changed; glTF is the bytes of before.
+static void HrTest_PackModes(void)
+{
+	static struct RldHiresPackIn in;
+	static struct RldHiresPackIn back;
+	static RldHiresReport rep;
+	struct HrTestSpec sp;
+	const u8 info[32] = {1, 2, 3, 4, 5, 6, 7, 8};
+	const u8 model[48] = {9, 8, 7, 6, 5, 4, 3, 2, 1};
+	char *rest[8];
+	int mode = -2;
+	int given = -2;
+	u8 *glb;
+	u32 glbSize = 0;
+	u8 *before;
+	size_t beforeSize = 0;
+	u8 *plainChunk;
+	size_t plainChunkSize = 0;
+	const char *why = NULL;
+	int k;
+
+	{
+		char a0[] = "in.rldchar";
+		char a1[] = "model.glb";
+		char a2[] = "-o";
+		char a3[] = "out.rldchar";
+		char sw[] = "--vertex-colors";
+		char psx[] = "psx";
+		char off[] = "off";
+		char gltf[] = "gltf";
+		char bad[] = "PSX";
+		char *none[4] = {a0, a1, a2, a3};
+		char *mid[6] = {a0, sw, psx, a1, a2, a3};
+		char *last[6] = {a0, a1, a2, a3, sw, off};
+		char *first[6] = {sw, gltf, a0, a1, a2, a3};
+		char *wrong[6] = {a0, a1, a2, a3, sw, bad};
+		char *twice[8] = {a0, a1, a2, a3, sw, psx, sw, off};
+		char *empty[5] = {a0, a1, a2, a3, sw};
+		const char *paths[2];
+		const char *outPath = NULL;
+
+		HrTest_Check(RldHiresPack_VertexColours(4, none, rest, &mode, &given) == 4 && mode == RLDHIRES_VCOL_GLTF && given == 0 && rest[3] == a3,
+		             "--vertex-colors: without it glTF, the arguments as they are");
+		HrTest_Check(RldHiresPack_VertexColours(6, mid, rest, &mode, &given) == 4 && mode == RLDHIRES_VCOL_PSX && given == 1 && rest[0] == a0 &&
+		                 rest[1] == a1 && rest[2] == a2 && rest[3] == a3 && RldHiresPack_Args(4, rest, 2, paths, &outPath) == 1 &&
+		                 strcmp(outPath, "out.rldchar") == 0,
+		             "--vertex-colors psx between the arguments: PSX, the others in their order");
+		HrTest_Check(RldHiresPack_VertexColours(6, last, rest, &mode, &given) == 4 && mode == RLDHIRES_VCOL_OFF && given == 1,
+		             "--vertex-colors off at the end");
+		HrTest_Check(RldHiresPack_VertexColours(6, first, rest, &mode, &given) == 4 && mode == RLDHIRES_VCOL_GLTF && given == 1,
+		             "--vertex-colors gltf first");
+		HrTest_Check(RldHiresPack_VertexColours(6, wrong, rest, &mode, &given) == -1 && RldHiresPack_VertexColours(8, twice, rest, &mode, &given) == -1 &&
+		                 RldHiresPack_VertexColours(5, empty, rest, &mode, &given) == -1,
+		             "--vertex-colors: an unknown value (PSX), the switch twice, no value: usage errors");
+	}
+
+	// A model with PS1 shading (COLOR_0 at sRGB 128 on textured faces).
+	memset(&sp, 0, sizeof(sp));
+	sp.colour0 = 0.2158605f;
+	glb = HrTest_Glb(&sp, &glbSize);
+	plainChunk = (glb != NULL) ? RldHires_BuildChunk(glb, glbSize, &plainChunkSize) : NULL;
+	memset(&in, 0, sizeof(in));
+	Rld_AddChunk(&in.c, "CHRI", info, sizeof(info), RLD_COMPRESSION_NONE);
+	Rld_AddChunk(&in.c, "CMDL", model, sizeof(model), RLD_COMPRESSION_NONE);
+	in.minor = 3;
+	before = (plainChunk != NULL) ? RldHiresPack_Rebuild(&in, plainChunk, plainChunkSize, &beforeSize, &why) : NULL;
+	HrTest_Check(before != NULL, "hires-add per mode: the container of before (BuildChunk, flags 0) is made");
+	for (k = 0; (k < 3) && (before != NULL); k++)
+	{
+		RldHiresModel m;
+		u8 *chunk;
+		size_t chunkSize = 0;
+		u8 *bytes;
+		size_t size = 0;
+		char line[160];
+		int ok;
+
+		RldHires_ReportClear(&rep);
+		ok = RldHiresPack_CheckGlbAs(glb, glbSize, k, &m, &rep);
+		RldHires_Close(&m);
+		snprintf(line, sizeof(line), "hires-add %s: the model is usable, HRG-36 %s", RldHiresColor_ModeName(k), (k == RLDHIRES_VCOL_GLTF) ? "warns" : "says nothing");
+		HrTest_Check(ok && (rep.errors == 0) && (RldHires_ReportHas(&rep, "HRG-36") == (k == RLDHIRES_VCOL_GLTF)), line);
+
+		chunk = RldHires_BuildChunkFlags(glb, glbSize, (u32)k, &chunkSize);
+		bytes = (chunk != NULL) ? RldHiresPack_Rebuild(&in, chunk, chunkSize, &size, &why) : NULL;
+		if (bytes != NULL)
+		{
+			RldHiresChunk c;
+			const char *rule = NULL;
+			int sameOthers;
+
+			HrTest_FromBytes(bytes, &back);
+			sameOthers = (back.c.chunkCount == 3) && (memcmp(back.c.chunks[0].stored, info, sizeof(info)) == 0) &&
+			             (memcmp(back.c.chunks[1].stored, model, sizeof(model)) == 0) && (size == beforeSize) &&
+			             (memcmp(bytes, before, RLD_HEADER_SIZE) == 0);
+			snprintf(line, sizeof(line), "hires-add %s: CHRG flags %d, read back as mode %s; the other chunks and the size as in glTF", RldHiresColor_ModeName(k), k,
+			         RldHiresColor_ModeName(k));
+			HrTest_Check(sameOthers && (memcmp(back.c.chunks[2].type, "CHRG", 4) == 0) &&
+			                 RldHires_ParseChunk(back.c.chunks[2].stored, (size_t)back.c.chunks[2].sizeRaw, &c, &rule, NULL, 0) == 1 && c.flags == (u32)k &&
+			                 RldHiresColor_Mode(c.flags) == k && c.glbSize == glbSize && memcmp(c.glb, glb, glbSize) == 0,
+			             line);
+			if (k == RLDHIRES_VCOL_GLTF)
+			{
+				HrTest_Check(memcmp(bytes, before, beforeSize) == 0, "hires-add gltf (and without the switch): the bytes of before, flags 0");
+			}
+			else
+			{
+				HrTest_Check(memcmp(bytes, before, beforeSize) != 0, "hires-add psx / off: the file differs from glTF (the flags and the hash)");
+			}
+		}
+		else
+		{
+			HrTest_Check(0, "hires-add per mode: out of memory");
+		}
+		free(bytes);
+		free(chunk);
+	}
+	free(before);
+	free(plainChunk);
+	free(glb);
+	for (k = 0; k < in.c.chunkCount; k++)
+	{
+		free(in.c.chunks[k].stored);
+	}
+}
+
+// THE VERTEX COLOUR MODE (include/rldhires_color.inc, decisions V-E1 / V-E2):
+// the mode of the flags, the factor per mode, and the PSX chain measured
+// against the PS1 rule over every texel / byte pair. The expectation is the
+// rule itself, written out here: out = texel x byte / 128, clamped to 255.
+static void HrTest_VertexColours(void)
+{
+	double worstChain = 0.0;
+	double worstApply = 0.0;
+	int worstT = 0;
+	int worstB = 0;
+	int gltfSame = 1;
+	int offWhite = 1;
+	int byteBack = 1;
+	int t;
+	int b;
+	char line[200];
+
+	HrTest_Check(RldHiresColor_Mode(0u) == RLDHIRES_VCOL_GLTF && RldHiresColor_Mode(1u) == RLDHIRES_VCOL_PSX && RldHiresColor_Mode(2u) == RLDHIRES_VCOL_OFF &&
+	                 RldHiresColor_Mode(3u) == -1,
+	             "vertex colours: flags 0, 1, 2 are glTF, PSX, off; 3 is no mode");
+	HrTest_Check(RLDHIRES_CHUNK_FLAGS_KNOWN == 0x3u && RldHiresColor_Mode(0x5u) == RLDHIRES_VCOL_PSX,
+	             "vertex colours: the known flags are bits 0..1, the mode reads only them");
+	HrTest_Check(RldHiresColor_ModeByName("gltf") == RLDHIRES_VCOL_GLTF && RldHiresColor_ModeByName("psx") == RLDHIRES_VCOL_PSX &&
+	                 RldHiresColor_ModeByName("off") == RLDHIRES_VCOL_OFF && RldHiresColor_ModeByName("PSX") == -1 &&
+	                 RldHiresColor_ModeByName("") == -1 && RldHiresColor_ModeByName(NULL) == -1 &&
+	                 strcmp(RldHiresColor_ModeName(RLDHIRES_VCOL_PSX), "psx") == 0 && strcmp(RldHiresColor_ModeName(-1), "unknown") == 0,
+	             "vertex colours: the names gltf, psx, off");
+	HrTest_Check(RldHiresColor_ModeFor(RLDHIRES_VCOL_PSX, 1) == RLDHIRES_VCOL_PSX && RldHiresColor_ModeFor(RLDHIRES_VCOL_PSX, 0) == RLDHIRES_VCOL_GLTF &&
+	                 RldHiresColor_ModeFor(RLDHIRES_VCOL_GLTF, 0) == RLDHIRES_VCOL_GLTF && RldHiresColor_ModeFor(RLDHIRES_VCOL_OFF, 0) == RLDHIRES_VCOL_OFF,
+	             "vertex colours: PSX blend on an untextured primitive reads COLOR_0 as glTF (the PS1 shows the colour as it is)");
+	HrTest_Check(RldHiresColor_Factor(RLDHIRES_VCOL_GLTF, 0.25f) == 0.25f && RldHiresColor_Factor(RLDHIRES_VCOL_GLTF, 1.5f) == 1.0f &&
+	                 RldHiresColor_Factor(RLDHIRES_VCOL_GLTF, -1.0f) == 0.0f && RldHiresColor_Factor(RLDHIRES_VCOL_OFF, 0.25f) == 1.0f &&
+	                 RldHiresColor_Factor(-1, 0.25f) == 1.0f,
+	             "vertex colours: the factor in glTF is COLOR_0 (clamped to 0..1), off and no mode 1");
+	HrTest_Check(fabsf(RldHiresColor_Factor(RLDHIRES_VCOL_PSX, 0.2158605f) - 1.0f) < 1e-5f &&
+	                 fabsf(RldHiresColor_Factor(RLDHIRES_VCOL_PSX, 1.0f) - RLDHIRES_VCOL_FACTOR_MAX) < 1e-4f &&
+	                 RldHiresColor_Factor(RLDHIRES_VCOL_PSX, 0.0f) == 0.0f,
+	             "vertex colours: the PSX factor of grey 128 is 1, of 255 RLDHIRES_VCOL_FACTOR_MAX, of 0 is 0");
+
+	// Every PS1 byte b as an exporter writes it (the linear value whose sRGB
+	// byte is b) and every texel t: the engine's chain (factor, vertex byte,
+	// what "ns" makes of it, times the texel, clamped) and the float rule
+	// (RldHiresColor_Apply, the preview) against texel x byte / 128.
+	for (b = 0; b < 256; b++)
+	{
+		const float colour0 = RldHiresColor_Decode((float)b / 255.0f);
+		const float factor = RldHiresColor_Factor(RLDHIRES_VCOL_PSX, colour0);
+		const unsigned char vb = RldHiresColor_VertexByte(RLDHIRES_VCOL_PSX, factor);
+		const float display = RldHiresColor_VertexValue(RLDHIRES_VCOL_PSX, vb);
+
+		byteBack &= (RldHiresColor_Byte(colour0) == b);
+		for (t = 0; t < 256; t++)
+		{
+			const double rule = ((double)t * (double)b / 128.0 < 255.0) ? ((double)t * (double)b / 128.0) : 255.0;
+			const double texel = (double)t / 255.0;
+			const double chain = (((double)display * texel < 1.0) ? ((double)display * texel) : 1.0) * 255.0;
+			const double apply = (double)RldHiresColor_Apply(factor, (float)texel) * 255.0;
+			const double eChain = fabs(chain - rule);
+			const double eApply = fabs(apply - rule);
+
+			if (eChain > worstChain)
+			{
+				worstChain = eChain;
+				worstT = t;
+				worstB = b;
+			}
+			worstApply = (eApply > worstApply) ? eApply : worstApply;
+		}
+	}
+	HrTest_Check(byteBack, "vertex colours: the sRGB byte of every PS1 byte's linear value is that byte again");
+	snprintf(line, sizeof(line), "vertex colours: PSX chain against texel x byte / 128 over 256 x 256 pairs: worst %.4f levels (texel %d, byte %d), at most %.0f",
+	         worstChain, worstT, worstB, RLDHIRES_VCOL_PSX_TOLERANCE);
+	HrTest_Check(worstChain <= RLDHIRES_VCOL_PSX_TOLERANCE, line);
+	snprintf(line, sizeof(line), "vertex colours: RldHiresColor_Apply against texel x byte / 128: worst %.4f levels, at most %.0f", worstApply,
+	         RLDHIRES_VCOL_PSX_TOLERANCE);
+	HrTest_Check(worstApply <= RLDHIRES_VCOL_PSX_TOLERANCE, line);
+	printf("  info hires: PSX blend against the PS1 rule, 256 x 256 pairs: engine chain worst %.6f levels, RldHiresColor_Apply worst %.6f levels (at most %.0f)\n",
+	       worstChain, worstApply, RLDHIRES_VCOL_PSX_TOLERANCE);
+
+	// glTF: the vertex byte is the one the engine stored before the mode (the
+	// linear COLOR_0 x 255, rounded, clamped); off: white, as without COLOR_0.
+	for (b = -2; b < 260; b++)
+	{
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			const float c = ((float)b + 0.3f * (float)k) / 255.0f;
+			const float x = c * 255.0f + 0.5f;
+			const unsigned char before = (unsigned char)((x <= 0.0f) ? 0 : ((x >= 255.0f) ? 255 : (int)x));
+
+			gltfSame &= (RldHiresColor_VertexByte(RLDHIRES_VCOL_GLTF, RldHiresColor_Factor(RLDHIRES_VCOL_GLTF, c)) == before);
+			offWhite &= (RldHiresColor_VertexByte(RLDHIRES_VCOL_OFF, RldHiresColor_Factor(RLDHIRES_VCOL_OFF, c)) == 255);
+		}
+	}
+	HrTest_Check(gltfSame, "vertex colours: glTF gives the engine's vertex byte of before (linear x 255, rounded, clamped)");
+	HrTest_Check(offWhite, "vertex colours: off gives white (255), the vertex of a model without COLOR_0");
+	HrTest_Check(RldHiresColor_VertexValue(RLDHIRES_VCOL_GLTF, 255) > 0.9999f && RldHiresColor_VertexValue(RLDHIRES_VCOL_GLTF, 0) == 0.0f &&
+	                 fabsf(RldHiresColor_VertexValue(RLDHIRES_VCOL_PSX, 128) - 1.0f) < 1e-6f,
+	             "vertex colours: the display value of vertex byte 255 (glTF) is 1, of 128 (PSX) is 1");
+	HrTest_Check(fabsf(RldHiresColor_Encode(RLDHIRES_VCOL_FACTOR_MAX) - 255.0f / 128.0f) < 1e-5f && RldHiresColor_Decode(-1.0f) == 0.0f &&
+	                 RldHiresColor_Encode(-1.0f) == 0.0f,
+	             "vertex colours: the curve continued above 1, 0 below 0");
+}
+
 static int RldHires_SelfTest(void)
 {
 	static RldHiresReport rep;
@@ -1338,10 +1573,44 @@ static int RldHires_SelfTest(void)
 			HrTest_Check(RldHires_ParseChunk(chunk, 15u, &c, &rule, NULL, 0) == 0 && strcmp(rule, "HRG-2") == 0, "HRG-2: a 15-byte chunk refused");
 			RldHires_PutLE16(&chunk[2], 16u);
 
-			// HRG-3: flags.
+			// HRG-3: flags. Bits 0..1 are the vertex colour mode (1 PSX, 2 off
+			// read; 3 refused), every other bit is unknown.
+			RldHires_PutLE32(&chunk[4], 4u);
+			HrTest_Check(RldHires_ParseChunk(chunk, size, &c, &rule, NULL, 0) == 0 && strcmp(rule, "HRG-3") == 0, "HRG-3: flag bit 2 refused");
+			RldHires_PutLE32(&chunk[4], 0x80000001u);
+			HrTest_Check(RldHires_ParseChunk(chunk, size, &c, &rule, NULL, 0) == 0 && strcmp(rule, "HRG-3") == 0, "HRG-3: flag bit 31 refused (with mode PSX)");
+			RldHires_PutLE32(&chunk[4], 3u);
+			HrTest_Check(RldHires_ParseChunk(chunk, size, &c, &rule, detail, (int)sizeof(detail)) == 0 && strcmp(rule, "HRG-3") == 0 &&
+			                 strstr(detail, "mode 3") != NULL,
+			             "HRG-3: vertex colour mode 3 refused");
 			RldHires_PutLE32(&chunk[4], 1u);
-			HrTest_Check(RldHires_ParseChunk(chunk, size, &c, &rule, NULL, 0) == 0 && strcmp(rule, "HRG-3") == 0, "HRG-3: flag bit 0 refused");
+			HrTest_Check(RldHires_ParseChunk(chunk, size, &c, &rule, NULL, 0) == 1 && rule == NULL && c.flags == 1u &&
+			                 RldHiresColor_Mode(c.flags) == RLDHIRES_VCOL_PSX,
+			             "flags 1 (PSX blend) read");
+			RldHires_PutLE32(&chunk[4], 2u);
+			HrTest_Check(RldHires_ParseChunk(chunk, size, &c, &rule, NULL, 0) == 1 && rule == NULL && c.flags == 2u &&
+			                 RldHiresColor_Mode(c.flags) == RLDHIRES_VCOL_OFF,
+			             "flags 2 (off) read");
 			RldHires_PutLE32(&chunk[4], 0u);
+			{
+				size_t sizeF = 0;
+				u8 *psx = RldHires_BuildChunkFlags(glb, glbSize, 1u, &sizeF);
+				u8 *off = RldHires_BuildChunkFlags(glb, glbSize, 2u, NULL);
+				u8 *zero = RldHires_BuildChunkFlags(glb, glbSize, 0u, NULL);
+				u8 *three = RldHires_BuildChunkFlags(glb, glbSize, 3u, NULL);
+				u8 *bit = RldHires_BuildChunkFlags(glb, glbSize, 4u, NULL);
+
+				HrTest_Check(psx != NULL && sizeF == size && RldHires_LE32(&psx[4]) == 1u && memcmp(psx, chunk, 4) == 0 && memcmp(&psx[8], &chunk[8], size - 8u) == 0,
+				             "BuildChunkFlags 1: the chunk of BuildChunk with flags 1, nothing else changed");
+				HrTest_Check(off != NULL && RldHires_LE32(&off[4]) == 2u, "BuildChunkFlags 2: flags 2");
+				HrTest_Check(zero != NULL && memcmp(zero, chunk, size) == 0, "BuildChunkFlags 0 is BuildChunk byte for byte");
+				HrTest_Check(three == NULL && bit == NULL, "BuildChunkFlags refuses mode 3 and an unknown bit");
+				free(psx);
+				free(off);
+				free(zero);
+				free(three);
+				free(bit);
+			}
 
 			// HRG-4: offset and size.
 			RldHires_PutLE32(&chunk[8], 20u);
@@ -1849,10 +2118,29 @@ static int RldHires_SelfTest(void)
 		glb = NULL;
 	}
 
-	// HRG-36: COLOR_0 on textured faces that looks like PS1 shading.
+	// HRG-36: COLOR_0 on textured faces that looks like PS1 shading - a
+	// warning in glTF mode only.
 	memset(&sp, 0, sizeof(sp));
 	sp.colour0 = 0.2158605f; // sRGB 128
 	HrTest_Rule("HRG-36", &sp, "textured faces with COLOR_0 at 128 (sRGB)");
+	HrTest_Check(RldHires_RuleLevel("HRG-36") == RLDHIRES_WARNING, "HRG-36 is a warning");
+	{
+		RldHiresModel cm;
+		u8 *cg = NULL;
+
+		sp.vcolMode = RLDHIRES_VCOL_PSX;
+		HrTest_Check(HrTest_Open(&sp, &rep, &cm, &cg) == 1 && !RldHires_ReportHas(&rep, "HRG-36") && cm.ps1ColourMedian == 128 &&
+		                 cm.vcolMode == RLDHIRES_VCOL_PSX,
+		             "HRG-36: COLOR_0 at 128 in PSX blend says nothing (the median is still measured)");
+		RldHires_Close(&cm);
+		free(cg);
+		sp.vcolMode = RLDHIRES_VCOL_OFF;
+		HrTest_Clean("HRG-36", &sp, "COLOR_0 at 128 with vertex colours off");
+		sp.vcolMode = RLDHIRES_VCOL_GLTF;
+		HrTest_Open(&sp, &rep, NULL, NULL);
+		HrTest_Check(rep.count == 1 && rep.warnings == 1 && strstr(rep.msg[0].text, "use PSX blend") != NULL,
+		             "HRG-36 in glTF mode: one warning, it says use PSX blend");
+	}
 	sp.colour0 = 0.125f; // sRGB 99: below 0.4
 	HrTest_Clean("HRG-36", &sp, "COLOR_0 at 99");
 	sp.colour0 = 0.3185f; // sRGB 153: the top of the band
@@ -1885,6 +2173,12 @@ static int RldHires_SelfTest(void)
 
 	// HIRES-ADD AND HIRES-STRIP, the pure part (RldHiresPack_Rebuild).
 	HrTest_Pack();
+
+	// THE VERTEX COLOUR MODE: the factor and the PS1 rule.
+	HrTest_VertexColours();
+
+	// HIRES-ADD PER VERTEX COLOUR MODE.
+	HrTest_PackModes();
 
 	// HIRES-UPSCALE: Scale2x and the derived GLB.
 	HrTest_Upscale();

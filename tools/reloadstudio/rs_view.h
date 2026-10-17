@@ -112,6 +112,18 @@ void RsView_SetModelKey(HWND view, const wchar_t *key);
 
 // Display toggles of the view; they change nothing that is built.
 void RsView_SetBackground(HWND view, int light);  // 0 dark (default), 1 light
+// The neutral stage (hi-res preview): a neutral grey background (R = G = B)
+// with a soft vertical falloff, a floor that contrasts with it and near-white
+// text in the picture, so that the author sees the colours of the model as
+// they look in the game. It is the same in both colour schemes of the shell.
+// RsView_SetBackground chooses its form meanwhile: dark (the start) or light,
+// two neutral greys each for background and floor, so that every pixel but
+// the model's differs between a dark and a light picture; it applies to the
+// view's own colours again when the stage goes off. The bar of the view keeps
+// the theme's colours. Off (the default) leaves the classic preview exactly
+// as it was.
+void RsView_SetStage(HWND view, int on);          // 1 on, 0 off (default)
+int  RsView_GetStage(HWND view);                  // 1 while the stage is on
 void RsView_SetCrashRef(HWND view, int on);       // the dummy "Crash size" beside the model; default 1
 void RsView_SetOverlays(HWND view, int shadow, int exhaust);  // display only, default 1 1
 void RsView_SetShowNative(HWND view, int native); // 1 = the native model when loaded (default), 0 = the classic one

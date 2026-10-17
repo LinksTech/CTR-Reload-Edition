@@ -51,6 +51,7 @@ typedef struct
 	int requiredExt;    // 1 = "extensionsUsed" and "extensionsRequired" both list "KHR_draco_mesh_compression"
 	int unlitExt;       // 1 = the material has extension KHR_materials_unlit (listed in extensionsUsed AND extensionsRequired)
 	int externalUri;    // 1 = buffers[0] has "uri": "external.bin" instead of using the GLB BIN chunk (the BIN chunk is still written)
+	float colour0;      // > 0: the body's four vertices get COLOR_0, a linear grey of this value (float VEC3, the last accessor)
 } EngHiresTestGlbDesc;
 
 // The clip names, index = bit of clipMask (the fixed list of the hi-res format).
@@ -571,6 +572,7 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 	u32 vIdx;
 	u32 vImg0 = 0;
 	u32 vImg1 = 0;
+	u32 aCol = 0;
 	u32 wheels;
 	u32 texture;
 	int normalMap;
@@ -657,6 +659,18 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 		}
 	}
 
+	// ----- COLOR_0 of the body, last: a model without it keeps every index -----
+	if (d->colour0 > 0.0f)
+	{
+		float col[12];
+
+		for (i = 0; i < 12; i++)
+		{
+			col[i] = d->colour0;
+		}
+		aCol = EngHiresTest_AddFloatAcc(&sc, col, 4, 3, 0);
+	}
+
 	// ----- JSON -----
 	EngHiresTest_JsonPrintf(&json, "{\"asset\":{\"version\":\"2.0\",\"generator\":\"engine_hires_testglb\"},");
 	if (d->requiredExt || d->unlitExt)
@@ -695,6 +709,10 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 	if (d->skinned)
 	{
 		EngHiresTest_JsonPrintf(&json, ",\"JOINTS_0\":%u,\"WEIGHTS_0\":%u", aJoints, aWeights);
+	}
+	if (d->colour0 > 0.0f)
+	{
+		EngHiresTest_JsonPrintf(&json, ",\"COLOR_0\":%u", aCol);
 	}
 	EngHiresTest_JsonPrintf(&json, "},\"indices\":%u}]}", aIdx);
 	if (wheels > 0)

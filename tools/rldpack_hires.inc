@@ -6,13 +6,18 @@
 // include/rldhires.inc - the same code the game and Reload Studio run; nothing
 // here checks a model a second way.
 //
-//   hires-check <file.glb | file.rldchar>
+//   hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off]
 //       prints every finding of the model (and, for a .rldchar, of its CHRG
-//       chunk), then one summary line. Exit 0 = no error, 1 = errors (or a
-//       .rldchar without CHRG: there is no hi-res part to check), 2 = usage.
-//   hires-add <in.rldchar> <model.glb> -o <out.rldchar>
-//       adds CHRG, or replaces the one there is. Refuses a model with an
-//       error (the budget included) and writes nothing then.
+//       chunk), the vertex colour mode, then one summary line. A .rldchar is
+//       checked in the mode its CHRG names (the switch is refused there), a
+//       .glb in the switch's mode (glTF without it). Exit 0 = no error, 1 =
+//       errors (or a .rldchar without CHRG: there is no hi-res part to check),
+//       2 = usage.
+//   hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off]
+//       adds CHRG, or replaces the one there is, with the vertex colour mode
+//       in its flags (include/rldhires_color.inc; without the switch glTF,
+//       flags 0: the bytes hires-add wrote before the mode). Refuses a model
+//       with an error (the budget included) and writes nothing then.
 //   hires-strip <in.rldchar> -o <out.rldchar>
 //       removes CHRG.
 //
@@ -251,9 +256,46 @@ static void RldHiresPack_Summary(const char *what, const RldHiresReport *rep, co
 	       (unsigned long long)m->triangles, textures, (unsigned long long)m->textureBytes);
 }
 
-// Runs every rule on a GLB: RldHires_Open and, when it opened, the budget.
-// Fills rep and m (close m with RldHires_Close). 1 = usable.
-static int RldHiresPack_CheckGlb(const u8 *glb, size_t size, RldHiresModel *m, RldHiresReport *rep)
+// What a vertex colour mode means, for the line hires-check and hires-add print.
+static const char *RldHiresPack_ModeText(int mode)
+{
+	return (mode == RLDHIRES_VCOL_GLTF)  ? "gltf (white is neutral)"
+	       : (mode == RLDHIRES_VCOL_PSX) ? "psx (PSX blend: grey 128 is neutral, texture x colour / 128)"
+	       : (mode == RLDHIRES_VCOL_OFF) ? "off (COLOR_0 is ignored)"
+	                                     : "unknown";
+}
+
+// Takes --vertex-colors <gltf|psx|off> out of argv (anywhere, once): the other
+// arguments go to rest in their order, their count is returned. *mode is the
+// mode (glTF without the switch), *given 1 when the switch was there. -1 = a
+// missing or unknown value, or the switch twice (a usage error).
+static int RldHiresPack_VertexColours(int argc, char **argv, char **rest, int *mode, int *given)
+{
+	int n = 0;
+	int i;
+
+	*mode = RLDHIRES_VCOL_GLTF;
+	*given = 0;
+	for (i = 0; i < argc; i++)
+	{
+		if (strcmp(argv[i], "--vertex-colors") == 0)
+		{
+			if (*given || ((i + 1) >= argc) || (RldHiresColor_ModeByName(argv[i + 1]) < 0))
+			{
+				return -1;
+			}
+			*mode = RldHiresColor_ModeByName(argv[++i]);
+			*given = 1;
+			continue;
+		}
+		rest[n++] = argv[i];
+	}
+	return n;
+}
+
+// Runs every rule on a GLB in a vertex colour mode: RldHires_OpenAs and, when
+// it opened, the budget. Fills rep and m (close m with RldHires_Close). 1 = usable.
+static int RldHiresPack_CheckGlbAs(const u8 *glb, size_t size, int vcolMode, RldHiresModel *m, RldHiresReport *rep)
 {
 	int ok;
 
@@ -263,7 +305,7 @@ static int RldHiresPack_CheckGlb(const u8 *glb, size_t size, RldHiresModel *m, R
 		RldHires_Say(rep, "HRG-5", "the model is %u bytes - with its 16-byte header CHRG may be 64 MiB at most", (unsigned)size);
 		return 0;
 	}
-	ok = RldHires_Open(glb, (u32)size, m, rep);
+	ok = RldHires_OpenAs(glb, (u32)size, vcolMode, m, rep);
 	if (m->data != NULL)
 	{
 		ok = RldHires_CheckBudget(m, rep) && ok;
@@ -280,6 +322,12 @@ static int RldHiresPack_CheckGlb(const u8 *glb, size_t size, RldHiresModel *m, R
 	return ok;
 }
 
+// RldHiresPack_CheckGlbAs in glTF mode.
+static int RldHiresPack_CheckGlb(const u8 *glb, size_t size, RldHiresModel *m, RldHiresReport *rep)
+{
+	return RldHiresPack_CheckGlbAs(glb, size, RLDHIRES_VCOL_GLTF, m, rep);
+}
+
 static int RldHires_CheckCommand(int argc, char **argv)
 {
 	static RldHiresReport rep;
@@ -289,12 +337,16 @@ static int RldHires_CheckCommand(int argc, char **argv)
 	u8 *chunk = NULL;
 	const u8 *glb;
 	size_t glbSize;
+	char *rest[8];
+	int mode = RLDHIRES_VCOL_GLTF;
+	int given = 0;
 
-	if (argc != 1)
+	if ((argc > 8) || (RldHiresPack_VertexColours(argc, argv, rest, &mode, &given) != 1))
 	{
-		fprintf(stderr, "usage: rldpack hires-check <file.glb | file.rldchar>\n");
+		fprintf(stderr, "usage: rldpack hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off]\n");
 		return 2;
 	}
+	argv = rest;
 	RldHires_ReportClear(&rep);
 	memset(&m, 0, sizeof(m));
 	printf("hires check of %s\n", argv[0]);
@@ -318,6 +370,15 @@ static int RldHires_CheckCommand(int argc, char **argv)
 
 		free(bytes);
 		bytes = NULL;
+		if (given)
+		{
+			if (why == NULL)
+			{
+				Rld_Close(&reader);
+			}
+			fprintf(stderr, "rldpack: --vertex-colors is for a .glb - a .rldchar is checked in the mode its CHRG names\n");
+			return 2;
+		}
 		if (why != NULL)
 		{
 			printf("  the file is no readable .rldchar: %s\n", why);
@@ -352,9 +413,11 @@ static int RldHires_CheckCommand(int argc, char **argv)
 		printf("  CHRG version %u, %u-byte header, GLB %u bytes\n", (unsigned)c.version, (unsigned)c.headerBytes, (unsigned)c.glbSize);
 		glb = c.glb;
 		glbSize = c.glbSize;
+		mode = RldHiresColor_Mode(c.flags); // ParseChunk refused mode 3
 	}
 
-	RldHiresPack_CheckGlb(glb, glbSize, &m, &rep);
+	printf("  vertex colours: %s\n", RldHiresPack_ModeText(mode));
+	RldHiresPack_CheckGlbAs(glb, glbSize, mode, &m, &rep);
 	RldHiresPack_Print(&rep);
 	RldHiresPack_Summary("hires check", &rep, &m);
 	RldHires_Close(&m);
@@ -433,10 +496,14 @@ static int RldHires_AddCommand(int argc, char **argv)
 	const char *why;
 	int ok;
 	int result;
+	char *rest[8];
+	int mode = RLDHIRES_VCOL_GLTF;
+	int given = 0;
+	int restCount = (argc > 8) ? -1 : RldHiresPack_VertexColours(argc, argv, rest, &mode, &given);
 
-	if (!RldHiresPack_Args(argc, argv, 2, paths, &outPath))
+	if ((restCount < 0) || !RldHiresPack_Args(restCount, rest, 2, paths, &outPath))
 	{
-		fprintf(stderr, "usage: rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar>\n");
+		fprintf(stderr, "usage: rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off]\n");
 		return 2;
 	}
 	if (!Rld_ReadFile(paths[1], &glb, &glbSize))
@@ -446,7 +513,8 @@ static int RldHires_AddCommand(int argc, char **argv)
 	}
 	RldHires_ReportClear(&rep);
 	printf("hires-add: %s + %s\n", paths[0], paths[1]);
-	ok = RldHiresPack_CheckGlb(glb, glbSize, &m, &rep);
+	printf("  vertex colours: %s\n", RldHiresPack_ModeText(mode));
+	ok = RldHiresPack_CheckGlbAs(glb, glbSize, mode, &m, &rep);
 	RldHiresPack_Print(&rep);
 	RldHiresPack_Summary("hires check", &rep, &m);
 	RldHires_Close(&m);
@@ -465,7 +533,7 @@ static int RldHires_AddCommand(int argc, char **argv)
 		free(glb);
 		return 1;
 	}
-	chunk = RldHires_BuildChunk(glb, (u32)glbSize, &chunkSize);
+	chunk = RldHires_BuildChunkFlags(glb, (u32)glbSize, (u32)mode, &chunkSize);
 	free(glb);
 	if (chunk == NULL)
 	{
@@ -513,14 +581,18 @@ static int RldHires_StripCommand(int argc, char **argv)
 static void RldHires_Usage(FILE *out)
 {
 	fprintf(out, "HI-RES DRIVER (chunk CHRG, preview)\n");
-	fprintf(out, "  rldpack hires-check <file.glb | file.rldchar>\n");
+	fprintf(out, "  rldpack hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off]\n");
 	fprintf(out, "  Checks a glTF binary model (.glb) with the game's rules (include/rldhires.inc),\n");
 	fprintf(out, "  or the CHRG chunk of a character. One line per finding (error: the hi-res\n");
 	fprintf(out, "  model is refused; warning: something falls back to a standard; note: ignored),\n");
-	fprintf(out, "  then a summary. Exit 0 = no error, 1 = errors or no CHRG.\n");
-	fprintf(out, "  rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar>\n");
+	fprintf(out, "  then a summary. Exit 0 = no error, 1 = errors or no CHRG. A .glb is checked\n");
+	fprintf(out, "  in the vertex colour mode of the switch (gltf without it), a .rldchar in its own.\n");
+	fprintf(out, "  rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off]\n");
 	fprintf(out, "  Adds the model as CHRG (or replaces it). Refuses a model with an error, the\n");
-	fprintf(out, "  budget included. Every other chunk stays byte for byte.\n");
+	fprintf(out, "  budget included. Every other chunk stays byte for byte. --vertex-colors says\n");
+	fprintf(out, "  how the game reads the model's vertex colours (COLOR_0): gltf (the default)\n");
+	fprintf(out, "  white is neutral; psx grey 128 is neutral, texture x colour / 128 as on the\n");
+	fprintf(out, "  PS1 (for PS1-style shading); off the colours are ignored.\n");
 	fprintf(out, "  rldpack hires-strip <in.rldchar> -o <out.rldchar>\n");
 	fprintf(out, "  Removes CHRG; every other chunk stays byte for byte.\n");
 	fprintf(out, "  rldpack hires-upscale <in.glb> -o <out.glb>\n");
