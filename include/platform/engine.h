@@ -1222,6 +1222,9 @@ void Engine_HiresCharsLoad(void);              // from Engine_DriverCmdlLoad, be
 void Engine_HiresCharsCollect(struct GameTracker *gGT); // from Engine_FrameCollect: the logic ticks of the hi-res seats
 int Engine_HiresCharOwns(const struct Driver *d); // 1 = d's body and wheels are drawn hi-res in this level
 int Engine_HiresCharRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb); // 1 = drawn (Engine_DriverCmdlRoute)
+// 1 = inst is the driver select instance the engine drew hi-res in this frame
+// (clip menu; its wheels are part of it: the tire pass draws no sprite).
+int Engine_HiresCharSelectDrawn(const struct Instance *inst);
 int Engine_SelfTestHiresChar(int *checks);
 
 // --------------------------------------------------------------------------
