@@ -24,6 +24,10 @@ import sys
 # --------------------------------------------------------------------------
 # Finds the line; everything after the match is "key value ..." tokens.
 LINE_PREFIX_RE = re.compile(r"\[CTR Engine\]\s*hires char:\s*(?P<rest>.*)$")
+# A level load between two lines of a seat (each record carries load_seq, the count of
+# these lines before it): a cross-fade across it was not observed.
+LOAD_MARK_RE = re.compile(r"\[CTR Perf\] load end:|\[CTR Tour\] \d+/\d+: level \d+ \(|"
+                          r"\[CTR Char\] dev seats: |\[CTR Race\] level ")
 
 # our field name -> (word in the log, kind, number of values)
 FIELD_TABLE = {
@@ -141,9 +145,12 @@ def eval_view(rec):
 def parse_hires_lines(lines):
     """Parse game log lines; return one dict per hires line (see FIELD_TABLE)."""
     out = []
+    load_seq = 0
     for raw in lines:
         m = LINE_PREFIX_RE.search(raw)
         if not m:
+            if LOAD_MARK_RE.search(raw):
+                load_seq += 1
             continue
         toks = m.group("rest").split()
         rec = {f: None for f in FIELD_TABLE}
@@ -174,6 +181,7 @@ def parse_hires_lines(lines):
             continue
         rec["raw"] = raw.rstrip("\r\n")
         rec["extra"] = extra
+        rec["load_seq"] = load_seq
         for f, w in NONE_WORDS.items():
             if rec[f] == w:
                 rec[f] = None
@@ -185,8 +193,27 @@ def parse_hires_lines(lines):
 # --------------------------------------------------------------------------
 # Evaluation
 # --------------------------------------------------------------------------
+def _gap(prev, r):
+    """1 = the seat's lines prev -> r are not consecutive logic ticks: the timer did
+    not step by exactly 1 (the seat was not drawn in view 0 for a while, or the level
+    changed) or a level load lies between them. Without timers only the load counts."""
+    if prev is None:
+        return 0
+    if prev.get("load_seq", 0) != r.get("load_seq", 0):
+        return 1
+    t0, t1 = prev.get("timer"), r.get("timer")
+    if t0 is not None and t1 is not None and t1 - t0 != 1:
+        return 1
+    return 0
+
+
 def _analyse_ramps(records, rate_hz):
-    """Per seat: follow every cross-fade until blend reaches 1.0."""
+    """Per seat: follow every cross-fade until blend reaches 1.0.
+
+    status: done (watched from its start to 1.0 over consecutive ticks), interrupted
+    (a new clip change before 1.0), unobserved (its start or a part of it fell into a
+    gap of the seat's ticks, see _gap: not judged). Only done ramps must be monotonic
+    and last RAMP_MIN_FRAMES_60 frames."""
     min_lines = RAMP_MIN_FRAMES_60 * rate_hz / 60.0
     by_seat = {}
     for r in records:
@@ -196,11 +223,16 @@ def _analyse_ramps(records, rate_hz):
         cur = None      # open ramp
         prev_clip = None
         prev_blend = None
+        prev_rec = None
         for r in recs:
             b = r["blend"]
             if b is None:
                 continue
             changed = prev_clip is not None and r["clip"] != prev_clip
+            gap = _gap(prev_rec, r)
+            prev_rec = r
+            if cur is not None and gap:
+                cur["unobserved"] = 1  # one ramp, a part of it unseen: it ends as unobserved
             if cur is not None:
                 if changed:
                     cur["status"] = "interrupted"
@@ -211,25 +243,25 @@ def _analyse_ramps(records, rate_hz):
                         cur["monotonic"] = False
                     cur["steps"].append(abs(b - prev_blend))
                     if b >= 1.0:
-                        cur["status"] = "done"
+                        cur["status"] = "unobserved" if cur["unobserved"] else "done"
                         ramps.append(cur)
                         cur = None
                     else:
                         cur["lines"] += 1
             if cur is None and (changed or b < 1.0):
-                if b >= 1.0:       # clip changed, no cross-fade at all
-                    ramps.append({"seat": seat, "lines": 0, "steps": [],
-                                  "monotonic": True, "status": "done"})
+                if b >= 1.0:       # clip changed, no cross-fade seen (across a gap: not seen at all)
+                    ramps.append({"seat": seat, "lines": 0, "steps": [], "monotonic": True,
+                                  "status": "unobserved" if gap else "done", "unobserved": gap})
                 else:
                     cur = {"seat": seat, "lines": 1, "steps": [], "monotonic": True,
-                           "status": "open"}
+                           "status": "open", "unobserved": gap}
             prev_clip, prev_blend = r["clip"], b
         if cur is not None:
             cur["status"] = "interrupted"
             ramps.append(cur)
     for rp in ramps:
         rp["frames"] = rp["lines"] * 60.0 / rate_hz
-        rp["ok"] = (rp["status"] == "interrupted"
+        rp["ok"] = (rp["status"] in ("interrupted", "unobserved")
                     or (rp["monotonic"] and rp["lines"] >= min_lines - 1e-9))
     return ramps
 
@@ -271,10 +303,12 @@ def evaluate(records, rate_hz=30, expected=None, require_states=None,
     ramps = _analyse_ramps(records, rate_hz)
     done = [r for r in ramps if r["status"] == "done"]
     interrupted = [r for r in ramps if r["status"] == "interrupted"]
+    unobserved = [r for r in ramps if r["status"] == "unobserved"]
     frames = [r["frames"] for r in done]
     steps = [x for r in done for x in r["steps"]]
     ramp_info = {
         "count": len(ramps), "completed": len(done), "interrupted": len(interrupted),
+        "unobserved": len(unobserved),
         "min_frames": min(frames) if frames else None,
         "median_frames": statistics.median(frames) if frames else None,
         "max_step": max(steps) if steps else None,
@@ -328,8 +362,9 @@ def format_report(res):
     for st, v in sorted(res["missing"].items()):
         out.append("%-12s %s" % (st, v))
     r = res["ramps"]
-    out.append("ramps: %d total, %d completed, %d interrupted, %d failed; frames@60Hz min %s median %s; "
-               "max blend step %s" % (r["count"], r["completed"], r["interrupted"], r["failed"],
+    out.append("ramps: %d total, %d completed, %d interrupted, %d unobserved (gap or load), %d failed; "
+               "frames@60Hz min %s median %s; max blend step %s" % (
+                   r["count"], r["completed"], r["interrupted"], r["unobserved"], r["failed"],
                                       _fmt(r["min_frames"], "%.1f"), _fmt(r["median_frames"], "%.1f"),
                                       _fmt(r["max_step"], "%.3f")))
     w = res["wheels"]
@@ -420,7 +455,7 @@ def main(argv):
 # --------------------------------------------------------------------------
 def _line(vb, seat, state, clip, blend=1.0, prev="idle", steer=None, yaw=0.2,
           yawgame=0.2, v=3.125, radius=0.25, omega=None, prefix="[CTR Engine] ",
-          tail="", fmt="real", rank=None, want=None):
+          tail="", fmt="real", rank=None, want=None, timer=None):
     """One log line. `state` is the eval-level state (idle, steer_left, jump,
     podium_2, lose, forced:menu, ...); fmt "real" maps it to the engine's words,
     fmt "prov" writes the provisional format (state and clip as given)."""
@@ -454,7 +489,7 @@ def _line(vb, seat, state, clip, blend=1.0, prev="idle", steer=None, yaw=0.2,
     if want is not None:
         want_ = want
     steer = 0.0 if steer is None else steer
-    parts = ["%shires char:" % prefix, "vb %d" % vb, "seat %d" % seat, "timer %d" % (vb * 2),
+    parts = ["%shires char:" % prefix, "vb %d" % vb, "seat %d" % seat, "timer %d" % (vb if timer is None else timer),
              "state %s" % eng, "want %s" % want_, "clip %s" % clip, "t %.3f" % 0.5]
     if blend is not None:
         parts.append("blend %.3f" % blend)
@@ -469,6 +504,18 @@ def _line(vb, seat, state, clip, blend=1.0, prev="idle", steer=None, yaw=0.2,
 
 DEFAULT_SEGMENTS = [("idle", 20), ("steer_left", 20), ("steer_right", 20), ("jump", 20),
                     ("drift_left", 20), ("drift_right", 20), ("hit", 20), ("idle", 20)]
+
+
+def _ticks(lines, start=1, skip=()):
+    """The lines as consecutive logic ticks of their seat: timer start, start + 1, ...
+    (an index in skip adds a gap of 5 ticks before that line)."""
+    out, t = [], start
+    for i, ln in enumerate(lines):
+        if i in skip:
+            t += 5
+        out.append(re.sub(r"timer -?\d+", "timer %d" % t, ln))
+        t += 1
+    return out
 
 
 def make_seat(seat, segments=None, ramp_n=5, cut=None, clip_of=None, mutate=None):
@@ -487,7 +534,7 @@ def make_seat(seat, segments=None, ramp_n=5, cut=None, clip_of=None, mutate=None
             k = ramp_n if cut is None else cut
             ramp = [j / float(ramp_n) for j in range(k)]
         for b in ramp + [1.0] * steady:
-            kw = dict(vb=100 + seat, seat=seat, state=state, clip=clip, blend=b, prev=prev_state)
+            kw = dict(vb=100 + 2 * idx, seat=seat, state=state, clip=clip, blend=b, prev=prev_state, timer=1 + idx)
             if mutate:
                 mutate(idx, kw)
             out.append(_line(**kw))
@@ -529,7 +576,7 @@ def selftest():
     check("parse strs", r.get("state") == "base" and r.get("prev") == "idle"
           and r.get("want") == "steer_left" and r.get("wheels") == "own")
     check("parse eval view", eval_view(r) == ("steer_left", "steer_left") and r.get("eval_ok"))
-    check("parse real extras", r.get("timer") == 2468 and r.get("steerclip") == "steer_left"
+    check("parse real extras", r.get("timer") == 1234 and r.get("steerclip") == "steer_left"
           and r.get("pos") == (1.0, 2.0, 3.0) and r.get("steerRaw") == 62 and r.get("rank") == 0
           and r.get("t") == 0.5 and r.get("drift") == 0 and r.get("roll") == 0.1)
     idl = parse_hires_lines([_line(1, 0, "idle", "idle", prev=None)])[0]
@@ -584,21 +631,51 @@ def selftest():
 
     # --- ramps --------------------------------------------------------------
     # 0 -> 1 in one line
-    log = ["x"] + [_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", 0.0)] \
-        + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5
+    log = ["x"] + _ticks([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", 0.0)]
+                         + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5)
     res = run(log, allow_missing=REQUIRED_STATES)
     check("jump 0->1 FAIL", not crit(res)["blend_ramps"] and res["ramps"]["max_step"] == 1.0
           and res["verdict"] == "FAIL", str(res["ramps"]))
     # clip change with blend 1 immediately
-    log = [_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5
+    log = _ticks([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5)
     res = run(log, allow_missing=REQUIRED_STATES)
     check("clip change without ramp FAIL", not crit(res)["blend_ramps"])
     # decreasing ramp
     bl = [0.0, 0.4, 0.2, 0.6, 0.8, 1.0]
-    log = [_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", b) for b in bl] \
-        + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 3
+    log = _ticks([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", b) for b in bl]
+                 + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 3)
     res = run(log, allow_missing=REQUIRED_STATES)
     check("decreasing ramp FAIL", not crit(res)["blend_ramps"] and res["verdict"] == "FAIL")
+    # a ramp across a gap of the seat's ticks (not drawn for a while): unobserved, not failed
+    base = ([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", 0.0)]
+            + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5)
+    res = run(_ticks(base, skip=(3,)), allow_missing=REQUIRED_STATES)
+    check("0->1 across a tick gap: unobserved, not failed", crit(res)["blend_ramps"]
+          and res["ramps"]["unobserved"] == 1 and res["ramps"]["failed"] == 0, str(res["ramps"]))
+    res = run(_ticks([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5, skip=(3,)),
+              allow_missing=REQUIRED_STATES)
+    check("clip change across a tick gap: unobserved", crit(res)["blend_ramps"] and res["ramps"]["unobserved"] == 1,
+          str(res["ramps"]))
+    bl2 = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    res = run(_ticks([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", b) for b in bl2]
+                     + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 3, skip=(6,)), allow_missing=REQUIRED_STATES)
+    check("ramp cut by a gap in its middle: unobserved", crit(res)["blend_ramps"] and res["ramps"]["unobserved"] == 1
+          and res["ramps"]["completed"] == 0, str(res["ramps"]))
+    # a level load between two lines (timers consecutive): unobserved
+    a = _ticks([_line(1, 0, "idle", "idle")] * 3)
+    b2 = _ticks([_line(1, 0, "steer_left", "steer_left", 0.0)] + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 5, start=4)
+    res = run(a + ["[CTR Perf] load end: frame_index 51 level 0 vblank 104"] + b2, allow_missing=REQUIRED_STATES)
+    check("0->1 across a level load: unobserved", crit(res)["blend_ramps"] and res["ramps"]["unobserved"] == 1,
+          str(res["ramps"]))
+    res = run(a + b2, allow_missing=REQUIRED_STATES)
+    check("the same without the load: failed", not crit(res)["blend_ramps"] and res["ramps"]["failed"] == 1)
+    # a contiguous good ramp stays judged (done) next to an unobserved one
+    good = ([_line(1, 0, "idle", "idle")] * 3 + [_line(1, 0, "steer_left", "steer_left", b) for b in bl2]
+            + [_line(1, 0, "steer_left", "steer_left", 1.0)] * 3)
+    back = [_line(1, 0, "idle", "idle", 0.0)] + [_line(1, 0, "idle", "idle")] * 4
+    res = run(_ticks(good + back, skip=(len(good),)), allow_missing=REQUIRED_STATES)
+    check("contiguous ramp done, gapped one unobserved", crit(res)["blend_ramps"] and res["ramps"]["completed"] == 1
+          and res["ramps"]["unobserved"] == 1 and res["ramps"]["min_frames"] == 10.0, str(res["ramps"]))
     check("decreasing ramp others fine", crit(res)["clip_per_state"] and crit(res)["wheel_slip"])
     # interrupted
     cutsegs = [("idle", 10)] + [(s_, 0) for s_ in ("steer_left", "steer_right", "jump", "drift_left",
