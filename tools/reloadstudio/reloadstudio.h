@@ -484,6 +484,11 @@
 //   hires-pack                       as the button "Pack into .rldchar" (rldpack hires-add);
 //                                    FAIL when the button is disabled; the shell waits
 //   hires-view front|side|back|top|34|race   a fixed view of the preview
+//   hires-camera <yaw> <pitch> <zoom %>      the camera of the preview (clamped by the view)
+//   hires-crash on|off               the reference dummy "Crash size" beside the model
+//   hires-clip <bind|idle|..|menu>   the clip shown (FAIL when clips cannot be played)
+//   hires-play on|off                play the clip (a loop on the page's timer)
+//   hires-time <seconds> [<degrees>] pause and show that exact frame (wheels turned that far)
 //   hires-report <file>              the fields, the verdict, the summary, every finding,
 //                                    every clip, the picture and the pack result as text
 // The --preview file (little endian): "RLDPV2\0\0", u32 poses = 3 (turn frame 10

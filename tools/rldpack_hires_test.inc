@@ -53,6 +53,7 @@ struct HrTestSpec
 	int jsonBroken;
 	int unusedImage;        // a second image no material uses (not a PNG either)
 	int wrapCount;          // a POSITION count whose byte size wraps 32 bits
+	int animCase;           // the skinning case of the engine's selftest (EngHiresAnimT, case 8): see HrTest_Glb
 };
 
 static int s_hrChecks;
@@ -268,6 +269,22 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	HrTest_PutF(&bin[off[HRV_AIN] + 4], 1.0f);
 	HrTest_PutF(&bin[off[HRV_AOUT] + 12], 1.0f);
 	HrTest_PutF(&bin[off[HRV_AOUT] + 28], 1.0f);
+	if (sp->animCase)
+	{
+		// The case of the engine's selftest (platform/engine_hires_selftest.c,
+		// "gltf chain skinned vertex 3"): joint_1 stands at (0, 0.5, 0) on the
+		// root joint_0, its inverse bind matrix T(0, -0.5, 0); the body's
+		// second vertex (0.1, 0.5, 0) hangs half on each joint; every clip
+		// turns joint_1 from 0 to 10 degrees about Z over 1 s.
+		HrTest_PutF(&bin[off[HRV_IBM] + 64u + 52u], -0.5f);
+		HrTest_PutF(&bin[off[HRV_POS] + 12], 0.1f);
+		HrTest_PutF(&bin[off[HRV_POS] + 16], 0.5f);
+		bin[off[HRV_JNT] + 5] = 1;
+		HrTest_PutF(&bin[off[HRV_WGT] + 16], 0.5f);
+		HrTest_PutF(&bin[off[HRV_WGT] + 20], 0.5f);
+		HrTest_PutF(&bin[off[HRV_AOUT] + 24], 0.0871557427f); // sin 5 degrees
+		HrTest_PutF(&bin[off[HRV_AOUT] + 28], 0.9961946981f); // cos 5 degrees
+	}
 	for (i = 0; i < 6; i++)
 	{
 		HrTest_PutF(&bin[off[HRV_AOUTC] + 16u * (u32)i + 12u], 1.0f);
@@ -425,7 +442,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	}
 	for (i = 0; i < joints; i++)
 	{
-		HrTest_Append(json, sizeof(json), ",{\"name\":\"joint_%d\"", i);
+		HrTest_Append(json, sizeof(json), ",{\"name\":\"joint_%d\"%s", i, (sp->animCase && (i == 1)) ? ",\"translation\":[0,0.5,0]" : "");
 		if ((i == 0) && (joints > 1))
 		{
 			HrTest_Append(json, sizeof(json), ",\"children\":[");
@@ -481,7 +498,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	HrTest_Append(json, sizeof(json), ",\"animations\":[");
 	{
 		int first = 1;
-		const int target = (skins > 0) ? 1 : 0;
+		const int target = (skins > 0) ? (sp->animCase ? 2 : 1) : 0;
 
 		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
 		{
@@ -762,10 +779,12 @@ static void HrTest_Pack(void)
 // rldpack hires-test-files <folder>: the self-test's models as files, for the
 // ctest rldhires_files (cmake/run_rldhires_files.cmake): hires-good.glb (no
 // finding), hires-warn.glb (warnings only: no 'hit', no wheels), hires-bad.glb
-// (an error: a JPEG texture). The folder must exist.
+// (an error: a JPEG texture), hires-anim.glb (the skinning case of the engine's
+// selftest, for Reload Studio's clip playback: rs_hires_test.c). The folder must
+// exist.
 static int RldHires_TestFilesCommand(int argc, char **argv)
 {
-	static const char *const names[3] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb"};
+	static const char *const names[4] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb"};
 	int k;
 
 	if (argc != 1)
@@ -773,7 +792,7 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		fprintf(stderr, "usage: rldpack hires-test-files <folder>\n");
 		return 2;
 	}
-	for (k = 0; k < 3; k++)
+	for (k = 0; k < 4; k++)
 	{
 		struct HrTestSpec sp;
 		char path[RLD_PATH_MAX];
@@ -791,6 +810,10 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		else if (k == 2)
 		{
 			sp.image = 1;
+		}
+		else if (k == 3)
+		{
+			sp.animCase = 1;
 		}
 		glb = HrTest_Glb(&sp, &size);
 		snprintf(path, sizeof(path), "%s/%s", argv[0], names[k]);
@@ -860,6 +883,11 @@ static int RldHires_SelfTest(void)
 	}
 	RldHires_Close(&m);
 	HrTest_Check(m.data == NULL && m.drawNodes == NULL && m.images == NULL, "RldHires_Close clears the model");
+
+	// The skinning case (hires-anim.glb) is a clean model too.
+	memset(&sp, 0, sizeof(sp));
+	sp.animCase = 1;
+	HrTest_Check(HrTest_Open(&sp, &rep, NULL, NULL) == 1 && rep.count == 0, "the skinning case model: usable, no message");
 
 	// DETERMINISM: the same GLB gives the same report and counts.
 	{

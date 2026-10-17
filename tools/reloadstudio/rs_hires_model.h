@@ -23,14 +23,18 @@
 // them). A corner's colour is the base colour factor times the base colour
 // texture at its UV (nearest texel, repeat), lit by one fixed light from the
 // front left above (half ambient, half diffuse) - a picture to judge shape and
-// paint by, not the engine's shading. The first pose carries the triangles,
-// the other two of the format are empty: the view shows pose 0 only.
+// paint by, not the engine's shading. The first pose carries the triangles;
+// the second holds the framing box (the bind pose's bounds and 0.25 m around
+// them) as two triangles without area, so that the view frames every frame of
+// a clip the same; the third is empty. The view draws pose 0 only.
 
 #ifndef RS_HIRES_MODEL_H
 #define RS_HIRES_MODEL_H
 
 #include <stddef.h>
 #include <wchar.h>
+
+struct RsHiresAnim;   // the corners, skeleton and clips (rs_hires_model.c)
 
 #define RS_HIRES_ROWS_MAX 64     // = RLDHIRES_REPORT_MAX
 #define RS_HIRES_CLIPS 12        // = RLDHIRES_CLIP_COUNT
@@ -85,6 +89,13 @@ struct RsHiresCheck {
     unsigned char *preview;
     size_t previewBytes;
     int previewTriangles;
+
+    // The clips (RsHires_AnimFrame): animReady 1 = the skeleton and the clips
+    // were built; animWhy says why one could not be (a clip that cannot be
+    // built plays as missing - its fallback).
+    struct RsHiresAnim *anim;
+    int animReady;
+    wchar_t animWhy[RS_HIRES_TEXT_MAX];
 };
 
 // The name of a clip (L"idle" .. L"menu"), L"?" outside the list.
@@ -99,6 +110,31 @@ int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out);
 int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out);
 
 void RsHires_CheckFree(struct RsHiresCheck *c);
+
+// THE CLIPS. A frame of clip (RLDHIRES_CLIP_* order, -1 = the rest pose) at
+// `seconds` of the preview, the wheels turned by wheelDegrees about their axle
+// (+ rolls forward). The pose is made as the game makes it, with the
+// functions of include/rldhires_anim.inc (RldAnim_SampleClip, _BlendPose,
+// _NodeMatrices, _JointMatrix, _PaletteEntry, _SkinVertex): a missing clip
+// plays its fallback (clipVia), a looped clip wraps, a clip played once runs
+// and holds its end (the preview starts it again after a held second), a steer
+// clip is the race's base state - idle looped, the steer clip scrubbed by a
+// steer share that goes 0 -> 1 -> 0 every 2 s, blended over idle by that share
+// - and a drift that falls back to its steer clip shows it at full lock.
+// Writes the frame as RLDPV2 into a buffer of the check (valid until the next
+// frame or RsHires_CheckFree); returns its triangles, 0 when the clips cannot
+// play (animReady 0).
+int RsHires_AnimFrame(struct RsHiresCheck *c, int clip, float seconds, float wheelDegrees, const unsigned char **bytes, size_t *size);
+// A corner of the last frame (3 per triangle, in the order of the picture),
+// metres and its normal. 1 = there is one.
+int RsHires_AnimCorner(const struct RsHiresCheck *c, int index, float p[3], float n[3]);
+// Where in what it plays a clip stands at `seconds` (the rule of
+// RsHires_AnimFrame): its local seconds; *share (may be NULL) the steer share
+// for a steer clip, -1 for any other. 0 for the rest pose.
+float RsHires_AnimLocal(const struct RsHiresCheck *c, int clip, float seconds, float *share);
+// The length in seconds of what a clip plays (its fallback's when it is
+// missing); 0 for the rest pose.
+float RsHires_AnimLength(const struct RsHiresCheck *c, int clip);
 
 // The arguments of the pack step, for Rs_RunRldpack: hires-add <character>
 // <model> -o <out> --machine (--machine changes no byte of the file). args
