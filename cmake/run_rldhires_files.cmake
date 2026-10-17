@@ -8,8 +8,14 @@
 #    CHRI + CMDL only; good_probe-poses: with CNET and CTXT, chunks the
 #    envelope does not know), rldpack hires-test-files <folder> the models
 #    hires-good.glb (no finding), hires-warn.glb (warnings) and hires-bad.glb (an
-#    error).
-# 3. For both characters: hires-add twice gives the same bytes; hires-strip of
+#    error), hires-walk.glb (an animation 'Walk' next to the 12 clips) and, from
+#    old_plain, hires-v2.rldchar (CHRG version 2) and hires-h20.rldchar (CHRG
+#    version 1 with a 20-byte header).
+# 3. CHRG version 1 is frozen (container 4.2): an unknown clip name is a note
+#    (HRG-21), never an error; a CHRG of a newer version costs only the hi-res
+#    part (HRG-1), the file still passes verify (the classic model); a longer
+#    header is read past.
+# 4. For both characters: hires-add twice gives the same bytes; hires-strip of
 #    it is the character again, byte for byte (so every other chunk and its
 #    directory entry stayed as it was); hires-add on a file with CHRG replaces
 #    it (stripped again: the character); verify passes; hires-check reads the
@@ -46,7 +52,7 @@ if(NOT (make_RESULT EQUAL 0))
     fail("make-native-tests")
 endif()
 math(EXPR checks "${checks} + 1")
-pack(glb hires-test-files "${DIR}")
+pack(glb hires-test-files "${DIR}" "${DIR}/old_plain.rldchar")
 set(LAST_OUT "${glb_OUT}")
 if(NOT (glb_RESULT EQUAL 0))
     fail("hires-test-files")
@@ -96,6 +102,51 @@ math(EXPR checks "${checks} + 1")
 string(FIND "${c_OUT}" "HRG-18" at)
 if(NOT (at GREATER -1))
     fail("the clip hull names HRG-18")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# CHRG version 1 frozen: an unknown clip name is ignored with a note.
+pack(c hires-check "${DIR}/hires-walk.glb")
+set(LAST_OUT "${c_OUT}")
+if(NOT (c_RESULT EQUAL 0))
+    fail("hires-check of a model with an animation 'Walk' exits 0")
+endif()
+math(EXPR checks "${checks} + 1")
+string(FIND "${c_OUT}" "hires check: 0 errors, 0 warnings, 1 notes, clips 12/12" at)
+string(FIND "${c_OUT}" "HRG-21" at21)
+if(NOT (at GREATER -1 AND at21 GREATER -1))
+    fail("'Walk' is one note HRG-21, the 12 clips stay")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# A CHRG of a newer writer: version 2 costs only the hi-res part, a longer
+# header is read past; both files pass verify (CHRI and CMDL, the classic model).
+pack(v verify "${DIR}/hires-v2.rldchar")
+set(LAST_OUT "${v_OUT}")
+if(NOT (v_RESULT EQUAL 0))
+    fail("verify passes with a CHRG of version 2 (the classic model stays)")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(c hires-check "${DIR}/hires-v2.rldchar")
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "HRG-1 " at)
+string(FIND "${c_OUT}" "the classic model is used" atClassic)
+if(NOT (c_RESULT EQUAL 1 AND at GREATER -1 AND atClassic GREATER -1))
+    fail("hires-check of a CHRG of version 2 exits 1 with HRG-1, the classic model is used")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(v verify "${DIR}/hires-h20.rldchar")
+set(LAST_OUT "${v_OUT}")
+if(NOT (v_RESULT EQUAL 0))
+    fail("verify passes with a CHRG with a 20-byte header")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(c hires-check "${DIR}/hires-h20.rldchar")
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "CHRG version 1, 20-byte header" at)
+string(FIND "${c_OUT}" "hires check: 0 errors, 0 warnings, 0 notes, clips 12/12, wheels 4/4" atSum)
+if(NOT (c_RESULT EQUAL 0 AND at GREATER -1 AND atSum GREATER -1))
+    fail("hires-check reads a CHRG with a 20-byte header past its unknown bytes")
 endif()
 math(EXPR checks "${checks} + 1")
 

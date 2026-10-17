@@ -158,9 +158,10 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 // bound seat. CPRM (values) has a size limit above, but rldpack does not
 // write it and nothing interprets it yet.
 // PREVIEW: CNET (the native model) and CTXT (its textures), see the section
-// CNET AND CTXT at the end of this file. HI-RES: CHRG (a GLB model, behind
-// the engine's --engine-hires-chars), written by rldpack hires-add, read and
-// checked by include/rldhires.inc. RESERVED NAMES: CTEX (once planned
+// CNET AND CTXT at the end of this file. HI-RES: CHRG (a GLB model, version 1
+// frozen with container format 4.2; drawn by the engine, off with
+// --no-hires-chars), written by rldpack hires-add, read and checked by
+// include/rldhires.inc. RESERVED NAMES: CTEX (once planned
 // for texture data; the textures of the native model are CTXT) and CWHL
 // (own wheels; the native wheels are a part of CNET) - both stay unassigned
 // and are skipped like any unknown chunk.

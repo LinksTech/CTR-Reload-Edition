@@ -1156,6 +1156,40 @@ static void HrTest_Pack(void)
 	free(chrg2);
 }
 
+// The CHRG a newer writer could write around a GLB: longerHeader 0 = version 2
+// (the 16-byte header of version 1 with version 2), 1 = version 1 with a
+// 20-byte header whose 4 unknown bytes are 0xA5. malloc'ed, NULL on no memory.
+static u8 *HrTest_NewerWriterChunk(const u8 *glb, u32 glbSize, int longerHeader, size_t *sizeOut)
+{
+	size_t size = 0;
+	u8 *chunk = RldHires_BuildChunk(glb, glbSize, &size);
+	u8 *longer;
+
+	*sizeOut = 0;
+	if (chunk == NULL)
+	{
+		return NULL;
+	}
+	if (!longerHeader)
+	{
+		RldHires_PutLE16(&chunk[0x00], 2u);
+		*sizeOut = size;
+		return chunk;
+	}
+	longer = (u8 *)calloc(1, size + 4u);
+	if (longer != NULL)
+	{
+		memcpy(longer, chunk, 16);
+		memset(longer + 16, 0xA5, 4);
+		memcpy(longer + 20, chunk + 16, glbSize);
+		RldHires_PutLE16(&longer[0x02], 20u);
+		RldHires_PutLE32(&longer[0x08], 20u);
+		*sizeOut = size + 4u;
+	}
+	free(chunk);
+	return longer;
+}
+
 // rldpack hires-test-files <folder>: the self-test's models as files, for the
 // ctest rldhires_files (cmake/run_rldhires_files.cmake): hires-good.glb (no
 // finding), hires-warn.glb (warnings only: no 'hit', no wheels), hires-bad.glb
@@ -1163,18 +1197,25 @@ static void HrTest_Pack(void)
 // selftest, for Reload Studio's clip playback: rs_hires_test.c), hires-hull.glb
 // (clips that take the model to 4.05 m: HRG-18 of the clip hull), hires-tex.glb
 // (a decodable texture, red with a green middle, and COLOR_0 at sRGB 128: the
-// textured preview and HRG-36). The folder must exist.
+// textured preview and HRG-36), hires-walk.glb (the good model with one more
+// animation 'Walk': HRG-21, a note). The folder must exist.
+//
+// With a character file as the second argument it also writes that character
+// with the CHRG of a newer writer (HrTest_NewerChunk on files): hires-v2.rldchar
+// (CHRG version 2: only the hi-res part is refused, HRG-1) and hires-h20.rldchar
+// (version 1 with a 20-byte header: read past).
 static int RldHires_TestFilesCommand(int argc, char **argv)
 {
-	static const char *const names[6] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb", "hires-tex.glb"};
+	static const char *const names[7] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb", "hires-tex.glb",
+	                                     "hires-walk.glb"};
 	int k;
 
-	if (argc != 1)
+	if ((argc != 1) && (argc != 2))
 	{
-		fprintf(stderr, "usage: rldpack hires-test-files <folder>\n");
+		fprintf(stderr, "usage: rldpack hires-test-files <folder> [<character.rldchar>]\n");
 		return 2;
 	}
-	for (k = 0; k < 6; k++)
+	for (k = 0; k < 7; k++)
 	{
 		struct HrTestSpec sp;
 		char path[RLD_PATH_MAX];
@@ -1206,6 +1247,10 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 			sp.image = 7;            // a texture that decodes: red, green in the middle
 			sp.colour0 = 0.2158605f; // COLOR_0 at sRGB 128 on the body (HRG-36)
 		}
+		else if (k == 6)
+		{
+			sp.unknownAnim = 1; // 'Walk' next to the 12 clips (HRG-21, a note)
+		}
 		glb = HrTest_Glb(&sp, &size);
 		snprintf(path, sizeof(path), "%s/%s", argv[0], names[k]);
 		file = (glb != NULL) ? fopen(path, "wb") : NULL;
@@ -1221,6 +1266,48 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 			return 1;
 		}
 		printf("  wrote %s (%u bytes)\n", path, (unsigned)size);
+	}
+	if (argc == 2)
+	{
+		static struct RldHiresPackIn in;
+		static const char *const out[2] = {"hires-v2.rldchar", "hires-h20.rldchar"};
+		struct HrTestSpec sp;
+		const char *why;
+		u32 size = 0;
+		u8 *glb;
+
+		why = RldHiresPack_Load(argv[1], &in);
+		if (why != NULL)
+		{
+			fprintf(stderr, "rldpack: %s: %s\n", argv[1], why);
+			return 1;
+		}
+		memset(&sp, 0, sizeof(sp));
+		glb = HrTest_Glb(&sp, &size);
+		for (k = 0; k < 2; k++)
+		{
+			char path[RLD_PATH_MAX];
+			size_t chunkSize = 0;
+			size_t bytesSize = 0;
+			u8 *chunk = (glb != NULL) ? HrTest_NewerWriterChunk(glb, size, k, &chunkSize) : NULL;
+			u8 *bytes = (chunk != NULL) ? RldHiresPack_Rebuild(&in, chunk, chunkSize, &bytesSize, &why) : NULL;
+			int ok;
+
+			snprintf(path, sizeof(path), "%s/%s", argv[0], out[k]);
+			ok = (bytes != NULL) && RldHiresPack_Write(path, bytes, bytesSize);
+			free(bytes);
+			free(chunk);
+			if (!ok)
+			{
+				fprintf(stderr, "rldpack: %s cannot be written\n", path);
+				free(glb);
+				RldHiresPack_Free(&in.c);
+				return 1;
+			}
+			printf("  wrote %s (%u bytes)\n", path, (unsigned)bytesSize);
+		}
+		free(glb);
+		RldHiresPack_Free(&in.c);
 	}
 	return 0;
 }
@@ -1456,6 +1543,134 @@ static void HrTest_VertexColours(void)
 	HrTest_Check(fabsf(RldHiresColor_Encode(RLDHIRES_VCOL_FACTOR_MAX) - 255.0f / 128.0f) < 1e-5f && RldHiresColor_Decode(-1.0f) == 0.0f &&
 	                 RldHiresColor_Encode(-1.0f) == 0.0f,
 	             "vertex colours: the curve continued above 1, 0 below 0");
+}
+
+// A CHRG OF A NEWER WRITER inside a .rldchar (CHRG version 1 frozen, container
+// 4.2; the extension rule at the head of include/rldhires.inc). The chunk is
+// taken out of the container the way RldHires_ReadChunk takes it
+// (RldHires_EntryCheck, then its SHA-256) and parsed by RldHires_ParseChunk,
+// the one path of the game and rldpack:
+//   version 2             only the hi-res part is refused (HRG-1); CHRI and
+//                         CMDL, the classic model, keep the bytes, sizes and
+//                         hashes of the file without CHRG.
+//   version 1, header 20  a longer header with 4 unknown bytes (0xA5) is read
+//                         past: the GLB at 20 opens without any message.
+// The same on files (Rld_OpenAs, rldpack verify and hires-check):
+// cmake/run_rldhires_files.cmake with the files of hires-test-files.
+static void HrTest_NewerChunk(void)
+{
+	const u8 info[32] = {1, 2, 3, 4, 5, 6, 7, 8};
+	const u8 model[48] = {9, 8, 7, 6, 5, 4, 3, 2, 1};
+	struct HrTestSpec sp;
+	u8 *glb;
+	u32 glbSize = 0;
+	int v;
+	int i;
+
+	memset(&sp, 0, sizeof(sp));
+	glb = HrTest_Glb(&sp, &glbSize);
+	for (v = 0; v < 2; v++)
+	{
+		static struct RldContainer plain;
+		static struct RldContainer with;
+		static RldHiresReport rep;
+		size_t chrgSize = 0;
+		u8 *chrg = (glb != NULL) ? HrTest_NewerWriterChunk(glb, glbSize, v, &chrgSize) : NULL;
+		const char *what = (v == 0) ? "CHRG version 2" : "CHRG version 1 with a 20-byte header";
+		char line[160];
+		u8 *a;
+		u8 *b;
+		size_t sizeA = 0;
+		size_t sizeB = 0;
+
+		if (chrg == NULL)
+		{
+			HrTest_Check(0, "out of memory building the CHRG of a newer writer");
+			continue;
+		}
+		memset(&plain, 0, sizeof(plain));
+		memset(&with, 0, sizeof(with));
+		Rld_AddChunk(&plain, "CHRI", info, sizeof(info), RLD_COMPRESSION_NONE);
+		Rld_AddChunk(&plain, "CMDL", model, sizeof(model), RLD_COMPRESSION_NONE);
+		Rld_AddChunk(&with, "CHRI", info, sizeof(info), RLD_COMPRESSION_NONE);
+		Rld_AddChunk(&with, "CMDL", model, sizeof(model), RLD_COMPRESSION_NONE);
+		Rld_AddChunk(&with, RLDHIRES_CHUNK_TYPE, chrg, chrgSize, RLD_COMPRESSION_NONE);
+		a = Rld_WriteEnvelope(&s_rldCharFormat, 0u, &plain, &sizeA);
+		b = Rld_WriteEnvelope(&s_rldCharFormat, 0u, &with, &sizeB);
+		if ((a != NULL) && (b != NULL) && (Rld_ReadLE32(&a[0x10]) == 2u) && (Rld_ReadLE32(&b[0x10]) == 3u))
+		{
+			const u64 dirA = Rld_ReadLE64(&a[0x18]);
+			const u64 dirB = Rld_ReadLE64(&b[0x18]);
+			const u8 *entry = &b[(size_t)dirB + 2u * RLD_DIR_ENTRY_SIZE];
+			const u8 *bytes = &b[(size_t)Rld_ReadLE64(&entry[0x08])];
+			const size_t raw = (size_t)Rld_ReadLE64(&entry[0x18]);
+			int classic = 1;
+			u8 digest[32];
+			RldHiresChunk c;
+			const char *rule = NULL;
+			char detail[RLDHIRES_TEXT_MAX];
+			int parsed;
+
+			for (i = 0; i < 2; i++)
+			{
+				const u8 *ea = &a[(size_t)dirA + (size_t)i * RLD_DIR_ENTRY_SIZE];
+				const u8 *eb = &b[(size_t)dirB + (size_t)i * RLD_DIR_ENTRY_SIZE];
+
+				if ((memcmp(ea, eb, 4) != 0) || (memcmp(&ea[0x10], &eb[0x10], 0x30) != 0) ||
+				    (memcmp(&a[(size_t)Rld_ReadLE64(&ea[0x08])], &b[(size_t)Rld_ReadLE64(&eb[0x08])], (size_t)Rld_ReadLE64(&ea[0x10])) != 0))
+				{
+					classic = 0;
+				}
+			}
+			snprintf(line, sizeof(line), "%s: CHRI and CMDL (the classic model) are the bytes, sizes and hashes of the file without CHRG", what);
+			HrTest_Check(classic, line);
+			Sha256(bytes, raw, digest);
+			snprintf(line, sizeof(line), "%s: its entry passes the envelope checks of CHRG and its hash (HRG-5 not fired)", what);
+			HrTest_Check(memcmp(entry, RLDHIRES_CHUNK_TYPE, 4) == 0 && RldHires_EntryCheck(entry) == NULL && raw == chrgSize &&
+			                 memcmp(digest, &entry[RLD_DIR_HASH_OFFSET], 32) == 0,
+			             line);
+			parsed = RldHires_ParseChunk(bytes, raw, &c, &rule, detail, (int)sizeof(detail));
+			if (v == 0)
+			{
+				snprintf(line, sizeof(line), "%s: only the hi-res part is refused (HRG-1, the classic model is used)", what);
+				HrTest_Check(parsed == 0 && rule != NULL && strcmp(rule, "HRG-1") == 0 && RldHires_RuleLevel(rule) == RLDHIRES_ERROR &&
+				                 strstr(detail, "the classic model is used") != NULL,
+				             line);
+			}
+			else
+			{
+				RldHiresModel m;
+
+				snprintf(line, sizeof(line), "%s: read, the 4 unknown header bytes skipped, the GLB at 20", what);
+				HrTest_Check(parsed == 1 && rule == NULL && c.version == 1u && c.headerBytes == 20u && c.glbOffset == 20u && c.glb == bytes + 20 &&
+				                 bytes[16] == 0xA5u && bytes[19] == 0xA5u && c.glbSize == glbSize && memcmp(c.glb, glb, glbSize) == 0,
+				             line);
+				RldHires_ReportClear(&rep);
+				snprintf(line, sizeof(line), "%s: the model opens without any message", what);
+				HrTest_Check(parsed == 1 && RldHires_Open(c.glb, c.glbSize, &m, &rep) == 1 && rep.count == 0, line);
+				if (parsed == 1)
+				{
+					RldHires_Close(&m);
+				}
+			}
+		}
+		else
+		{
+			HrTest_Check(0, "out of memory writing the containers with a newer CHRG");
+		}
+		free(a);
+		free(b);
+		for (i = 0; i < plain.chunkCount; i++)
+		{
+			free(plain.chunks[i].stored);
+		}
+		for (i = 0; i < with.chunkCount; i++)
+		{
+			free(with.chunks[i].stored);
+		}
+		free(chrg);
+	}
+	free(glb);
 }
 
 static int RldHires_SelfTest(void)
@@ -1919,6 +2134,32 @@ static int RldHires_SelfTest(void)
 	sp.twiceIdle = 1;
 	HrTest_Rule("HRG-21", &sp, "'idle' twice");
 
+	// AN UNKNOWN CLIP NAME IS IGNORED, NEVER REFUSED (CHRG version 1 frozen,
+	// container 4.2): an animation 'Walk' next to the 12 clips is one note
+	// (HRG-21), the model is usable, every clip is the file's own and 'Walk'
+	// (animation 12) is none of them.
+	{
+		RldHiresModel walk;
+		u8 *walkGlb = NULL;
+		int ok;
+		int own = 1;
+
+		memset(&sp, 0, sizeof(sp));
+		sp.unknownAnim = 1;
+		HrTest_Check(RldHires_RuleLevel("HRG-21") == RLDHIRES_NOTE, "unknown clip name: HRG-21 is a note, not an error");
+		ok = HrTest_Open(&sp, &rep, &walk, &walkGlb);
+		HrTest_Check(ok == 1 && rep.errors == 0 && rep.warnings == 0 && rep.notes == 1 && rep.count == 1 && strcmp(rep.msg[0].rule, "HRG-21") == 0 &&
+		                 strstr(rep.msg[0].text, "'Walk'") != NULL && strstr(rep.msg[0].text, "ignored") != NULL,
+		             "unknown clip name: 'Walk' and 12 clips - usable, 0 errors, 0 warnings, one note HRG-21 naming 'Walk'");
+		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
+		{
+			own &= (walk.clipAnim[i] == i);
+		}
+		HrTest_Check(own, "unknown clip name: the 12 clips are the file's own, 'Walk' is none of them");
+		RldHires_Close(&walk);
+		free(walkGlb);
+	}
+
 	// HRG-22: CUBICSPLINE.
 	memset(&sp, 0, sizeof(sp));
 	sp.cubic = 1;
@@ -2281,6 +2522,9 @@ static int RldHires_SelfTest(void)
 		free(glb);
 		glb = NULL;
 	}
+
+	// A CHRG OF A NEWER WRITER (CHRG version 1 frozen, container 4.2).
+	HrTest_NewerChunk();
 
 	if (s_hrFailures == 0)
 	{

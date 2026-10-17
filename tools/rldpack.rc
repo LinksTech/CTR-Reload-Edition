@@ -59,7 +59,7 @@ BEGIN
 			VALUE "OriginalFilename", "rldpack.exe"
 			VALUE "ProductName",      "CTR Reload"
 			VALUE "ProductVersion",   CTR_TOOLS_VERSION
-			VALUE "Comments",         "Builds and checks .rldtrack track containers (format 4.1) and .rldchar character containers."
+			VALUE "Comments",         "Builds and checks .rldtrack track containers (format 4.2) and .rldchar character containers."
 		END
 	END
 	BLOCK "VarFileInfo"

@@ -104,6 +104,13 @@ typedef signed long long s64;
 #pragma warning(pop)
 #endif
 
+// The container format the tools write (major.minor), from the numbers
+// s_rldTrackFormat is made of in include/rldtrack.inc, not a copy: the help
+// and the sidebar name it.
+#define RS_STR2(x) #x
+#define RS_STR(x)  RS_STR2(x)
+#define RS_FORMAT_W RS_WIDEN(RS_STR(RLD_VERSION_MAJOR)) L"." RS_WIDEN(RS_STR(RLD_VERSION_MINOR))
+
 // rs_rldpack.c: the main of tools/rldpack.c.
 int Rldpack_Main(int argc, char *argv[]);
 
@@ -3903,7 +3910,7 @@ static void Rs_SidebarPaint(HWND hwnd)
         RECT t = { Rs_Px(24), rc.bottom - Rs_Px(60), rc.right - Rs_Px(12), rc.bottom - Rs_Px(40) };
         SelectObject(mem, Rs_Font(RS_FONT_SMALL));
         SetTextColor(mem, RGB(120, 126, 140));
-        DrawTextW(mem, L"Container format 4.1", -1, &t, DT_SINGLELINE | DT_NOPREFIX);
+        DrawTextW(mem, L"Container format " RS_FORMAT_W, -1, &t, DT_SINGLELINE | DT_NOPREFIX);
         t.top += Rs_Px(18);
         t.bottom += Rs_Px(18);
         DrawTextW(mem, L"Packing and checks: rldpack", -1, &t, DT_SINGLELINE | DT_NOPREFIX);
@@ -4753,10 +4760,8 @@ static int Rs_RunAsRldpack(int argc, wchar_t **wargv)
 // The first lines of the help name three versions, each from its one
 // definition: the tools (Reload Studio and rldpack, CTR_TOOLS_VERSION), the game
 // they are for (CTR_NATIVE_VERSION) and the container format they write - the
-// numbers s_rldTrackFormat is made of in include/rldtrack.inc, not a copy.
-#define RS_STR2(x) #x
-#define RS_STR(x)  RS_STR2(x)
-#define RS_FORMAT_W RS_WIDEN(RS_STR(RLD_VERSION_MAJOR)) L"." RS_WIDEN(RS_STR(RLD_VERSION_MINOR))
+// numbers s_rldTrackFormat is made of in include/rldtrack.inc, not a copy
+// (RS_FORMAT_W, at the include of rldtrack.inc).
 
 static const wchar_t g_helpText[] =
     L"Reload Studio " RS_VERSION_W L" (" RS_BUILD_ID_W L") - track containers, cups and characters\n"

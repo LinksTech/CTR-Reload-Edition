@@ -4,7 +4,7 @@ CTR Reload Edition has two container types. Both share one envelope:
 
 | Extension | Content | Written by | Read by |
 |---|---|---|---|
-| `.rldtrack` | a custom track, format 4.1 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
+| `.rldtrack` | a custom track, format 4.2 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
 | `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` (also through Reload Studio's Character page) | the game (`characters` folder), `rldpack info`, `rldpack verify` |
 
 The game reads every `.rldchar` of its `characters` folder at start; see
@@ -141,9 +141,12 @@ instead of refusing the file.
 3. The directory, in the same order, at the end of the file:
    file_size = dir_offset + chunk_count x 64.
 
-## 2. `.rldtrack` 4.1
+## 2. `.rldtrack` 4.2
 
-Magic `RLDTRACK`, major 4, minor 1. A reader takes 4.0 and 4.1 alike.
+Magic `RLDTRACK`, major 4, minor 2. A reader takes 4.0, 4.1 and 4.2 alike.
+4.2 (2026-10-17) changes no byte of a track but the minor: it marks the
+hi-res driver chunk CHRG version 1 as frozen (section 3). 4.1 (2026-09-28)
+froze the track format.
 
 | Chunk | Required | Limit | Content |
 |---|---|---|---|
@@ -359,7 +362,7 @@ is frozen. Source: `include/rldchar.inc`.
 | CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
 | CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) (see "Preview, planned: CNET and CTXT") |
 | CTXT | optional, PREVIEW, written with CNET | 32 MiB, as CNET | the textures of CNET as PNG, decoded to RGBA8 (see the same section) |
-| CHRG | optional, PREVIEW, written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, read only with the engine's hi-res drivers (see "CHRG (preview)") |
+| CHRG | optional, version 1 frozen (4.2), written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, drawn by the engine (see "CHRG (version 1, frozen)") |
 | CTEX | reserved name, not assigned | none (unknown, skipped) | once planned for texture data; the textures of the native model are CTXT, so the name stays unused |
 | CWHL | reserved name, not assigned | none (unknown, skipped) | own wheels; the wheels of the native model are a part of CNET, so CWHL stays reserved and unassigned (its old plan below) |
 
@@ -377,14 +380,16 @@ envelope: it checks only their position, a doubled type and an overlap, as
 for any unknown chunk; everything else about them costs only the native part
 (see "Preview, planned: CNET and CTXT").
 
-### CHRG (preview)
+### CHRG (version 1, frozen)
 
-The hi-res driver. Version 1, "preview": until the format is frozen,
-`include/rldhires.inc` is the binding description (the header, the model
-rules HRG-1..36 and the budget); this section holds the header. CHRG is not a
-known type of the envelope: it is skipped like any unknown chunk, and a CHRG
-that breaks a rule drops only the hi-res part (the driver loads with CHRI and
-CMDL).
+The hi-res driver. Version 1 is frozen since 2026-10-17 (container format
+4.2): the header, the flags, the clip and wheel names, the fallbacks and the
+rules below do not change within version 1. `include/rldhires.inc` is the code
+of it; the game, `rldpack` (hires-check, hires-add) and Reload Studio run the
+same rules from it. CHRG is not a known type of the envelope: it is skipped
+like any unknown chunk, and a CHRG that breaks a rule drops only the hi-res
+part (the driver loads with CHRI and CMDL, its classic model). Stored
+uncompressed, SHA-256 like every chunk, at most 64 MiB with the header.
 
 | Offset | Type | Field | Meaning |
 |---|---|---|---|
@@ -394,7 +399,8 @@ CMDL).
 | 0x08 | u32 | glbOffset | = headerBytes (HRG-4) |
 | 0x0C | u32 | glbSize | glbOffset + glbSize = the chunk's size (HRG-4) |
 
-The GLB follows byte for byte as the author exported it.
+The GLB follows byte for byte as the author exported it; the packer checks it
+and never changes it.
 
 The vertex colour mode (flags bits 0-1, `include/rldhires_color.inc`) says how
 the game reads the model's COLOR_0:
@@ -412,6 +418,75 @@ drops the hi-res part of a file with mode 1 or 2 (HRG-3) and draws the
 classic model. Rule HRG-36 (a warning) is said only in glTF mode: vertex
 colours on textured faces whose median sRGB byte is 102..153 look like PS1
 shading and would make the kart too dark there.
+
+**The model.** glTF 2.0 binary (.glb) with its BIN chunk embedded and no
+outside files or data URIs (HRG-9); no required extension but
+KHR_materials_unlit (HRG-8). Axes and units are the glTF ones: +Y up, +Z the
+kart's front, +X the kart's left seen from behind, 1 metre = 64 kart model
+units, the origin on the ground under the kart. Drawn primitives are
+triangles (HRG-10) with float POSITION (HRG-11); indices may be u8, u16 or
+u32. A missing NORMAL gives flat normals (HRG-15, a warning). At most one skin
+with at most 64 joints and 4 weights per vertex (HRG-12..14); nodes with a
+mesh and no skin move with their node. Materials: the base colour and an
+optional normal map; metallicRoughness, occlusion and emissive are ignored
+(HRG-26), alpha BLEND is drawn as MASK with cutoff 0.5 (HRG-25). Textures are
+PNG only, at most 2048 on an edge (HRG-16, HRG-17). Morph targets, cameras and
+lights are ignored (HRG-23, HRG-24). The rest pose and every clip stay within
+4 m on each axis (HRG-18); the game uses this hull only for visibility and
+sorting, physics and collision keep following CMDL.
+
+**The clips** are animations found by their exact name (lower case). No clip
+is required: a missing one plays its fallback, the next clip of its chain,
+and every chain ends at the rest pose (the node transforms of the file).
+
+| Clip | Played | Fallback |
+|---|---|---|
+| idle | loop | rest pose |
+| steer_left, steer_right | pose: time = steer share x duration, blended over idle with the steer share | idle |
+| jump | once, then its last pose while the state lasts | idle |
+| drift_left, drift_right | loop | steer_left / steer_right at full lock |
+| hit | once, then its last pose while the state lasts | idle |
+| podium_1 | loop | idle |
+| podium_2 | loop | podium_1 |
+| podium_3 | loop | podium_2 |
+| lose, menu | loop | idle |
+
+A missing clip is a warning (HRG-19). An animation whose name is not a clip
+name, or a clip name a second time, is a note (HRG-21) and is ignored: it is
+never a reason to refuse the model, and Reload Studio shows it as a note at
+the model's animations. CUBICSPLINE is read linear between the key values
+(HRG-22).
+
+**The wheels** are four nodes by name: `wheel_fl`, `wheel_fr`, `wheel_rl`,
+`wheel_rr` (front/rear, left/right of the kart). Each has a mesh and no skin;
+its origin is the wheel middle, its local X axis the axle; its subtree is never
+part of the body. All four or none: with one missing, the ones found are not
+drawn either and the game draws standard 3D wheels at the retail wheel points
+(HRG-20, a warning).
+
+**The budget** of one hi-res driver (measured with 8 hi-res drivers at
+3440x1440, MSAA 4): 64000 triangles (the wheels included), a texture edge of
+2048 after the round-up to a power of two, 32 MiB of RGBA8 level 0 over every
+texture upload. Over it the driver draws its classic model (HRG-27). The
+engine's hard limits: 62 materials, 1048576 vertices, 255 skinning entries
+(joints + body nodes with a mesh but no skin + 4 wheels), 64 texture uploads
+(HRG-32..35).
+
+**The rules** are HRG-1 .. HRG-36, each with a fixed level, listed with their
+texts in `s_rldHiresRules` (`include/rldhires.inc`): an error refuses the
+hi-res part (the classic model is drawn), a warning means the driver runs but
+something falls back to a standard (a clip, the wheels, flat normals), a note
+says what is ignored. The texts are the same in the game's log, `rldpack
+hires-check` and Reload Studio.
+
+**Extending CHRG.** A later field that an older reader may ignore comes as
+more header bytes (headerBytes > 16, version 1): an older reader skips them
+and draws the model. Something an older reader must not ignore comes as a new
+flag bit (HRG-3) or as version 2 (HRG-1): an older reader drops the hi-res
+part and draws the classic model. Both ways are covered by the self-tests
+(`rldpack selftest-hires`, ctest `rldhires_selftest` and `rldhires_files`).
+
+Planned for 4.3: emissive (not built).
 
 ### CHRI (`RldChar_ParseInfo`)
 
@@ -2361,6 +2436,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new optional chunk | no bump: an older reader checks its position, type and overlap and skips it |
 | an optional chunk taken out of the format | no bump: older files keep loading, the chunk is skipped, its name is blocked |
 | a new layout inside SNDB, PARM, CICN or CVOI | the chunk's own version field: an older reader drops only that chunk |
+| a new field in the CHRG header | more header bytes (headerBytes > 16) for what an older reader may ignore; a new flag bit or CHRG version 2 for what it must not ignore - an older reader then drops only the hi-res part (see "Extending CHRG") |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
 | a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
@@ -2389,6 +2465,7 @@ Chunk names:
 | CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI | `.rldchar` | optional (voices): written by `rldpack make-char --voices`, spoken by the bound custom driver |
+| CHRG | `.rldchar` | optional, version 1 frozen (the hi-res driver): written by `rldpack hires-add`, drawn by the engine; unknown to the envelope |
 | CNET, CTXT | `.rldchar` | optional, PREVIEW (the native model and its textures): written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests), read by the game only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`); unknown to the envelope |
 | CTEX, CWHL | `.rldchar` | reserved, not assigned (the textures of the native model are CTXT, its wheels a part of CNET) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
@@ -2401,4 +2478,4 @@ A blocked name is never assigned again, not even for something else.
 
 ## 6. Authority
 
-The comments in include/rldtrack.inc and include/rldchar.inc are authoritative; this document changes in the same commit.
+The comments in include/rldtrack.inc, include/rldchar.inc and include/rldhires.inc are authoritative; this document changes in the same commit.

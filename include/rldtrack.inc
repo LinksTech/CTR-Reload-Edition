@@ -274,8 +274,14 @@ static void Sha256(const void *bytes, size_t size, u8 out[32])
 //                    of 4.0 refuses every bit anyway, and that is exactly the
 //                    effect a required feature needs.
 //   metaVersion 1    means "frozen", 0 "draft". Both load.
+//
+// 4.2, since 2026-10-17: THE HI-RES DRIVER CHUNK CHRG IS FROZEN at its version 1
+// (include/rldhires.inc, docs/CONTAINER_FORMAT.md). The bytes of the envelope
+// are unchanged except the minor field the packer writes into a track; a
+// reader takes any minor, as since 4.1, so 4.0 and 4.1 still load. A .rldchar
+// keeps its own numbers (include/rldchar.inc), its bytes do not change.
 #define RLD_VERSION_MAJOR 4
-#define RLD_VERSION_MINOR 1
+#define RLD_VERSION_MINOR 2
 #define RLD_HEADER_SIZE    40
 #define RLD_DIR_ENTRY_SIZE 64
 #define RLD_CHUNK_MAX      64
@@ -390,7 +396,8 @@ static const char *const s_rldTrackMissing[3] = {"META is missing - required chu
                                                  "VRMD is missing - required chunk"};
 
 // .rldtrack, exactly the values and texts the reader and the packer had before
-// they were shared with other container types. 4.1 is frozen: nothing here changes.
+// they were shared with other container types. Frozen since 4.1: nothing here
+// changes but the minor written, RLD_VERSION_MINOR.
 //
 // Lower bound 3 since 2026-09-19, 4 before: the required chunks are META,
 // LEVD and VRMD. An existing container with SIGN passes through unchanged.

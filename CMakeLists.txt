@@ -474,6 +474,9 @@ if(BUILD_TESTING)
     # line "container format <major>.<minor>", the numbers read here from
     # include/rldtrack.inc - the tools version and the format each from its one
     # definition. The game's version test (ctr_native_version) is below.
+    # Read at configure time: a changed RLD_VERSION_MINOR configures again,
+    # so the expected line never stays at the old number.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/include/rldtrack.inc)
     file(STRINGS ${CMAKE_SOURCE_DIR}/include/rldtrack.inc ctr_rld_format_lines
          REGEX "^#define RLD_VERSION_(MAJOR|MINOR) [0-9]+$")
     string(REGEX REPLACE ".*RLD_VERSION_MAJOR ([0-9]+).*" "\\1" ctr_rld_major "${ctr_rld_format_lines}")
@@ -557,7 +560,7 @@ if(BUILD_TESTING)
         add_test(NAME reloadstudio_tex_selftest COMMAND $<TARGET_FILE:rs_tex_selftest>)
         set_tests_properties(reloadstudio_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "rs_tex selftest passed: ")
 
-        # The page "Hi-Res (Preview)" (tools/reloadstudio/rs_hires_model.c): its
+        # The page "Hi-Res" (tools/reloadstudio/rs_hires_model.c): its
         # list, summary and bind-pose picture against rldpack's findings, a
         # character's CHRG, and the pack step - the Studio's hires-add with the
         # page's arguments gives rldpack's bytes (cmake/run_rs_hires_selftest.cmake).

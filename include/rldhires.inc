@@ -6,7 +6,7 @@
 //   the game        (main.c unity build; the engine's hi-res driver)
 //   tools/rldpack.c (hires-check, hires-add; also inside Reload Studio through
 //                    tools/reloadstudio/rs_rldpack.c)
-//   Reload Studio   (its "Hi-Res (Preview)" page)
+//   Reload Studio   (the Character page's Hi-Res and Low-Poly routes)
 //
 // so that the packer never stores a model the game refuses, and the Studio
 // says exactly what the game will do. u8, u16, u32 and u64 come from the
@@ -18,7 +18,8 @@
 // (include/rldtrack.inc, major 1, no header flag). A 16-byte header and the GLB
 // file, byte for byte as the author exported it:
 //
-//   0x00 u16 version      1. Another version: only the hi-res part is dropped.
+//   0x00 u16 version      1. Another version: only the hi-res part is dropped
+//                         (HRG-1), the driver keeps its classic model.
 //   0x02 u16 headerBytes  >= 16, a multiple of 4; a newer, longer header is
 //                         allowed, readers skip the rest.
 //   0x04 u32 flags        bits 0..1 the vertex colour mode (include/rldhires_color.inc:
@@ -60,9 +61,15 @@
 //
 // NOTHING HERE PRINTS. Findings go into an RldHiresReport.
 //
-// Format version 1, "preview": until it is accepted, this file is the binding
-// description; docs/CONTAINER_FORMAT.md ("CHRG (preview)") holds the header
-// and the vertex colour mode, and gets the rest when it is frozen.
+// FORMAT VERSION 1, FROZEN (accepted 2026-10-17, container format 4.2).
+// docs/CONTAINER_FORMAT.md ("CHRG") describes it; this file is the code of it.
+// A later extension (e.g. emissive, planned for 4.3) takes one of two ways:
+//   - what an older reader may ignore: more header bytes (headerBytes > 16,
+//     version stays 1). An older reader skips them and draws the model.
+//   - what an older reader must not ignore: a new flag bit (HRG-3) or version
+//     2 (HRG-1). An older reader drops the hi-res part and draws the classic
+//     model.
+// An unknown animation name is a note (HRG-21), never an error.
 
 #ifndef RLDHIRES_INC
 #define RLDHIRES_INC

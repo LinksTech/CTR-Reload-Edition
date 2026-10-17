@@ -5153,9 +5153,11 @@ static int Rld_Check(const char *what, const u8 *got, const u8 *want, size_t siz
 // that they still agree with the bytes this packer wrote before its envelope
 // code was shared with other container types. A different value means a
 // .rldtrack is no longer written the same way - never update it to make the
-// test pass.
-#define RLD_GOLDEN_3_CHUNKS "489b8b3a20846502c5372ab9d0ce0e6a3946acced40cab96eed3aa7e6e4ccc00"
-#define RLD_GOLDEN_5_CHUNKS "5d8c5b474136b44717da5463d1aa8a0f75e07050af751ed8915807ae83285489"
+// test pass. Changed once on purpose, with format 4.2 (2026-10-17): only the
+// minor field (header byte 0x0a, 1 -> 2) differs; with it set back to 1 the
+// containers hash to the 4.1 values 489b8b3a... and 5d8c5b47...
+#define RLD_GOLDEN_3_CHUNKS "ae46cb853167f872e01f3f9a7d7a67f1ffd20831c0c2c48fb657828606469baf"
+#define RLD_GOLDEN_5_CHUNKS "c906908ad222d938ea7d9171b956840f1cb45660fdcedb489e4496e70644d33a"
 
 static int Rld_CheckGolden(const char *name, const u8 *data, size_t size, const char *wantHex)
 {
@@ -5802,16 +5804,19 @@ static int Cmd_Selftest(void)
 				printf("  ok   chunk set: META LEVD VRMD, no SIGN\n");
 			}
 
-			// 4.1: the header carries 4.1 and no required features, META the 1.
-			if ((Rld_ReadLE16(&a[0x08]) != 4u) || (Rld_ReadLE16(&a[0x0a]) != 1u) || (Rld_ReadLE32(&a[0x0c]) != 0u) || (back.metaVersion != 1u))
+			// The header carries the format written (4.2) and no required features, META the 1.
+			if ((Rld_ReadLE16(&a[0x08]) != (u32)RLD_VERSION_MAJOR) || (Rld_ReadLE16(&a[0x0a]) != (u32)RLD_VERSION_MINOR) || (Rld_ReadLE32(&a[0x0c]) != 0u) ||
+			    (back.metaVersion != 1u))
 			{
-				printf("  FAIL format 4.1: header %u.%u, flags 0x%x, meta_version %u\n", Rld_ReadLE16(&a[0x08]), Rld_ReadLE16(&a[0x0a]),
+				printf("  FAIL format %u.%u: header %u.%u, flags 0x%x, meta_version %u\n", (unsigned)RLD_VERSION_MAJOR, (unsigned)RLD_VERSION_MINOR,
+				       Rld_ReadLE16(&a[0x08]), Rld_ReadLE16(&a[0x0a]),
 				       Rld_ReadLE32(&a[0x0c]), back.metaVersion);
 				failed = 1;
 			}
 			else
 			{
-				printf("  ok   format 4.1: header 4.1, no feature bits, meta_version 1\n");
+				printf("  ok   format %u.%u: header %u.%u, no feature bits, meta_version 1\n", (unsigned)RLD_VERSION_MAJOR, (unsigned)RLD_VERSION_MINOR,
+				       (unsigned)RLD_VERSION_MAJOR, (unsigned)RLD_VERSION_MINOR);
 			}
 		}
 
@@ -6428,7 +6433,7 @@ static void Rld_Usage(void)
 	printf("                              make-char --wheel-model, preview)\n");
 	printf("  hires-check, hires-add, hires-strip, hires-upscale ...\n");
 	printf("                              the hi-res driver of a character (a .glb in the\n");
-	printf("                              chunk CHRG, preview), see below\n");
+	printf("                              chunk CHRG, version 1), see below\n");
 	printf("  info     <file>           show the format, META and PARM, leaves LEVD/VRMD untouched\n");
 	printf("  verify   <file>             check every chunk against its hash, SNDB and PARM\n");
 	printf("                              with the game's own reader, and warn if the track\n");

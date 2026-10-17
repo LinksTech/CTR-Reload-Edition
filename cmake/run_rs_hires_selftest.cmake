@@ -1,4 +1,4 @@
-# run_rs_hires_selftest.cmake - the page "Hi-Res (Preview)" of Reload Studio
+# run_rs_hires_selftest.cmake - the page "Hi-Res" of Reload Studio
 # against rldpack (ctest reloadstudio_hires_selftest).
 #
 #   cmake -DPACKER=<rldpack> -DSTUDIO=<ReloadStudio> -DTEST=<rs_hires_selftest>

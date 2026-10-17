@@ -1,4 +1,4 @@
-// rs_hires.c - page "Hi-Res (Preview)": check a hi-res driver model and pack it into a character
+// rs_hires.c - page "Hi-Res": check a hi-res driver model and pack it into a character
 //
 // The author chooses a glTF model (.glb) made for the hi-res driver, and the
 // page says at once whether the game would draw it: the check runs IN THIS
@@ -21,8 +21,8 @@
 // chosen model is only read; rldpack still stores the GLB it is given byte
 // for byte.
 //
-// A preview feature: the game draws a hi-res driver only with
-// --engine-hires-chars; the card "Files" carries the mark.
+// The game draws a hi-res driver whenever the engine draws (CHRG version 1,
+// frozen with container format 4.2); --no-hires-chars turns it off.
 //
 // Automation verbs are listed in reloadstudio.h.
 
@@ -76,7 +76,7 @@ struct HiresState {
     HWND modelLabel, model, modelBrowse;
     HWND charLabel, character, charBrowse;
     HWND outLabel, out, outBrowse;
-    HWND checkBtn, pack, upscale, status, mark;
+    HWND checkBtn, pack, upscale, status;
     HWND verdict, summary, msgs, clips;
     HWND view, note;
     HWND clipLabel, clipCombo, playBtn, timeLabel;
@@ -769,8 +769,7 @@ static void Hires_LayoutRow(const RECT *in, int *y, HWND label, HWND edit, HWND 
 static void Hires_LayoutFiles(const RECT *outer, const RECT *in)
 {
     int x = in->left, y = in->top;
-    int markW = Rs_TextWidth(g_hires.mark, L"Preview feature") + Rs_Px(4);
-    MoveWindow(g_hires.mark, outer->right - Rs_Px(20) - markW, outer->top + Rs_Px(20), markW, Rs_Px(18), TRUE);
+    (void)outer;
     Hires_LayoutRow(in, &y, g_hires.modelLabel, g_hires.model, g_hires.modelBrowse);
     Hires_LayoutRow(in, &y, g_hires.charLabel, g_hires.character, g_hires.charBrowse);
     Hires_LayoutRow(in, &y, g_hires.outLabel, g_hires.out, g_hires.outBrowse);
@@ -893,9 +892,6 @@ static void Hires_Create(HWND page)
 
     memset(&g_hires, 0, sizeof(g_hires));
     RsView_Register(GetModuleHandleW(NULL));
-
-    g_hires.mark = Rs_PreviewMark(page, HIRES_ID_MARK);
-    SetWindowLongPtrW(g_hires.mark, GWL_STYLE, GetWindowLongPtrW(g_hires.mark, GWL_STYLE) | SS_RIGHT);
 
     g_hires.modelLabel = Rs_Label(page, HIRES_ID_MODEL_LABEL, L"Hi-res model", RS_FONT_BOLD);
     g_hires.model = Rs_Edit(page, HIRES_ID_MODEL, L"", ES_AUTOHSCROLL);
@@ -1257,9 +1253,9 @@ static int Hires_Busy(HWND page)
 
 const struct RsPageDef g_rsHiresPage = {
     L"Hi-Res",
-    L"Hi-Res driver (Preview)",
+    L"Hi-Res driver",
     L"Check a glTF model (.glb) for a hi-res driver and pack it into a character. "
-    L"Preview: the game draws it only with --engine-hires-chars.",
+    L"The game draws it whenever its engine draws the race.",
     Hires_Create,
     Hires_Layout,
     Hires_Command,
