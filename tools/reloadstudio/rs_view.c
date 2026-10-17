@@ -2519,7 +2519,15 @@ static const COLORREF s_rsViewBarText[2] = { RGB(214, 218, 224), RGB(40, 44, 50)
 
 // The neutral stage (RsView_SetStage), the same in both colour schemes of the
 // shell: the author judges the colours of a hi-res model here, so nothing of
-// the stage may tint them. Background and floor are pure greys (R = G = B), the
+// the stage may tint them. It has a dark and a light form, chosen like the
+// view's own background (RsView_SetBackground, automation "view-bg"; dark at
+// the start): both are neutral, and every pixel of background and floor
+// differs between them while the model stays the same - a dark and a light
+// picture of one camera tell the model's pixels from the stage's (the
+// brightness measurement of the Studio's preview masks the model so). The
+// numbers below are the dark form; the light form is a lighter background
+// (0xAEAEAE to 0xBEBEBE), a lighter floor (0xDCDCDC) and near black text,
+// RGB(24, 24, 24): 9.6:1 against the lightest row. Background and floor are pure greys (R = G = B), the
 // background with a soft vertical falloff from the top row to the bottom row
 // (DIB pixels 0x00RRGGBB, integer steps per row). Mid grey around sRGB 0.45 is
 // the usual neutral for judging colour; the floor is lighter than the whole
@@ -2529,17 +2537,17 @@ static const COLORREF s_rsViewBarText[2] = { RGB(214, 218, 224), RGB(40, 44, 50)
 // against the bottom row 0x6E6E6E (the lightest row, so the worst case). The
 // first idea for the bottom row, 0x7A7A7A, gave only 3.83:1 and was lowered
 // until the contrast reached at least 4.5:1.
-#define RS_VIEW_STAGE_BG_TOP 0x5E5E5Eu
-#define RS_VIEW_STAGE_BG_BOTTOM 0x6E6E6Eu
-#define RS_VIEW_STAGE_FLOOR 0xA6A6A6u
-#define RS_VIEW_STAGE_TEXT RGB(242, 242, 242)
+static const unsigned int s_rsViewStageBgTop[2] = { 0x5E5E5Eu, 0xAEAEAEu };
+static const unsigned int s_rsViewStageBgBottom[2] = { 0x6E6E6Eu, 0xBEBEBEu };
+static const unsigned int s_rsViewStageFloor[2] = { 0xA6A6A6u, 0xDCDCDCu };
+static const COLORREF s_rsViewStageText[2] = { RGB(242, 242, 242), RGB(24, 24, 24) };
 
 // The colour of the text drawn into the picture: the theme's own, or the
 // stage's near white while the stage is on. (The bar of the view keeps the
 // theme's colours, s_rsViewBar*, and does not use this.)
 static COLORREF RsView_TextColour(const struct RsView *v)
 {
-    return v->stage ? RS_VIEW_STAGE_TEXT : s_rsViewText[v->light ? 1 : 0];
+    return v->stage ? s_rsViewStageText[v->light ? 1 : 0] : s_rsViewText[v->light ? 1 : 0];
 }
 
 static void RsView_DrawText(struct RsView *v, const RECT *rc, const wchar_t *text, int font, UINT format)
@@ -2870,7 +2878,7 @@ static void RsView_Render(HWND view, struct RsView *v)
     struct RsViewScene s;
     struct RsViewGen g;
     const unsigned int bg = s_rsViewBg[v->light ? 1 : 0];
-    const unsigned int floorRgb = v->stage ? RS_VIEW_STAGE_FLOOR : s_rsViewFloor[v->light ? 1 : 0];
+    const unsigned int floorRgb = v->stage ? s_rsViewStageFloor[v->light ? 1 : 0] : s_rsViewFloor[v->light ? 1 : 0];
     const int labelH = Rs_Px(20);
     // Room at the top: the label above the dummy, and the window text while
     // the dummy stands alone.
@@ -2902,8 +2910,8 @@ static void RsView_Render(HWND view, struct RsView *v)
             int ch;
             for (ch = 0; ch < 3; ch++) {
                 const int sh = 8 * ch;
-                const int top = (int)((RS_VIEW_STAGE_BG_TOP >> sh) & 0xFF);
-                const int bottom = (int)((RS_VIEW_STAGE_BG_BOTTOM >> sh) & 0xFF);
+                const int top = (int)((s_rsViewStageBgTop[v->light ? 1 : 0] >> sh) & 0xFF);
+                const int bottom = (int)((s_rsViewStageBgBottom[v->light ? 1 : 0] >> sh) & 0xFF);
                 const int c = v->h <= 1 ? top : top + (bottom - top) * y / (v->h - 1);
                 row |= (unsigned int)c << sh;
             }
