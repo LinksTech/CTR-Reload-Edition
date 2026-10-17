@@ -700,6 +700,30 @@ u32 Engine_ProgramOf(int program);
 // item = ENGINE_MARKER_FLAG | (bank << 20) | (view << 16) | drawIndex (0..0xFFFF)
 #define ENGINE_MARKER_ITEM(bank, view, index) (ENGINE_MARKER_FLAG | ((u32)(bank) << 20) | ((u32)(view) << 16) | ((u32)(index) & 0xFFFFu))
 
+// STREAMED VERTEX BUFFERS (round of 2026-10-17, for the hi-res drivers): a
+// vertex buffer of ENGINE_RENDER_STREAM_REGIONS regions of verticesPerRegion
+// vertices each, refilled by the renderer from a CPU array the owner hands it
+// per frame. The owner registers it as an external mesh (verticesPerFrame <=
+// verticesPerRegion, frames 1, its own index buffer). At the first draw of the
+// buffer in a frame (Engine_DrawMarker) the renderer copies the bank's array
+// into the region of that bank's frame and draws from there: the region rule of
+// the dynamic buffer (a region is written only every third frame, the Vulkan
+// device keeps two in flight with one frame of OT lag), so a frame never
+// overwrites vertices the GPU still reads. A draw of a streamed buffer whose
+// array was not set in its bank's frame is refused (counted as a bad mesh).
+// Without a streamed buffer (every run without --engine-hires-chars) the draw
+// path is the one from before: one compare of a zero counter.
+#define ENGINE_RENDER_STREAM_REGIONS 3
+#define ENGINE_RENDER_STREAMS_MAX 16
+// At a load stage only (the buffer is made host visible, nothing waits). The
+// buffer's handle, 0xffffffff when refused (table full, no memory).
+u32 Engine_RenderStreamCreate(u32 verticesPerRegion);
+void Engine_RenderStreamDestroy(u32 vertexBuffer); // a load stage only
+// In a frame, before the submits that draw it: the array of the selected
+// bank's frame (count <= verticesPerRegion). The caller keeps it unchanged
+// until that bank's next Engine_RenderFrameBegin. 1 = set.
+int Engine_RenderStreamSource(u32 vertexBuffer, const EngineVertex *vertices, u32 count);
+u32 Engine_RenderStreamBytes(void); // the host-visible bytes of every live streamed buffer (the load line)
 // Programs ("ne"), the dynamic vertex buffer. Only with g_cfg_engine; called
 // by Engine_RenderUploadMeshes the first time (a load phase, never inside a
 // frame); a second call does nothing. 1 = ready.
@@ -1055,6 +1079,150 @@ void Engine_HiresWheelMiddle(int wheel, s16 scaleX, s16 scaleY, s16 scaleZ, floa
 void Engine_HiresWheelFrame(int wheel, double steer, double roll, int hazardTimer, double out[3][3]);
 double Engine_HiresRollStep(int speedApprox, int elapsedTimeMS, int wheelSize);
 int Engine_SelfTestHires(int *checks);
+
+// --------------------------------------------------------------------------
+// HI-RES DRIVERS FROM THE .rldchar (round of 2026-10-17; format:
+// the hi-res format notes (include/rldhires.inc head), the chunk CHRG in
+// include/rldhires.inc, the pose maths in include/rldhires_anim.inc; the code in
+// platform/engine_hires_char.c (load, GPU side, draw) and
+// platform/engine_hires_pose.c (clip state machine, wheels, log))
+//
+// --engine-hires-chars (--dev): every custom character bound to a seat whose
+// file has a CHRG chunk is drawn from its glTF model in a race - skinned, its
+// clips picked from game state (read only), its own wheel nodes or the
+// standard 3D wheels - instead of its CMDL; the CMDL stays the game's model
+// (physics, LOD, the engine's FX). In a main menu level the roster's files
+// with CHRG are loaded instead (driver select, menu scene). Without the switch
+// nothing of this runs: a file with CHRG behaves exactly as one without.
+// --engine-hires-chars-log (--dev, with --engine-hires-chars): one line per
+// logic tick and hi-res seat, from its first draw in view 0 of the tick:
+//   [CTR Engine] hires char: vb <VBlank> seat <s> timer <gGT->timer> state
+//   <base|jump|drift_left|drift_right|hit|forced|finished> want <clip asked for>
+//   clip <clip drawn after the fallback, or rest> t <its time in s> blend <the
+//   state's pose weight over the fade snapshot, 1 = no fade> prev <the clip
+//   faded from, or none> steer <signed steer fraction -1..1, + = left>
+//   steerclip <the steer clip drawn in base, or none> steerRaw <wheelRotation>
+//   air <ticks off the ground> kart <kartState> drift <side +1 left / -1
+//   right> rank <driverRank> yaw <front-left wheel yaw in kart space, read back
+//   from the drawn matrix, rad> yawgame <wheelRotation x 4 game angle units,
+//   rad> roll <front-left wheel roll read back from the drawn matrix, rad>
+//   omega <roll step of the tick / tick time, rad/s> radius <front-left wheel
+//   radius, world units> v <speedApprox x elapsedTimeMS / 8192 / tick time,
+//   world units/s> pos <posCurr x y z> wheels <own|standard> box <x0 y0 x1 y1:
+//   the hull on the screen of view 0, fractions of the view>
+// A FINISHED race driver (ACTION_RACE_FINISHED, game/PlayLevel.c:240) shows
+// podium_<driverRank + 1> for ranks 0..2 and lose from rank 3 (state
+// finished; only a forced clip comes before it).
+// With the engine off (--no-engine, or a level the engine falls back on) every
+// bound file with CHRG logs "hires char off (--no-engine)" and draws its CMDL.
+//
+// THE DRAW (decision, see platform/engine_hires_char.c head): CPU skinning per
+// frame into a streamed vertex buffer of the pose slot (Engine_RenderStream*,
+// three regions as the renderer's dynamic buffer), every vertex in WORLD
+// units and axes, drawn with program "ns" in the static model's "hires"
+// style (vertex normals, normal maps, the sun of --engine-static-lit-sun).
+// No change to any other draw, no share of ENGINE_DYN_VERTICES_PER_FRAME.
+extern int g_cfg_engineHiresChars;
+extern int g_cfg_engineHiresCharsLog;
+
+// The fixed clip list of the format (section 4), index = clip id.
+#define ENGINE_HIRES_CLIP_IDLE 0
+#define ENGINE_HIRES_CLIP_STEER_LEFT 1
+#define ENGINE_HIRES_CLIP_STEER_RIGHT 2
+#define ENGINE_HIRES_CLIP_JUMP 3
+#define ENGINE_HIRES_CLIP_DRIFT_LEFT 4
+#define ENGINE_HIRES_CLIP_DRIFT_RIGHT 5
+#define ENGINE_HIRES_CLIP_HIT 6
+#define ENGINE_HIRES_CLIP_PODIUM_1 7
+#define ENGINE_HIRES_CLIP_PODIUM_2 8
+#define ENGINE_HIRES_CLIP_PODIUM_3 9
+#define ENGINE_HIRES_CLIP_LOSE 10
+#define ENGINE_HIRES_CLIP_MENU 11
+#define ENGINE_HIRES_CLIPS 12
+#define ENGINE_HIRES_CLIP_REST (-1) // the rest pose: the end of every fallback chain
+const char *Engine_HiresClipName(int clip); // "idle" .. "menu", "rest" for ENGINE_HIRES_CLIP_REST, "?" else
+
+#define ENGINE_HIRES_CHARS_MAX 8  // characters loaded at once (one per distinct file)
+#define ENGINE_HIRES_SLOTS 12     // pose slots: one pose per slot and frame
+#define ENGINE_HIRES_SLOT_SEATS 8 // slots 0..7: the seats of a race (slot = seat)
+// Slots ENGINE_HIRES_SLOT_SEATS .. ENGINE_HIRES_SLOTS - 1 belong to the forced
+// submits below (podium, results, driver select, menu scene); the caller picks
+// one per thing it draws in a frame.
+
+// THE LOOKUPS (valid from load stage 5 until the next level unload). A
+// character handle is 0 .. ENGINE_HIRES_CHARS_MAX - 1, -1 = none (classic model).
+int Engine_HiresCharOfSeat(int seat);              // the hi-res character the seat is drawn with in this level
+int Engine_HiresCharOfFile(const char *file);      // by the file name (NativeChar_SeatFile / NativeChar_EntryFile)
+int Engine_HiresCharOfEntry(int rosterEntry);      // a roster entry (NativeChar_EntryFile of it)
+int Engine_HiresCharOfModel(const struct Model *model); // the CMDL model of a bound file (an instance's inst->model)
+// The podium after a cup (a level without bound seats): the character of the
+// seat on place 1..3 - seat data.cupPositionPerPlayer[place - 1], its file as
+// bound in the LAST race level loaded. Loaded characters stay across level
+// loads (dropped only when another level needs their room, at most
+// ENGINE_HIRES_CHARS_MAX), and a level without bound seats keeps them all and
+// makes the forced slots. -1 = none (a classic seat, or no race before).
+int Engine_HiresCharOfPlace(int place);
+int Engine_HiresCharOfLastRaceSeat(int seat);
+const char *Engine_HiresCharFile(int ch); // the file name of a character, "" for none
+// The clip a request draws after the fallback chain (FORMAT section 4): clip
+// itself when the file has it, else the chain's first present one, else
+// ENGINE_HIRES_CLIP_REST. *full (may be NULL) = 1 when a drift falls back to its
+// steer clip held at full lock.
+int Engine_HiresCharResolveClip(int ch, int clip, int *full);
+// The hull of the character in model units (kart model units before the
+// instance scale: x left, y up, z front; rest pose and every clip). 0 = none.
+int Engine_HiresCharHull(int ch, float hullMin[3], float hullMax[3]);
+
+// SEAT OVERRIDE (podium, results screen in a race level): from the next logic
+// tick the seat's race state machine is replaced by clip (0 .. ENGINE_HIRES_CLIPS
+// - 1, played as the clip plays: podium, lose, menu loop; cross-faded like any
+// clip change, its time from the tick it starts); a negative clip gives the
+// seat back to the game state. Cleared at every level load.
+void Engine_HiresSeatForceClip(int seat, int clip);
+
+// THE FORCED SUBMIT: one hi-res character with a clip the caller chooses, at an
+// instance (its world matrix with inst->scale and the tints of the driver
+// route; inst, idpp, pb from the draw dispatch) or at a world matrix (inst
+// NULL: worldFromModel maps model units to world units, drawn in view `view`
+// into OT cell `cell` of `ot`, tint as given). Draw time only; the pose is
+// computed and skinned into the slot at this call (one pose per slot and frame:
+// a second call with the same slot in a frame draws the first one's pose).
+typedef struct
+{
+	int slot;          // ENGINE_HIRES_SLOT_SEATS .. ENGINE_HIRES_SLOTS - 1
+	int clip;          // ENGINE_HIRES_CLIP_* (resolved by Engine_HiresCharResolveClip)
+	float time;        // seconds from the clip's start, the caller's game-time clock (loops wrap, others hold)
+	int prevClip;      // -1 = none; else the pose is blended from prevClip ...
+	float prevTime;    // ... at prevTime ...
+	float fade;        // ... towards clip by fade (0 = prevClip only, 1 = clip only)
+	float wheelRoll;   // radians: the roll of every wheel (0 = at rest)
+	float wheelSteer;  // radians: the yaw of the front wheels (positive = left, as wheelRotation)
+	struct Instance *inst;
+	struct InstDrawPerPlayer *idpp;
+	struct PushBuffer *pb;
+	EngineMat4 worldFromModel; // inst NULL
+	int view;                  // inst NULL
+	u32 *ot;                   // inst NULL
+	int cell;                  // inst NULL
+	float tint[4];             // inst NULL
+} EngineHiresSubmit;
+int Engine_HiresCharSubmit(int ch, const EngineHiresSubmit *s); // draws submitted; 0 = none (the caller draws its classic way)
+
+// The file side (platform/native_chars.c): the roster entry a seat is bound to
+// (-1 none), whether an entry's file lists a CHRG chunk (noted at start, only
+// with --engine-hires-chars), and the chunk read again from the file at a load
+// stage (malloc'd bytes, SHA-256 checked, the file's CMDL still the loaded one;
+// NULL with *why).
+int NativeChar_SeatEntry(int seat);
+int NativeChar_EntryHasChrg(int entry);
+u8 *NativeChar_ReadChrg(int entry, size_t *size, const char **why);
+
+// The engine side's hooks (load stage 5 and the frame).
+void Engine_HiresCharsLoad(void);              // from Engine_DriverCmdlLoad, before the upload
+void Engine_HiresCharsCollect(struct GameTracker *gGT); // from Engine_FrameCollect: the logic ticks of the hi-res seats
+int Engine_HiresCharOwns(const struct Driver *d); // 1 = d's body and wheels are drawn hi-res in this level
+int Engine_HiresCharRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb); // 1 = drawn (Engine_DriverCmdlRoute)
+int Engine_SelfTestHiresChar(int *checks);
 
 // --------------------------------------------------------------------------
 // STATIC MODEL (round of 2026-10-16; platform/engine_static_load.c reads the
