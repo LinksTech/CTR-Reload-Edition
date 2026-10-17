@@ -3,7 +3,7 @@
 
 Usage:
   blender --background --factory-startup --python-exit-code 1 --python tools/hires_glb_driver.py -- \
-      --out <dir> [--variants standard|t40k-x1024,lowpoly,bare,...] [--no-classic] [--preview <dir>]
+      --out <dir> [--variants standard|t40k-x1024,lowpoly,bare,psx,...] [--no-classic] [--preview <dir>]
       [--blend <file.blend>] [--rldpack <rldpack.exe>]
 
 Writes into <dir>:
@@ -17,6 +17,14 @@ Writes into <dir>:
                               (testdriver-x64-color.png), no normal map; all 12 clips and the 4 wheel nodes
   testdriver-bare.glb        named variant "bare": the body of t40k-x1024 (same skin, same textures) without
                               clips and without wheel nodes - a model as it comes out of a first export
+  testdriver-psx.glb         named variant "psx": t10k-x2048 (same skin, clips, wheel nodes, textures) whose
+                              faces carry PS1-style shading in COLOR_0: grey, byte 128 (on the display curve)
+                              neutral, darker in the shadows, lighter on top, median 128 - the vertex colours
+                              of a model made for the PS1 rule "texture x colour / 128" (psx_colors())
+  testdriver-psx-classic.rldchar
+                              (with "psx" and without --no-classic) the classic character of testdriver-psx.glb
+                              as Reload Studio builds the classic fallback of a hi-res driver (make-char
+                              --reduce auto --rig bind-pose --wheels off): the PS1 rule, the reference look
   testdriver-variants.txt    manifest
 
 Model space is x = kart left, y = up, z = front, 64 units per metre. Blender location in metres is
@@ -27,6 +35,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -50,10 +59,28 @@ PREVIEW_VARIANT = "t40k-x1024"
 #   wheels    export the 4 wheel nodes
 #   flat      flat shading (every face its own normal) and no normal map
 #   lowwheel  the simple wheel of low_wheel_specs() (a tyre and a rim disc) instead of the detailed one
+#   vcol      vertex colours in COLOR_0: None (none, as every variant before) or "psx" (psx_colors())
 NAMED = {
-    "lowpoly": dict(target=2500, edge=64, pixel=True, clips=True, wheels=True, flat=True, lowwheel=True),
-    "bare": dict(target=40000, edge=1024, pixel=False, clips=False, wheels=False, flat=False, lowwheel=False),
+    "lowpoly": dict(target=2500, edge=64, pixel=True, clips=True, wheels=True, flat=True, lowwheel=True, vcol=None),
+    "bare": dict(target=40000, edge=1024, pixel=False, clips=False, wheels=False, flat=False, lowwheel=False,
+                 vcol=None),
+    "psx": dict(target=10000, edge=2048, pixel=False, clips=True, wheels=True, flat=False, lowwheel=False,
+                vcol="psx"),
 }
+# The PS1-style shading of the variant "psx" (psx_colors): the light comes from above, a little from the
+# front and the left (Blender axes: x left, -y front, z up). The shade of a vertex is mostly how much its
+# normal faces that light (PSX_NORMAL_SHARE) and the rest how high it sits. Shades near the median stay
+# exactly neutral (a dead zone: most corners of a PS1 model sit at 128), the rest is spread by PSX_SPREAD
+# bytes per unit of shade and clamped to PSX_RANGE.
+PSX_LIGHT = (0.25, -0.35, 1.0)
+PSX_NORMAL_SHARE = 0.7
+PSX_DEAD_ZONE = 0.22
+PSX_SPREAD = 90.0
+PSX_RANGE = (40, 216)
+# The make-char switches of Reload Studio's classic fallback of a hi-res driver (RsCharHires_FallbackArgs,
+# plus --wheels off for a model with its own four wheel nodes) and the template of its "Test in game".
+CLASSIC_FALLBACK_ARGS = ["--reduce", "auto", "--rig", "bind-pose", "--wheels", "off"]
+PSX_TEMPLATE = "14"
 PIXEL_EDGE = 64
 # the packer of this checkout's MSVC build; --rldpack <exe> names another one
 RLDPACK_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -1232,8 +1259,78 @@ def remove_objects(objs):
             bpy.data.meshes.remove(me)
 
 
+# ============================================================ vertex colours
+def srgb_to_linear(c):
+    c = np.asarray(c, np.float64)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(c):
+    c = np.clip(np.asarray(c, np.float64), 0.0, 1.0)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1.0 / 2.4) - 0.055)
+
+
+def psx_bytes(shade, median):
+    """The grey byte (display curve, 128 = neutral) of each shade: a dead zone of PSX_DEAD_ZONE about the
+    median stays exactly 128, beyond it PSX_SPREAD bytes per unit, clamped to PSX_RANGE."""
+    d = shade - median
+    d = np.sign(d) * np.maximum(np.abs(d) - PSX_DEAD_ZONE, 0.0)
+    return np.clip(np.round(128.0 + PSX_SPREAD * d), PSX_RANGE[0], PSX_RANGE[1]).astype(np.int64)
+
+
+def psx_colors(objs):
+    """PS1-style shading as the vertex colours (COLOR_0) of every object (the first is the body): per vertex
+    a shade from its normal against PSX_LIGHT and from its height over the whole model, the median taken
+    over the body so the body's bytes have median 128. The exporter writes COLOR_0 as linear floats, so the
+    byte goes in through the sRGB curve: 128 = linear 0.2158, which a reader turns back into 128.
+    Returns the bytes per object."""
+    light = np.array(PSX_LIGHT, np.float64)
+    light /= np.linalg.norm(light)
+    data = []
+    for o in objs:
+        me = o.data
+        n = len(me.vertices)
+        co = np.empty(n * 3, np.float32)
+        me.vertices.foreach_get("co", co)
+        nr = np.empty(n * 3, np.float32)
+        me.vertex_normals.foreach_get("vector", nr)
+        co = co.reshape(n, 3).astype(np.float64) + np.array(o.location, np.float64)
+        data.append((co, nr.reshape(n, 3).astype(np.float64)))
+    z = np.concatenate([co[:, 2] for co, _nr in data])
+    z0, z1 = float(z.min()), float(z.max())
+    shades = []
+    for co, nr in data:
+        h = (co[:, 2] - z0) / max(z1 - z0, 1e-9)
+        shades.append(PSX_NORMAL_SHARE * (nr @ light) + (1.0 - PSX_NORMAL_SHARE) * (2.0 * h - 1.0))
+    median = float(np.median(shades[0]))
+    out = []
+    for o, shade in zip(objs, shades):
+        b = psx_bytes(shade, median)
+        lin = srgb_to_linear(b / 255.0)
+        rgba = np.stack([lin, lin, lin, np.ones_like(lin)], 1).astype(np.float32)
+        attr = o.data.color_attributes.new(name="Col", type="FLOAT_COLOR", domain="POINT")
+        attr.data.foreach_set("color", rgba.ravel())
+        o.data.color_attributes.active_color = attr
+        o.data.color_attributes.render_color_index = o.data.color_attributes.active_color_index
+        o.data.update()
+        out.append(b)
+    return out
+
+
+def glb_vcol_bytes(g):
+    """Every COLOR_0 value of a GLB as the byte on the display curve (linear float -> sRGB byte), one row
+    of RGB per vertex over all primitives; None when no primitive has COLOR_0."""
+    rows = []
+    for m in g.j.get("meshes", []):
+        for p in m["primitives"]:
+            if "COLOR_0" in p["attributes"]:
+                c = g.accessor(p["attributes"]["COLOR_0"]).astype(np.float64)[:, :3]
+                rows.append(np.round(linear_to_srgb(c) * 255.0).astype(np.int64))
+    return np.concatenate(rows) if rows else None
+
+
 # ================================================================== export
-def export_gltf(path, objs, hires, animations=True):
+def export_gltf(path, objs, hires, animations=True, vcol=False):
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.select_set(True)
@@ -1247,6 +1344,9 @@ def export_gltf(path, objs, hires, animations=True):
         export_unused_images=False, export_unused_textures=False, export_gpu_instances=False,
         export_loglevel=-1,
     )
+    if vcol:  # the active colour attribute (psx_colors) as COLOR_0, nothing else
+        kw.update(export_vertex_color="ACTIVE", export_all_vertex_colors=False,
+                  export_active_vertex_color_when_no_material=True)
     if hires:
         kw.update(export_skins=True, export_def_bones=True, export_leaf_bone=False, export_influence_nb=4,
                   export_all_influences=False, export_morph=False, export_animations=animations,
@@ -1377,10 +1477,24 @@ def trs_matrix(t, q, s):
     return m
 
 
-def check_glb(path, expect_tris, edge, hires, report, clips=True, wheels=True, flat=False):
+def check_glb(path, expect_tris, edge, hires, report, clips=True, wheels=True, flat=False, vcol=None):
     g = Glb(path)
     j = g.j
     errs = []
+    if vcol == "psx":  # PS1-style shading in COLOR_0: grey, median 128 on the display curve, both sides of it
+        vb = glb_vcol_bytes(g)
+        nprim = sum(len(m["primitives"]) for m in j.get("meshes", []))
+        nvc = sum(1 for m in j.get("meshes", []) for p in m["primitives"] if "COLOR_0" in p["attributes"])
+        if vb is None or nvc != nprim:
+            errs.append("COLOR_0 on %d of %d primitives, expected all" % (nvc, nprim))
+        else:
+            med = int(np.median(vb))
+            report["vcol"] = (len(vb), med, int(vb.min()), int(vb.max()), float(np.mean(np.abs(vb - 128) <= 8)))
+            if np.abs(vb[:, 0] - vb[:, 1]).max() > 0 or np.abs(vb[:, 0] - vb[:, 2]).max() > 0:
+                errs.append("COLOR_0 is not grey")
+            if med != 128 or vb.min() >= 128 or vb.max() <= 128:
+                errs.append("COLOR_0 bytes %d..%d median %d, expected median 128 with both sides"
+                            % (vb.min(), vb.max(), med))
     tris = g.total_tris()
     if abs(tris - expect_tris) > 0.10 * expect_tris and hires:
         errs.append("triangles %d not within 10%% of %d" % (tris, expect_tris))
@@ -1640,15 +1754,20 @@ def build_named(rig, wspecs, bspecs, vname, out, tex_paths):
         for o in objs:
             o.data.polygons.foreach_set("use_smooth", [False] * len(o.data.polygons))
             o.data.update()
+    if spec["vcol"] == "psx":
+        b = np.concatenate(psx_colors(objs))
+        say("  COLOR_0 psx: %d vertices, bytes %d..%d, median %d, %.0f %% at 128 +- 8"
+            % (len(b), b.min(), b.max(), int(np.median(b)), 100.0 * np.mean(np.abs(b - 128) <= 8)))
     say("  body %d + wheels %d = %d triangles%s%s" % (nb, nw, nb + nw, "" if spec["clips"] else ", no clips",
                                                     "" if spec["wheels"] else ", no wheel nodes"))
     path = os.path.join(out, "testdriver-%s.glb" % vname)
     for pb in rig.obj.pose.bones:
         pb.rotation_quaternion = (1, 0, 0, 0)
         pb.location = (0, 0, 0)
-    export_gltf(path, objs + [rig.obj], True, animations=spec["clips"])
+    export_gltf(path, objs + [rig.obj], True, animations=spec["clips"], vcol=spec["vcol"] is not None)
     rep = {}
-    check_glb(path, nb + nw, spec["edge"], True, rep, clips=spec["clips"], wheels=spec["wheels"], flat=spec["flat"])
+    check_glb(path, nb + nw, spec["edge"], True, rep, clips=spec["clips"], wheels=spec["wheels"], flat=spec["flat"],
+              vcol=spec["vcol"])
     rep["file"] = path
     remove_objects(objs)
     return rep
@@ -1806,7 +1925,7 @@ def parse_args():
             raise Fail("unknown argument %s" % a)
     if not opt["out"]:
         raise Fail("usage: blender -b --factory-startup --python hires_glb_driver.py -- --out <dir> "
-                   "[--variants standard|t40k-x1024,lowpoly,bare,...] [--no-classic] [--preview <dir>] [--blend f] "
+                   "[--variants standard|t40k-x1024,lowpoly,bare,psx,...] [--no-classic] [--preview <dir>] [--blend f] "
                    "[--rldpack exe]")
     return opt
 
@@ -1885,6 +2004,22 @@ def main():
                 raise Fail("%s failed (%d)" % (sub, rc))
         if "error" in txt.lower().replace("0 errors", ""):
             say("NOTE: make-char output mentions 'error'; check the text above")
+    if opt["classic"] and "psx" in variants:
+        # the classic character of the PS1-shaded model, as the Studio's Hi-Res route builds its fallback
+        rl = os.path.join(out, "testdriver-psx-classic.rldchar")
+        cmd = [opt["rldpack"], "make-char", "--model", os.path.join(out, "testdriver-psx.glb"),
+               "--name", "HIRES PSX TEST", "--template", PSX_TEMPLATE] + CLASSIC_FALLBACK_ARGS + ["--out", rl]
+        rc, txt = run_tool(cmd)
+        m = re.search(r"Size (\d+)% is outside (\d+)\.\.(\d+)%", txt)
+        if rc != 0 and m:
+            # the Studio's size slider stays inside the range rldpack reports: the largest size it allows
+            rc, txt = run_tool(cmd + ["--size", m.group(3)])
+        if rc != 0:
+            raise Fail("make-char of testdriver-psx.glb failed (%d)" % rc)
+        for sub in ("verify", "info"):
+            rc, _txt2 = run_tool([opt["rldpack"], sub, rl])
+            if rc != 0:
+                raise Fail("%s of testdriver-psx-classic.rldchar failed (%d)" % (sub, rc))
     # report details
     for v, rep in reports:
         say("%s: tris %d joints %d clips %d" % (v, rep["tris"], rep["joints"], rep["clips"]))
@@ -1894,6 +2029,9 @@ def main():
         say("  materials %s" % (rep["materials"],))
         say("  images %s" % ([(a, b, c[:12]) for a, b, c in rep["images"]],))
         say("  embedded PNGs byte-identical to the written files (checked); colour PNG alpha==0: %d, alpha==128: %d, alpha<255: %d texels" % rep["alpha"])
+        if "vcol" in rep:
+            say("  COLOR_0 in the GLB: %d vertices, median byte %d, bytes %d..%d, %.3f at 128 +- 8 (checked: grey)"
+                % (rep["vcol"][0], rep["vcol"][1], rep["vcol"][2], rep["vcol"][3], rep["vcol"][4]))
     with_rim = [rep for _v, rep in reports if rep.get("rim")]
     if with_rim:
         rep = with_rim[0]
@@ -1921,6 +2059,8 @@ def main():
     if classic:
         add("testdriver-classic.glb", classic["tris"], 512, 0, 0)
         add("testdriver-classic.rldchar", "-", "-", "-", "-")
+    if opt["classic"] and "psx" in variants:
+        add("testdriver-psx-classic.rldchar", "-", "-", "-", "-")
     write_file(os.path.join(out, "testdriver-variants.txt"), ("\n".join(lines) + "\n").encode("utf-8"))
     say("manifest written: %d lines" % len(lines))
     if opt["blend"]:
