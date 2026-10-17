@@ -443,6 +443,7 @@ if(BUILD_TESTING)
         add_executable(rs_hires_selftest
             tools/reloadstudio/rs_hires_test.c
             tools/reloadstudio/rs_hires_model.c
+            tools/reloadstudio/rs_charhires.c
             tools/reloadstudio/rs_tex.c
             tools/rldpack.rc
             platform/rldpack.manifest
@@ -469,6 +470,24 @@ if(BUILD_TESTING)
         set_tests_properties(reloadstudio_hires_selftest PROPERTIES
             PASS_REGULAR_EXPRESSION "rs_hires files passed: sha256 [0-9a-f]+"
             FAIL_REGULAR_EXPRESSION "FAIL"
+            TIMEOUT 300)
+
+        # The build chain of the guided flow (page Character, routes Low-Poly and
+        # Hi-Res, rs_charroute.h): make-char with the page's switches and
+        # RsCharHires_FallbackArgs, hires-upscale, hires-add - through Reload
+        # Studio's --rldpack the same bytes as rldpack's own (cmake/run_rs_charroute.cmake).
+        add_test(NAME reloadstudio_charroute
+            COMMAND ${CMAKE_COMMAND}
+                -DPACKER=$<TARGET_FILE:rldpack>
+                -DSTUDIO=$<TARGET_FILE:ReloadStudio>
+                -DTEST=$<TARGET_FILE:rs_hires_selftest>
+                -DDIR=${CMAKE_BINARY_DIR}/selftest/rs-charroute
+                -P ${CMAKE_SOURCE_DIR}/cmake/run_rs_charroute.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(reloadstudio_charroute PROPERTIES
+            PASS_REGULAR_EXPRESSION "charroute passed: 3 routes"
+            FAIL_REGULAR_EXPRESSION "FAILED"
             TIMEOUT 300)
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload ${CTR_NATIVE_VERSION} ")

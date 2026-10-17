@@ -124,6 +124,11 @@ int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck 
 
 void RsHires_CheckFree(struct RsHiresCheck *c);
 
+// The game's budget of a hi-res driver (RLDHIRES_BUDGET_* of
+// include/rldhires.inc): triangles, the largest texture edge, texture bytes.
+// Any pointer may be NULL.
+void RsHires_Budget(unsigned long long *triangles, unsigned *edge, unsigned long long *textureBytes);
+
 // THE CLIPS. A frame of clip (RLDHIRES_CLIP_* order, -1 = the rest pose) at
 // `seconds` of the preview, the wheels turned by wheelDegrees about their axle
 // (+ rolls forward). The pose is made as the game makes it, with the
