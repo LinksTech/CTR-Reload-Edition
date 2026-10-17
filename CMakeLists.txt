@@ -1261,6 +1261,21 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         )
     endforeach()
 
+    # The creator kit (templates/make_creator_kit.py and its tools): the GLB
+    # measurements and the guide builder on code-made data, the guide HTML
+    # up to date with its source, and the generator end to end with Blender
+    # 5.2 against rldpack (skipped, code 77, where Blender 5.2 is missing).
+    add_test(NAME creator_kit_measure_selftest COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/creator_kit_measure.py selftest)
+    set_tests_properties(creator_kit_measure_selftest PROPERTIES PASS_REGULAR_EXPRESSION "creator-kit-measure selftest: [0-9]+ ok, 0 FAIL" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME creator_kit_guide_selftest COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/creator_kit_guide.py selftest)
+    set_tests_properties(creator_kit_guide_selftest PROPERTIES PASS_REGULAR_EXPRESSION "creator_kit_guide selftest: [0-9]+ cases, 0 failed" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME creator_kit_guide_check COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/creator_kit_guide.py check)
+    set_tests_properties(creator_kit_guide_check PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME creator_kit_test_selftest COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/creator_kit_test.py selftest)
+    set_tests_properties(creator_kit_test_selftest PROPERTIES PASS_REGULAR_EXPRESSION "creator-kit-test selftest: [0-9]+ checks, 0 failures" ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    add_test(NAME creator_kit COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/creator_kit_test.py --rldpack $<TARGET_FILE:rldpack> --work ${CMAKE_BINARY_DIR}/selftest/creator_kit)
+    set_tests_properties(creator_kit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+
     # Collision model generator (tools/collision_gen): procedural test models,
     # the generator's checks in the game's arithmetic, and the container it
     # makes judged by the game's own container checks.
