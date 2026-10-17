@@ -18,7 +18,7 @@
 //   params.z    the alpha cutoff (0 = none), tested before the lighting
 //   params3.z   0 = lit, 1 = lit with the normal map of slot 3 (s_normal),
 //               2 = unlit (KHR_materials_unlit): base colour x vertex colour x
-//               tint only, no light and no grade
+//               tint only, no light and no grade; plus 4 = PSX BLEND (below)
 //   params3.w   the normal map's scale on x and y (glTF normalTexture.scale)
 //   split.xyz   the direction towards the sun (unit, world axes)
 //   split.w     the ambient light from above
@@ -42,6 +42,16 @@
 // encoded values is the encoded product (exact for a pure power curve, within a
 // few levels for sRGB). "ne" multiplies them as they are (the look of the flat
 // model stays as it was).
+//
+// PSX BLEND (the hi-res drivers, round of 2026-10-17; params3.z 4..6, set only
+// by platform/engine_hires_char.c for a textured material of a file whose
+// vertex colours are PSX blend, include/rldhires_color.inc). The vertex colour
+// holds the PS1 byte, and grey 128 is neutral: it is read as byte / 128 on the
+// display curve (a_color x 255 / 128) instead of being encoded, so the texel is
+// multiplied by colour / 128 exactly as on the PS1, and the product texel x
+// colour x tint is clamped to 1 before the light. Every other draw of "ns"
+// (params3.z 0..2: the static model, hi-res files in glTF or off) takes the
+// path it always took, with the same operations in the same order.
 //
 // THE NORMAL. The vertex normal when there is one, else the face's own normal
 // from the screen derivatives of the world position. It is turned to the side
@@ -77,7 +87,9 @@ global_variable const char *ctr_native_static_shader =
     "void main() {\n"
     "	v_uv = a_texcoord;\n"
     // LINEAR FACTORS: the vertex colour and the tint on the display curve, alpha as it is.
-    "	v_color = vec4(encodeSrgb(a_color.rgb) * encodeSrgb(tint.rgb), a_color.a * tint.a);\n"
+    // PSX BLEND (params3.z >= 4): the vertex colour is the PS1 byte, read as byte / 128.
+    "	vec3 vertexColour = (params3.z > 3.5) ? (a_color.rgb * (255.0 / 128.0)) : encodeSrgb(a_color.rgb);\n"
+    "	v_color = vec4(vertexColour * encodeSrgb(tint.rgb), a_color.a * tint.a);\n"
     "	v_world = a_position;\n"
     "	v_normal = a_uvBox.xyz / 127.5 - 1.0;\n"
     "	v_hasNormal = a_uvBox.w;\n"
@@ -111,15 +123,20 @@ global_variable const char *ctr_native_static_shader =
     "			colour *= vec4(encoded, texel.a);\n"
     "		} else { colour *= texel; }\n"
     "	}\n"
+    // PSX BLEND: texel x colour / 128 x tint, clamped as on the PS1 (before the light);
+    // shading is the mode of params3.z without the 4.
+    "	bool psxBlend = (params3.z > 3.5);\n"
+    "	float shading = psxBlend ? (params3.z - 4.0) : params3.z;\n"
+    "	if (psxBlend) { colour.rgb = min(colour.rgb, vec3(1.0)); }\n"
     "	if ((params.z > 0.0) && (colour.a < params.z)) { discard; }\n"
     "	vec3 eyeDir = params4.xyz - p;\n"
     "	bool flatShade = (vramPage.z > 0.5);\n"
     "	vec3 N = ((v_hasNormal > 127.5) && !flatShade) ? normalize(v_normal) : normalize(cross(dp1, dp2));\n"
     // The side the face is seen from.
     "	if (dot(N, eyeDir) < 0.0) { N = -N; }\n"
-    "	bool unlit = (params3.z > 1.5);\n"
+    "	bool unlit = (shading > 1.5);\n"
     "	if (unlit) { fragColor = colour; return; }\n"
-    "	if ((params3.z > 0.5) && !flatShade) {\n"
+    "	if ((shading > 0.5) && !flatShade) {\n"
     "		nt.xy *= params3.w;\n"
     "		vec3 dp2perp = cross(dp2, N);\n"
     "		vec3 dp1perp = cross(N, dp1);\n"

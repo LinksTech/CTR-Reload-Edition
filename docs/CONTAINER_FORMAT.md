@@ -359,6 +359,7 @@ is frozen. Source: `include/rldchar.inc`.
 | CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
 | CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) (see "Preview, planned: CNET and CTXT") |
 | CTXT | optional, PREVIEW, written with CNET | 32 MiB, as CNET | the textures of CNET as PNG, decoded to RGBA8 (see the same section) |
+| CHRG | optional, PREVIEW, written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, read only with the engine's hi-res drivers (see "CHRG (preview)") |
 | CTEX | reserved name, not assigned | none (unknown, skipped) | once planned for texture data; the textures of the native model are CTXT, so the name stays unused |
 | CWHL | reserved name, not assigned | none (unknown, skipped) | own wheels; the wheels of the native model are a part of CNET, so CWHL stays reserved and unassigned (its old plan below) |
 
@@ -375,6 +376,42 @@ interprets CPRM yet. CNET and CTXT (preview) are not known types of the
 envelope: it checks only their position, a doubled type and an overlap, as
 for any unknown chunk; everything else about them costs only the native part
 (see "Preview, planned: CNET and CTXT").
+
+### CHRG (preview)
+
+The hi-res driver. Version 1, "preview": until the format is frozen,
+`include/rldhires.inc` is the binding description (the header, the model
+rules HRG-1..36 and the budget); this section holds the header. CHRG is not a
+known type of the envelope: it is skipped like any unknown chunk, and a CHRG
+that breaks a rule drops only the hi-res part (the driver loads with CHRI and
+CMDL).
+
+| Offset | Type | Field | Meaning |
+|---|---|---|---|
+| 0x00 | u16 | version | 1; another version drops the hi-res part (HRG-1) |
+| 0x02 | u16 | headerBytes | >= 16, a multiple of 4, inside the chunk; a longer header is read past (HRG-2) |
+| 0x04 | u32 | flags | bits 0-1: the vertex colour mode (below); bits 2-31 are 0. A set bit 2-31, or mode 3, drops the hi-res part (HRG-3) |
+| 0x08 | u32 | glbOffset | = headerBytes (HRG-4) |
+| 0x0C | u32 | glbSize | glbOffset + glbSize = the chunk's size (HRG-4) |
+
+The GLB follows byte for byte as the author exported it.
+
+The vertex colour mode (flags bits 0-1, `include/rldhires_color.inc`) says how
+the game reads the model's COLOR_0:
+
+| Mode | Name | COLOR_0 |
+|---|---|---|
+| 0 | glTF | as glTF says: white is neutral, a linear multiplier of the base colour. Every CHRG written before the field has flags 0 and keeps its look |
+| 1 | PSX blend | as the PS1 mixes texture and vertex colour: the sRGB byte of COLOR_0, grey 128 is neutral, displayed texel x byte / 128, clamped to 255. A primitive without a base colour texture shows its COLOR_0 as in glTF (the PS1 does the same for an untextured polygon); a primitive without COLOR_0 shows its texture unchanged |
+| 2 | off | ignored: the shading is in the textures |
+| 3 | - | not a mode: refused (HRG-3) |
+
+`rldpack hires-add --vertex-colors gltf|psx|off` writes the mode (without the
+switch: glTF, flags 0, the bytes of before). A game from before the mode
+drops the hi-res part of a file with mode 1 or 2 (HRG-3) and draws the
+classic model. Rule HRG-36 (a warning) is said only in glTF mode: vertex
+colours on textured faces whose median sRGB byte is 102..153 look like PS1
+shading and would make the kart too dark there.
 
 ### CHRI (`RldChar_ParseInfo`)
 

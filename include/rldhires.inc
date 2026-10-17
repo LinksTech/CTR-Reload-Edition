@@ -61,7 +61,8 @@
 // NOTHING HERE PRINTS. Findings go into an RldHiresReport.
 //
 // Format version 1, "preview": until it is accepted, this file is the binding
-// description; docs/CONTAINER_FORMAT.md gets the section when it is frozen.
+// description; docs/CONTAINER_FORMAT.md ("CHRG (preview)") holds the header
+// and the vertex colour mode, and gets the rest when it is frozen.
 
 #ifndef RLDHIRES_INC
 #define RLDHIRES_INC
