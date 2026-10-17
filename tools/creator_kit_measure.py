@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Creator Kit measuring tool (criteria K3, K4, K6 of DONE.md).
 
-Pure Python 3 standard library.  Reads creator-kit-demo.glb (+ kit-info.json, optional kit-kart.glb),
+Pure Python 3 standard library.  Reads creator-kit-demo-local.glb (+ kit-info.json, optional kit-kart.glb),
 samples every clip at every 1/30 s frame, computes joint world matrices and skinned corners, and prints
 one line per criterion:
 
@@ -15,7 +15,7 @@ x = kart left, y = up, z = front).  Left side = ".L" = +x.
 
 Design assumptions are marked "ASSUMPTION" in the comments.
 
-    python tools/creator_kit_measure.py measure <creator-kit-demo.glb> --kit-info <kit-info.json>
+    python tools/creator_kit_measure.py measure <creator-kit-demo-local.glb> --kit-info <kit-info.json>
            [--kart <kit-kart.glb>] [--vcol psx|gltf|off] [--json <out.json>] [--only K3,K4,K6]
     python tools/creator_kit_measure.py selftest
 """
@@ -1474,7 +1474,7 @@ BOX_TRIS = [(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1), (2
 
 
 def build_kit(o=None):
-    """A small valid creator-kit-demo.glb (+ optional kart GLB).  o = option dict for mutations."""
+    """A small valid creator-kit-demo-local.glb (+ optional kart GLB).  o = option dict for mutations."""
     o = dict(o or {})
     info = o.get("info", STD_INFO)
     gb = GB()
@@ -1779,7 +1779,7 @@ def selftest():
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="creator_kit_measure.py", description="Creator Kit measuring tool (K3, K4, K6)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    m = sub.add_parser("measure", help="measure a creator-kit-demo.glb")
+    m = sub.add_parser("measure", help="measure a creator-kit-demo-local.glb")
     m.add_argument("glb")
     m.add_argument("--kit-info", required=True)
     m.add_argument("--kart", default=None)

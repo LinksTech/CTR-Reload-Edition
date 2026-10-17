@@ -33,7 +33,8 @@ You find these files in the folder:
 | File | What it is |
 |---|---|
 | `creator-kit.blend` | The Blender template. Open this one. |
-| `creator-kit-demo.glb` | The demo export with the puppet. |
+| `creator-kit-figure.glb` | The demo export of the figure alone, with the puppet. It holds no game data. This is the file to share. |
+| `creator-kit-demo-local.glb` | The figure with the kart and the wheels from your game data, for a test on your own computer. Never share it. |
 | `creator-kit-report.json` | A short report of the run. |
 | `kit-kart.glb` | The kart, taken from your game data. |
 | `kit-wheel.glb` | The wheel, taken from your game data. |
@@ -49,12 +50,12 @@ The button **Guide** on the same page opens this guide.
 
 1. Open `creator-kit.blend` in Blender 5.2.
 2. Look at the **Outliner**. It has these collections:
-   - **CreatorKit** is the export root. Everything inside it is exported.
-   - **Figure** holds the puppet. It is inside CreatorKit.
-   - **Kart** holds the kart body, the steering wheel and the four wheels. It is inside CreatorKit.
+   - **CreatorKit** holds Figure and Kart. It has the exporter for the local demo file (section 7).
+   - **Figure** holds `creator_rig` and the puppet. It is inside CreatorKit. It has the exporter for the figure alone (section 7).
+   - **Kart** holds the kart body, the steering wheel and the four wheels. It is inside CreatorKit. These parts are marked as kit parts: they have a custom property `ctr_kit`, and their materials are named `ctrkit_...`.
    - **Guides** holds helper objects, for example the size box and the seat point. It is not exported.
    - **Classic** appears only when you load an old character (section 11). It is not exported.
-3. The skeleton `creator_rig` is inside CreatorKit.
+3. The skeleton `creator_rig` is inside Figure.
 
 The axes are fixed:
 
@@ -78,6 +79,8 @@ Do not move or scale the kart. The game expects it where it is.
    - The head stays inside the size box in **Guides**.
 4. Apply the scale of your figure (Object > Apply > Scale) so that it is 1 on all axes.
 5. Make sure the figure has UVs and a material with a texture.
+
+Keep the kit parts in the collection **Kart**. Do not move them into **Figure**. Reload Studio warns you about a file that contains them: "This file contains the original kart from your game data. Don't share it, or export without the kart."
 
 Keep to these limits:
 
@@ -186,17 +189,24 @@ To use another mode, make the demo files again in that mode. The colours of the 
 
 The export settings are already stored in the file.
 
-1. Select the collection **CreatorKit** in the Outliner.
-2. Open the Collection properties of CreatorKit > **Exporters** > **glTF 2.0** > **Export**.
-   Or use **File > Export All Collections**.
-3. Blender writes `creator-kit-demo.glb` next to the .blend file. You may use another file name.
+There are two exporters:
+
+- The collection **Figure** writes `creator-kit-figure.glb`. This is the figure alone. It holds no game data. This is the file to share.
+- The collection **CreatorKit** writes `creator-kit-demo-local.glb`. This is the figure with the kart and the wheels from your own game data. Use it for a test on your own computer. Never share it.
+
+To export:
+
+1. Select the collection in the Outliner.
+2. Open its Collection properties > **Exporters** > **glTF 2.0** > **Export**.
+   Or use **File > Export All Collections**. This writes both files next to the .blend file.
+3. You may use other file names.
 
 > Do not change the export settings. Especially keep **Animations** on. Without it the file has no clips.
 
 ## 8. Character
 
 1. Start Reload Studio and open the page **Character**.
-2. Choose your .glb file as the model.
+2. Choose your .glb file as the model. For a test on your own computer, section 10 names the file to use.
 3. The Studio checks the file. It shows the animations: which clips come from the file and which use a fallback. It also shows the budget: triangles, joints, materials and textures.
 4. Check the vertex colour mode. It must match the ending of your material names.
 5. Fix every error the Studio shows. A warning means that the character works, but something falls back to a standard.
@@ -206,6 +216,7 @@ The export settings are already stored in the file.
 Older versions of the game and the PS1 path cannot show a skeleton. The Studio builds a **classic model** for them from your file, automatically.
 
 - The Studio reads your model as it stands in its **bind pose**. It ignores the skeleton and the clips.
+- The classic model needs a kart in the file, so it is built from `creator-kit-demo-local.glb`.
 - This is why you bind your figure **seated in the kart**. A standing figure gives a bad classic model.
 - The game makes the classic steering and jump poses itself.
 
@@ -217,7 +228,9 @@ You do not need this for normal work.
 
 ## 10. Test in game
 
-1. In the Studio, press the button **Test in game**.
+The figure alone holds no game data, but this version of the game does not add the original kart to it yet. So for a test on your own computer use `creator-kit-demo-local.glb`, the figure with the kart from your game data. Never share that file.
+
+1. On the page **Character**, choose the file named above. Then press the button **Test in game**.
 2. Start a race with your character.
 3. Check these things:
    - Driving straight: the figure sits well and the hands are on the wheel.
@@ -241,6 +254,7 @@ The kart and the wheels in the kit are made from your own copy of the game. Keep
 ## 13. If something is wrong
 
 - **A clip is missing or not found.** The name is misspelled or the action is missing. Open the Action Editor and compare the name with the table in section 5. The names are exact and in lower case.
+- **The Studio says the file contains the original kart from your game data.** For sharing, export with the exporter of the collection Figure (`creator-kit-figure.glb`). Keep the other file for yourself. Check that no kit part was moved into Figure.
 - **The wheels are missing.** The wheel objects are not inside the collection Kart, or Kart is not inside CreatorKit. Move them back.
 - **Too many triangles.** Reduce the figure. Use the Decimate modifier, apply it, and bind the figure again. Remember that the kart and the wheels also use triangles.
 - **The figure is too big.** Check the size box in Guides. The figure should fit inside it when it sits. Scale it, then apply the scale.

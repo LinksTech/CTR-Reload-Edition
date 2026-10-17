@@ -32,8 +32,12 @@ for anything, no credit needed.
 # Creator Kit
 
 `make_creator_kit.py` builds the Creator Kit template for a hi-res driver
-with a skeleton: `creator-kit.blend` and its demo export
-`creator-kit-demo.glb`. Reload Studio runs it on the page Creator Kit
+with a skeleton: `creator-kit.blend` and its two exports,
+`creator-kit-figure.glb` (the figure alone, no game data) and
+`creator-kit-demo-local.glb` (the figure with the kart and wheels from the
+user's game data, for a test on the user's own PC; every kit part in it
+is marked with the glTF extras `ctr_kit` and materials named `ctrkit_...`).
+Reload Studio runs it on the page Creator Kit
 (button Generate demo files); the guide is
 [docs/CREATOR_KIT.md](../docs/CREATOR_KIT.md).
 

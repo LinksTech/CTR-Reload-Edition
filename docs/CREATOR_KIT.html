@@ -114,8 +114,8 @@ nav.toc ol { margin: 0; }
 <circle cx="538" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
 <text x="538" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
 <rect x="24" y="196" width="200" height="62" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="124" y="223.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Export</text>
-<text x="124" y="240.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo.glb</text>
+<text x="124" y="224" font-size="10" text-anchor="middle" fill="#5f6b7a">Export (test on your PC):</text>
+<text x="124" y="238.4" font-size="12" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
 <circle cx="26" cy="198" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
 <text x="26" y="202.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">4</text>
 <rect x="280" y="196" width="200" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
@@ -166,7 +166,8 @@ nav.toc ol { margin: 0; }
 </thead>
 <tbody>
 <tr><td><code>creator-kit.blend</code></td><td>The Blender template. Open this one.</td></tr>
-<tr><td><code>creator-kit-demo.glb</code></td><td>The demo export with the puppet.</td></tr>
+<tr><td><code>creator-kit-figure.glb</code></td><td>The demo export of the figure alone, with the puppet. It holds no game data. This is the file to share.</td></tr>
+<tr><td><code>creator-kit-demo-local.glb</code></td><td>The figure with the kart and the wheels from your game data, for a test on your own computer. Never share it.</td></tr>
 <tr><td><code>creator-kit-report.json</code></td><td>A short report of the run.</td></tr>
 <tr><td><code>kit-kart.glb</code></td><td>The kart, taken from your game data.</td></tr>
 <tr><td><code>kit-wheel.glb</code></td><td>The wheel, taken from your game data.</td></tr>
@@ -176,65 +177,81 @@ nav.toc ol { margin: 0; }
 <p>The button <strong>Guide</strong> on the same page opens this guide.</p>
 <h2 id="2-open-the-template">2. Open the template</h2>
 <figure>
-<svg role="img" aria-label="The collections in the template" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 505" font-family="sans-serif">
-<rect width="640" height="505" rx="12" fill="#f2f3f5"/>
-<rect x="20" y="18" width="600" height="469" rx="8" fill="#2b2f36" stroke="#14171a" stroke-width="1.5"/>
-<rect x="20" y="18" width="600" height="30" rx="8" fill="#3a3f47" stroke="#14171a" stroke-width="1.5"/>
+<svg role="img" aria-label="The collections in the template" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 505" font-family="sans-serif">
+<rect width="760" height="505" rx="12" fill="#f2f3f5"/>
+<rect x="20" y="18" width="720" height="469" rx="8" fill="#2b2f36" stroke="#14171a" stroke-width="1.5"/>
+<rect x="20" y="18" width="720" height="30" rx="8" fill="#3a3f47" stroke="#14171a" stroke-width="1.5"/>
 <text x="36" y="38" font-size="14" font-weight="bold" fill="#e6e8eb">Outliner</text>
-<rect x="21" y="47" width="598" height="25" fill="#303540"/>
+<rect x="21" y="47" width="718" height="25" fill="#303540"/>
 <rect x="40" y="54" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="64" font-size="14" fill="#e6e8eb">CreatorKit</text>
-<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">export root</text>
-<path d="M70.5 78L77 90 64 90z" fill="#7ed99b" stroke="#3b8f57" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="86" y="89" font-size="14" fill="#e6e8eb">creator_rig</text>
-<rect x="21" y="97" width="598" height="25" fill="#303540"/>
-<rect x="64" y="104" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
-<text x="86" y="114" font-size="14" fill="#e6e8eb">Figure</text>
+<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">second exporter: demo-local</text>
+<rect x="64" y="79" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
+<text x="86" y="89" font-size="14" fill="#e6e8eb">Figure</text>
+<text x="147.2" y="89" font-size="12" font-style="italic" fill="#9aa3ad">exporter: figure</text>
+<rect x="21" y="97" width="718" height="25" fill="#303540"/>
+<path d="M94.5 103L101 115 88 115z" fill="#7ed99b" stroke="#3b8f57" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="110" y="114" font-size="14" fill="#e6e8eb">creator_rig</text>
 <rect x="88" y="129" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="139" font-size="14" fill="#e6e8eb">puppet</text>
-<rect x="21" y="147" width="598" height="25" fill="#303540"/>
+<rect x="21" y="147" width="718" height="25" fill="#303540"/>
 <rect x="64" y="154" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="86" y="164" font-size="14" fill="#e6e8eb">Kart</text>
 <rect x="88" y="179" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="189" font-size="14" fill="#e6e8eb">kart_body</text>
-<rect x="21" y="197" width="598" height="25" fill="#303540"/>
+<circle cx="197.8" cy="185" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="205.8" y="189" font-size="12" font-weight="bold" fill="#ffa94d">kit</text>
+<rect x="21" y="197" width="718" height="25" fill="#303540"/>
 <rect x="88" y="204" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="214" font-size="14" fill="#e6e8eb">kart_steer_wheel</text>
+<circle cx="255.2" cy="210" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="263.2" y="214" font-size="12" font-weight="bold" fill="#ffa94d">kit</text>
 <rect x="88" y="229" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="239" font-size="14" fill="#e6e8eb">wheel_fl</text>
-<rect x="21" y="247" width="598" height="25" fill="#303540"/>
+<circle cx="189.6" cy="235" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="197.6" y="239" font-size="12" font-weight="bold" fill="#ffa94d">kit</text>
+<rect x="21" y="247" width="718" height="25" fill="#303540"/>
 <rect x="88" y="254" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="264" font-size="14" fill="#e6e8eb">wheel_fr</text>
+<circle cx="189.6" cy="260" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="197.6" y="264" font-size="12" font-weight="bold" fill="#ffa94d">kit</text>
 <rect x="88" y="279" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="289" font-size="14" fill="#e6e8eb">wheel_rl</text>
-<rect x="21" y="297" width="598" height="25" fill="#303540"/>
+<circle cx="189.6" cy="285" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="197.6" y="289" font-size="12" font-weight="bold" fill="#ffa94d">kit</text>
+<rect x="21" y="297" width="718" height="25" fill="#303540"/>
 <rect x="88" y="304" width="13" height="11" rx="2" fill="#7fb2f0" stroke="#3d6fb0" stroke-width="1"/>
 <text x="110" y="314" font-size="14" fill="#e6e8eb">wheel_rr</text>
+<circle cx="189.6" cy="310" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="197.6" y="314" font-size="12" font-weight="bold" fill="#ffa94d">kit</text>
 <rect x="40" y="329" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="339" font-size="14" fill="#e6e8eb">Guides</text>
-<rect x="21" y="347" width="598" height="25" fill="#303540"/>
+<rect x="21" y="347" width="718" height="25" fill="#303540"/>
 <path d="M70.5 354L70.5 365" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <path d="M64 359.5L77 359.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <text x="86" y="364" font-size="14" fill="#e6e8eb">CrashSize</text>
 <path d="M70.5 379L70.5 390" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <path d="M64 384.5L77 384.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <text x="86" y="389" font-size="14" fill="#e6e8eb">SeatPoint</text>
-<rect x="21" y="397" width="598" height="25" fill="#303540"/>
+<rect x="21" y="397" width="718" height="25" fill="#303540"/>
 <path d="M70.5 404L70.5 415" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <path d="M64 409.5L77 409.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <text x="86" y="414" font-size="14" fill="#e6e8eb">StandSpot</text>
 <path d="M70.5 429L70.5 440" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <path d="M64 434.5L77 434.5" fill="none" stroke="#d0d0d0" stroke-width="1.8" stroke-linecap="round"/>
 <text x="86" y="439" font-size="14" fill="#e6e8eb">Front</text>
-<rect x="21" y="447" width="598" height="25" fill="#303540"/>
+<rect x="21" y="447" width="718" height="25" fill="#303540"/>
 <rect x="40" y="454" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="464" font-size="14" fill="#e6e8eb">Classic</text>
 <text x="131.4" y="464" font-size="12" font-style="italic" fill="#9aa3ad">only with an old character</text>
-<path d="M540 50L548 50 548 320 540 320" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="556" y="190" font-size="13" font-weight="bold" fill="#6fd08c">exported</text>
-<path d="M540 325L548 325 548 470 540 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="556" y="394.5" font-size="13" font-weight="bold" fill="#c3c9d0">not</text>
-<text x="556" y="410.5" font-size="13" font-weight="bold" fill="#c3c9d0">exported</text>
+<path d="M400 75L408 75 408 145 400 145" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="418" y="106" font-size="13" font-weight="bold" fill="#6fd08c">creator-kit-figure.glb</text>
+<text x="418" y="123" font-size="13" fill="#6fd08c">no game data (share)</text>
+<path d="M400 150L408 150 408 320 400 320" fill="none" stroke="#ffa94d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="418" y="231" font-size="13" font-weight="bold" fill="#ffa94d">only in creator-kit-demo-local.glb</text>
+<text x="418" y="248" font-size="13" fill="#ffa94d">your game data (keep local)</text>
+<path d="M400 325L408 325 408 470 400 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="418" y="401.5" font-size="13" font-weight="bold" fill="#c3c9d0">never exported</text>
 </svg>
 <figcaption>The collections in the template</figcaption>
 </figure>
@@ -311,14 +328,14 @@ nav.toc ol { margin: 0; }
 <li>Open <code>creator-kit.blend</code> in Blender 5.2.</li>
 <li>Look at the <strong>Outliner</strong>. It has these collections:
 <ul>
-<li><strong>CreatorKit</strong> is the export root. Everything inside it is exported.</li>
-<li><strong>Figure</strong> holds the puppet. It is inside CreatorKit.</li>
-<li><strong>Kart</strong> holds the kart body, the steering wheel and the four wheels. It is inside CreatorKit.</li>
+<li><strong>CreatorKit</strong> holds Figure and Kart. It has the exporter for the local demo file (section 7).</li>
+<li><strong>Figure</strong> holds <code>creator_rig</code> and the puppet. It is inside CreatorKit. It has the exporter for the figure alone (section 7).</li>
+<li><strong>Kart</strong> holds the kart body, the steering wheel and the four wheels. It is inside CreatorKit. These parts are marked as kit parts: they have a custom property <code>ctr_kit</code>, and their materials are named <code>ctrkit_...</code>.</li>
 <li><strong>Guides</strong> holds helper objects, for example the size box and the seat point. It is not exported.</li>
 <li><strong>Classic</strong> appears only when you load an old character (section 11). It is not exported.</li>
 </ul>
 </li>
-<li>The skeleton <code>creator_rig</code> is inside CreatorKit.</li>
+<li>The skeleton <code>creator_rig</code> is inside Figure.</li>
 </ol>
 <p>The axes are fixed:</p>
 <ul>
@@ -361,6 +378,7 @@ nav.toc ol { margin: 0; }
 <li>Apply the scale of your figure (Object &gt; Apply &gt; Scale) so that it is 1 on all axes.</li>
 <li>Make sure the figure has UVs and a material with a texture.</li>
 </ol>
+<p>Keep the kit parts in the collection <strong>Kart</strong>. Do not move them into <strong>Figure</strong>. Reload Studio warns you about a file that contains them: &quot;This file contains the original kart from your game data. Don&#x27;t share it, or export without the kart.&quot;</p>
 <p>Keep to these limits:</p>
 <ul>
 <li>At most <strong>64000 triangles</strong> for the whole file. The kart and the wheels use a part of that.</li>
@@ -756,61 +774,79 @@ nav.toc ol { margin: 0; }
 <p>To use another mode, make the demo files again in that mode. The colours of the kart are made for one mode, so only renaming the materials is not enough.</p>
 <h2 id="7-export">7. Export</h2>
 <figure>
-<svg role="img" aria-label="The export path in Blender" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 366" font-family="sans-serif">
-<rect width="760" height="366" rx="12" fill="#f2f3f5"/>
-<text x="380" y="34" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">Where to click in Blender</text>
-<rect x="24" y="60" width="200" height="66" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="124" y="89.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
-<text x="124" y="106.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select CreatorKit</text>
-<circle cx="26" cy="62" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="26" y="66.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
-<rect x="280" y="60" width="200" height="66" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="380" y="89.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
-<text x="380" y="106.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection</text>
-<circle cx="282" cy="62" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="282" y="66.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
-<rect x="536" y="60" width="200" height="66" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="636" y="89.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Collection properties:</text>
-<text x="636" y="106.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Exporters</text>
-<circle cx="538" cy="62" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="538" y="66.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
-<path d="M228 93L268.8 93" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M276 93L267 96.8L267 89.2z" fill="#5f6b7a"/>
-<path d="M484 93L524.8 93" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M532 93L523 96.8L523 89.2z" fill="#5f6b7a"/>
-<path d="M636 130L636 151 124 151 124 164.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M124 172L120.2 163L127.8 163z" fill="#5f6b7a"/>
-<rect x="24" y="176" width="200" height="66" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="124" y="205.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporter:</text>
-<text x="124" y="222.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0</text>
-<circle cx="26" cy="178" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="26" y="182.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">4</text>
-<rect x="280" y="176" width="200" height="66" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="380" y="205.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Press</text>
-<text x="380" y="222.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Export</text>
-<circle cx="282" cy="178" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="282" y="182.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">5</text>
-<rect x="536" y="176" width="200" height="66" rx="8" fill="#d3f9d8" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="636" y="205.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Result:</text>
-<text x="636" y="222.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo.glb</text>
-<path d="M228 209L268.8 209" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M276 209L267 212.8L267 205.2z" fill="#5f6b7a"/>
-<path d="M484 209L524.8 209" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M532 209L523 212.8L523 205.2z" fill="#5f6b7a"/>
-<text x="636" y="260" font-size="12.5" text-anchor="middle" fill="#5f6b7a">written next to the .blend</text>
-<rect x="24" y="298" width="456" height="48" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4" stroke-dasharray="6 4"/>
-<text x="252" y="327" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">or  File &gt; Export All Collections</text>
-<path d="M380 294L380 252.4" fill="none" stroke="#8a96a5" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="5 4"/>
-<path d="M380 246L383.4 254L376.6 254z" fill="#8a96a5"/>
-<text x="390" y="275" font-size="12" fill="#5f6b7a">same result</text>
+<svg role="img" aria-label="The export path in Blender" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 396" font-family="sans-serif">
+<rect width="800" height="396" rx="12" fill="#f2f3f5"/>
+<text x="400" y="34" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">Where to click in Blender</text>
+<rect x="6" y="52" width="788" height="128" rx="10" fill="#e6f7ea" stroke="#2f9e44" stroke-width="1.6"/>
+<text x="20" y="74" font-size="14" font-weight="bold" fill="#15803d">(a) the file to share: the figure alone</text>
+<rect x="13" y="86" width="140" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="83" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
+<text x="83" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select Figure</text>
+<circle cx="15" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="15" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="181" y="86" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="261" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
+<text x="261" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
+<circle cx="183" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="183" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="369" y="86" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="449" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
+<text x="449" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
+<circle cx="371" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="371" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="557" y="86" width="230" height="62" rx="8" fill="#b2f2bb" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="672" y="113.8" font-size="11" text-anchor="middle" fill="#5f6b7a">Result:</text>
+<text x="672" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-figure.glb</text>
+<path d="M157 117L169.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M177 117L168 120.8L168 113.2z" fill="#5f6b7a"/>
+<path d="M345 117L357.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M365 117L356 120.8L356 113.2z" fill="#5f6b7a"/>
+<path d="M533 117L545.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M553 117L544 120.8L544 113.2z" fill="#5f6b7a"/>
+<text x="672" y="166" font-size="12.5" text-anchor="middle" fill="#15803d">figure alone, no game data</text>
+<rect x="6" y="196" width="788" height="128" rx="10" fill="#fff0e0" stroke="#e8590c" stroke-width="1.6"/>
+<text x="20" y="218" font-size="14" font-weight="bold" fill="#c2410c">(b) for a test on your own PC</text>
+<rect x="13" y="230" width="140" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="83" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
+<text x="83" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select CreatorKit</text>
+<circle cx="15" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="15" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="181" y="230" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="261" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
+<text x="261" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
+<circle cx="183" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="183" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="369" y="230" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="449" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
+<text x="449" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
+<circle cx="371" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="371" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="557" y="230" width="230" height="62" rx="8" fill="#ffc078" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="672" y="257.8" font-size="11" text-anchor="middle" fill="#5f6b7a">Result:</text>
+<text x="672" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
+<path d="M157 261L169.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M177 261L168 264.8L168 257.2z" fill="#5f6b7a"/>
+<path d="M345 261L357.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M365 261L356 264.8L356 257.2z" fill="#5f6b7a"/>
+<path d="M533 261L545.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M553 261L544 264.8L544 257.2z" fill="#5f6b7a"/>
+<text x="672" y="310" font-size="12.5" text-anchor="middle" fill="#c2410c">with your kart, keep it local</text>
+<rect x="200" y="342" width="400" height="40" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="400" y="367" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">or  File &gt; Export All Collections (writes both)</text>
 </svg>
 <figcaption>The export path in Blender</figcaption>
 </figure>
 <p>The export settings are already stored in the file.</p>
+<p>There are two exporters:</p>
+<ul>
+<li>The collection <strong>Figure</strong> writes <code>creator-kit-figure.glb</code>. This is the figure alone. It holds no game data. This is the file to share.</li>
+<li>The collection <strong>CreatorKit</strong> writes <code>creator-kit-demo-local.glb</code>. This is the figure with the kart and the wheels from your own game data. Use it for a test on your own computer. Never share it.</li>
+</ul>
+<p>To export:</p>
 <ol>
-<li>Select the collection <strong>CreatorKit</strong> in the Outliner.</li>
-<li>Open the Collection properties of CreatorKit &gt; <strong>Exporters</strong> &gt; <strong>glTF 2.0</strong> &gt; <strong>Export</strong>. Or use <strong>File &gt; Export All Collections</strong>.</li>
-<li>Blender writes <code>creator-kit-demo.glb</code> next to the .blend file. You may use another file name.</li>
+<li>Select the collection in the Outliner.</li>
+<li>Open its Collection properties &gt; <strong>Exporters</strong> &gt; <strong>glTF 2.0</strong> &gt; <strong>Export</strong>. Or use <strong>File &gt; Export All Collections</strong>. This writes both files next to the .blend file.</li>
+<li>You may use other file names.</li>
 </ol>
 <blockquote>
 <p>Do not change the export settings. Especially keep <strong>Animations</strong> on. Without it the file has no clips.</p>
@@ -818,7 +854,7 @@ nav.toc ol { margin: 0; }
 <h2 id="8-character">8. Character</h2>
 <ol>
 <li>Start Reload Studio and open the page <strong>Character</strong>.</li>
-<li>Choose your .glb file as the model.</li>
+<li>Choose your .glb file as the model. For a test on your own computer, section 10 names the file to use.</li>
 <li>The Studio checks the file. It shows the animations: which clips come from the file and which use a fallback. It also shows the budget: triangles, joints, materials and textures.</li>
 <li>Check the vertex colour mode. It must match the ending of your material names.</li>
 <li>Fix every error the Studio shows. A warning means that the character works, but something falls back to a standard.</li>
@@ -827,6 +863,7 @@ nav.toc ol { margin: 0; }
 <p>Older versions of the game and the PS1 path cannot show a skeleton. The Studio builds a <strong>classic model</strong> for them from your file, automatically.</p>
 <ul>
 <li>The Studio reads your model as it stands in its <strong>bind pose</strong>. It ignores the skeleton and the clips.</li>
+<li>The classic model needs a kart in the file, so it is built from <code>creator-kit-demo-local.glb</code>.</li>
 <li>This is why you bind your figure <strong>seated in the kart</strong>. A standing figure gives a bad classic model.</li>
 <li>The game makes the classic steering and jump poses itself.</li>
 </ul>
@@ -834,8 +871,9 @@ nav.toc ol { margin: 0; }
 <p><code>ReloadStudio.exe --rldpack make-char --model my-figure.glb --reduce auto --rig bind-pose --wheels off</code></p>
 <p>You do not need this for normal work.</p>
 <h2 id="10-test-in-game">10. Test in game</h2>
+<p>The figure alone holds no game data, but this version of the game does not add the original kart to it yet. So for a test on your own computer use <code>creator-kit-demo-local.glb</code>, the figure with the kart from your game data. Never share that file.</p>
 <ol>
-<li>In the Studio, press the button <strong>Test in game</strong>.</li>
+<li>On the page <strong>Character</strong>, choose the file named above. Then press the button <strong>Test in game</strong>.</li>
 <li>Start a race with your character.</li>
 <li>Check these things:
 <ul>
@@ -857,6 +895,7 @@ nav.toc ol { margin: 0; }
 <h2 id="13-if-something-is-wrong">13. If something is wrong</h2>
 <ul>
 <li><strong>A clip is missing or not found.</strong> The name is misspelled or the action is missing. Open the Action Editor and compare the name with the table in section 5. The names are exact and in lower case.</li>
+<li><strong>The Studio says the file contains the original kart from your game data.</strong> For sharing, export with the exporter of the collection Figure (<code>creator-kit-figure.glb</code>). Keep the other file for yourself. Check that no kit part was moved into Figure.</li>
 <li><strong>The wheels are missing.</strong> The wheel objects are not inside the collection Kart, or Kart is not inside CreatorKit. Move them back.</li>
 <li><strong>Too many triangles.</strong> Reduce the figure. Use the Decimate modifier, apply it, and bind the figure again. Remember that the kart and the wheels also use triangles.</li>
 <li><strong>The figure is too big.</strong> Check the size box in Guides. The figure should fit inside it when it sits. Scale it, then apply the scale.</li>

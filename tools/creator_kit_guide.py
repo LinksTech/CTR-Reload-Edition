@@ -3,11 +3,15 @@
 
   python tools/creator_kit_guide.py build [--md docs/CREATOR_KIT.md] [--out docs/CREATOR_KIT.html]
   python tools/creator_kit_guide.py check [--md ...] [--out ...]
+  python tools/creator_kit_guide.py sharing [dont-share|kart-in-game] [--md ...]
   python tools/creator_kit_guide.py selftest
 
 build     writes the HTML (UTF-8, LF, final newline, no timestamps, no absolute paths).
 check     exit 0 if the file on disk equals what build would write, 1 if not (first differing
-          line is printed), 2 on errors.
+          line is printed), 2 on errors. It also exits 1 when the switchable paragraphs
+          (see below) are in mixed modes or one is missing.
+sharing   without a mode: prints the sharing mode the .md is in. With a mode: rewrites the
+          switchable paragraphs of the .md to that mode and prints it.
 selftest   in-memory cases, exit 0 only if all pass.
 Default paths are relative to the repo root (the folder above tools/). Paths given on the
 command line are relative to the current folder.
@@ -23,6 +27,10 @@ Markdown subset (anything else is an error with the line number, exit 2):
                        (ids prefixed per image, so they never clash)
   tables               pipe tables with a header separator line
   notes                "> " block
+Sharing switch: a few whole paragraphs of the .md exist in two variants, one per sharing mode
+(SHARING_MODES, SWITCH_TEXTS below). A paragraph is switchable if its text equals one of the
+variants exactly. The "sharing" command swaps all of them at once, so the guide never mixes the
+two modes. The .md ships in mode dont-share. Rebuild the HTML after a switch.
 The HTML has no scripts and no outside files. Standard library only.
 """
 import argparse
@@ -40,6 +48,24 @@ HEAD_RE = re.compile(r"^(#{1,4}) +(\S.*?)(?: +#+)?$")
 ITEM_RE = re.compile(r"^( {0,3})(?:(-)|(\d+)\.) +(\S.*)$")
 FENCE_RE = re.compile(r"^```[A-Za-z0-9_+-]*\s*$")
 SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
+
+SHARING_MODES = ("dont-share", "kart-in-game")
+SWITCH_TEXTS = {
+    "sharing": {
+        "dont-share": "The kart and the wheels in the kit are made from your own copy of the game. "
+                      "Keep files that contain them for yourself - do not share them.",
+        "kart-in-game": "Share only files without the kit kart. The game puts the kart in on the player's side.",
+    },
+    "test-file": {
+        "dont-share": "The figure alone holds no game data, but this version of the game does not add the "
+                      "original kart to it yet. So for a test on your own computer use "
+                      "`creator-kit-demo-local.glb`, the figure with the kart from your game data. "
+                      "Never share that file.",
+        "kart-in-game": "The figure alone holds no game data. The game adds the original kart to it from "
+                        "the player's own game. So you can test `creator-kit-figure.glb` as it is, "
+                        "and share it as it is.",
+    },
+}
 
 CSS = """\
 :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --code-bg: #f3f4f6;
@@ -489,6 +515,10 @@ def compare(disk, text, name="file"):
 
 
 def cmd_check(md, out):
+    state, msg = switch_state(read_md_text(md))
+    if state is None:
+        print("creator_kit_guide: check FAILED: %s" % msg)
+        return 1
     text = build_file(md)
     try:
         with open(out, "rb") as f:
@@ -500,6 +530,88 @@ def cmd_check(md, out):
     rc, msg = compare(disk, text, os.path.basename(out))
     print(chr(10).join(msg))
     return rc
+
+
+def switch_scan(text, texts=None):
+    """-> (modes, problems). modes: key -> mode found; problems: list of messages.
+    A key is found when exactly one paragraph (block between blank lines) equals one variant."""
+    texts = SWITCH_TEXTS if texts is None else texts
+    blocks = text.replace("\r\n", "\n").replace("\r", "\n").split("\n\n")
+    blocks = [bl.strip("\n") for bl in blocks]
+    modes, problems = {}, []
+    for key, variants in texts.items():
+        hits = [mode for bl in blocks for mode, v in variants.items() if bl == v]
+        if len(hits) != 1:
+            problems.append('switchable paragraph "%s" found %d times (must be exactly once)' % (key, len(hits)))
+        else:
+            modes[key] = hits[0]
+    return modes, problems
+
+
+def switch_state(text, texts=None):
+    """-> (mode or None, message or None). None + message when missing or mixed."""
+    modes, problems = switch_scan(text, texts)
+    if problems:
+        return None, "; ".join(problems)
+    found = sorted(set(modes.values()))
+    if len(found) != 1:
+        return None, "switchable paragraphs are in mixed modes: " + ", ".join(
+            "%s=%s" % (k, modes[k]) for k in sorted(modes))
+    return found[0], None
+
+
+def switch_apply(text, mode, texts=None):
+    """Rewrites every switchable paragraph to mode. Raises GuideError if one is not found exactly once."""
+    texts = SWITCH_TEXTS if texts is None else texts
+    _, problems = switch_scan(text, texts)
+    if problems:
+        raise GuideError(0, problems[0])
+    parts = text.split("\n\n")
+    for variants in texts.values():
+        for k, bl in enumerate(parts):
+            core = bl.strip("\r\n")
+            if core in variants.values():
+                parts[k] = bl.replace(core, variants[mode])
+    return "\n\n".join(parts)
+
+
+def read_md_text(md_path):
+    try:
+        with open(md_path, "rb") as f:
+            return f.read().decode("utf-8")
+    except OSError as e:
+        raise GuideError(0, "cannot read %s (%s)" % (md_path, e.strerror))
+    except UnicodeDecodeError:
+        raise GuideError(0, "%s is not UTF-8" % md_path)
+
+
+def cmd_sharing(md, mode):
+    text = read_md_text(md)
+    if mode is None:
+        state, msg = switch_state(text)
+        if state is None:
+            print("creator_kit_guide: sharing: %s" % msg, file=sys.stderr)
+            return 2
+        print(state)
+        return 0
+    new = switch_apply(text, mode)
+    if new != text:
+        with open(md, "wb") as f:
+            f.write(new.encode("utf-8"))
+    state, msg = switch_state(new)
+    if state != mode:
+        print("creator_kit_guide: sharing: switch failed: %s" % msg, file=sys.stderr)
+        return 2
+    print("creator_kit_guide: sharing mode is now %s (%s)" % (mode, os.path.basename(md)))
+    return 0
+
+
+def raises_switch(fn):
+    try:
+        fn()
+    except GuideError:
+        return True
+    return False
 
 
 def selftest():
@@ -580,6 +692,25 @@ def selftest():
          and compare(None, "a")[0] == 1)
     case("determinism of two builds", lambda: b("# T\n\n## A\n\n![p](assets/kit-guide-a.svg)\n\n- x\n") ==
          b("# T\n\n## A\n\n![p](assets/kit-guide-a.svg)\n\n- x\n"))
+    tt = {"a": {"x": "Alpha one.", "y": "Beta one."}, "b": {"x": "Alpha two.", "y": "Beta two."}}
+    doc_x = "# T\n\nAlpha one.\n\nmid\n\nAlpha two.\n"
+    doc_y = "# T\n\nBeta one.\n\nmid\n\nBeta two.\n"
+    doc_mixed = "# T\n\nAlpha one.\n\nmid\n\nBeta two.\n"
+    case("sharing switch: back and forth gives identical text", lambda: switch_apply(doc_x, "y", tt) == doc_y
+         and switch_apply(switch_apply(doc_x, "y", tt), "x", tt) == doc_x and switch_apply(doc_x, "x", tt) == doc_x
+         and switch_state(doc_x, tt) == ("x", None) and switch_state(doc_y, tt) == ("y", None))
+    case("sharing switch: mixed modes are reported", lambda: (lambda r: r[0] is None and "mixed" in r[1])(
+         switch_state(doc_mixed, tt)) and switch_apply(doc_mixed, "x", tt) == doc_x)
+    case("sharing switch: missing, doubled or partial paragraph is an error",
+         lambda: switch_state("# T\n\nAlpha one.\n", tt)[0] is None
+         and raises_switch(lambda: switch_apply("# T\n\nAlpha one.\n", "y", tt))
+         and raises_switch(lambda: switch_apply(doc_x + "\nAlpha one.\n", "y", tt))
+         and raises_switch(lambda: switch_apply("# T\n\nAlpha one. And more.\n\nAlpha two.\n", "y", tt)))
+    case("sharing switch: real texts differ and switch cleanly", lambda: all(
+         len(set(v.values())) == len(SHARING_MODES) and tuple(v) == SHARING_MODES for v in SWITCH_TEXTS.values())
+         and (lambda d: switch_apply(switch_apply(d, "kart-in-game"), "dont-share") == d
+              and switch_state(switch_apply(d, "kart-in-game")) == ("kart-in-game", None))(
+         "# T\n\n" + "\n\n".join(v["dont-share"] for v in SWITCH_TEXTS.values()) + "\n"))
     fails = results.count(False)
     print("creator_kit_guide selftest: %d cases, %d failed" % (len(results), fails))
     return 0 if fails == 0 else 1
@@ -592,6 +723,9 @@ def main(argv=None):
         p = sub.add_parser(name)
         p.add_argument("--md", default=DEFAULT_MD)
         p.add_argument("--out", default=DEFAULT_OUT)
+    p = sub.add_parser("sharing")
+    p.add_argument("mode", nargs="?", choices=SHARING_MODES)
+    p.add_argument("--md", default=DEFAULT_MD)
     sub.add_parser("selftest")
     args = ap.parse_args(argv)
     if args.cmd is None:
@@ -600,6 +734,8 @@ def main(argv=None):
     try:
         if args.cmd == "selftest":
             return selftest()
+        if args.cmd == "sharing":
+            return cmd_sharing(args.md, args.mode)
         if args.cmd == "build":
             return cmd_build(args.md, args.out)
         return cmd_check(args.md, args.out)

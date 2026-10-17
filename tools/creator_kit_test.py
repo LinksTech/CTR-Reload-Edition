@@ -11,8 +11,11 @@ Blender: --blender, else env CTR_BLENDER, else (Windows) C:\\Program Files\\Blen
 Without Blender 5.2 the test prints "creator-kit-test: SKIP (Blender 5.2 not found)" and exits 77
 (ctest SKIP_RETURN_CODE 77).
 
-Steps: 1 generate, 2 byte-identical second run, 3 reopen + re-export of the stored exporter, 4 hires-check,
-5 make-char --check, 6 creator_kit_measure, 7 --vcol gltf, 8 wrong-version exit 3, 9 no path in the .blend.
+Steps: 1 generate, 2 byte-identical second run, 3 reopen + re-export through both stored exporters,
+4 hires-check of creator-kit-demo-local.glb (0 warnings), 5 hires-check of creator-kit-figure.glb (no wheel
+nodes: only HRG-20, the standard wheels), 6 the kit marker (ctr_kit extras, ctrkit_ materials) on every kit
+part of the local demo and on nothing of the figure, 7 make-char --check, 8 creator_kit_measure, 9 --vcol
+gltf, 10 wrong-version exit 3, 11 no path in the .blend.
 Last line: "creator-kit-test: <n> steps, <f> failed"; exit 0 when f = 0, else 1.
 
 Every child process gets the Blender user folders, TEMP and TMP below <work>. Only the driver's own
@@ -21,6 +24,7 @@ subfolders of <work> (r1, r2, gltf, fake, temp) are emptied. Standard library on
 import ast
 import hashlib
 import json
+import struct
 import os
 import re
 import shutil
@@ -90,7 +94,7 @@ def prepare_work(work):
     os.makedirs(work, exist_ok=True)
     for d in OWN_DIRS:
         shutil.rmtree(os.path.join(work, d), ignore_errors=True)
-    for f in ("reopen.py", "reexport.glb", "settings.json"):
+    for f in ("reopen.py", "reexport-figure.glb", "reexport-local.glb", "settings.json"):
         p = os.path.join(work, f)
         if os.path.isfile(p):
             os.remove(p)
@@ -155,7 +159,7 @@ def path_needles(work, home):
 REOPEN_SCRIPT = r'''
 import bpy, sys, os, json, hashlib
 i = sys.argv.index("--")
-blend, settings_json, reexport = sys.argv[i + 1], sys.argv[i + 2], sys.argv[i + 3]
+blend, settings_json, work = sys.argv[i + 1], sys.argv[i + 2], sys.argv[i + 3]
 want = json.load(open(settings_json, encoding="utf-8"))
 bpy.ops.wm.open_mainfile(filepath=blend)
 problems = []
@@ -165,30 +169,79 @@ for n in ("CreatorKit", "Figure", "Kart", "Guides"):
         problems.append("collection %s missing" % n)
 if len(bpy.data.actions) != 12:
     problems.append("actions: %d (want 12)" % len(bpy.data.actions))
-kc = bpy.data.collections.get("CreatorKit")
-if kc is None or len(kc.exporters) < 1:
-    problems.append("CreatorKit has no exporter")
-else:
-    ex = kc.exporters[0]
+# the two stored exporters: Figure (the figure alone) and CreatorKit (the local demo with the kit kart)
+for tag, cname in (("figure", "Figure"), ("local", "CreatorKit")):
+    col = bpy.data.collections.get(cname)
+    if col is None or len(col.exporters) != 1:
+        problems.append("%s has %s exporters (want 1)" % (cname, "no" if col is None else len(col.exporters)))
+        continue
+    ex = col.exporters[0]
     p = ex.export_properties
     for k, v in want.items():
         if not hasattr(p, k):
-            problems.append("setting %s missing" % k)
+            problems.append("%s: setting %s missing" % (cname, k))
         elif getattr(p, k) != v:
-            problems.append("setting %s = %r (want %r)" % (k, getattr(p, k), v))
-    print("CHK settings %d" % len(want))
+            problems.append("%s: setting %s = %r (want %r)" % (cname, k, getattr(p, k), v))
+    print("CHK settings %s %d" % (tag, len(want)))
     if not problems:
-        ex.filepath = reexport
-        if os.path.exists(reexport):
-            os.remove(reexport)
-        with bpy.context.temp_override(collection=kc):
+        out = os.path.join(work, "reexport-%s.glb" % tag)
+        ex.filepath = out
+        if os.path.exists(out):
+            os.remove(out)
+        with bpy.context.temp_override(collection=col):
             bpy.ops.collection.exporter_export(index=0)
-        print("CHK sha " + hashlib.sha256(open(reexport, "rb").read()).hexdigest())
+        print("CHK sha %s %s" % (tag, hashlib.sha256(open(out, "rb").read()).hexdigest()))
 for p_ in problems:
     print("CHK PROBLEM " + p_)
 print("CHK actions %d" % len(bpy.data.actions))
 sys.exit(0 if not problems else 1)
 '''
+
+FIGURE_GLB = "creator-kit-figure.glb"
+LOCAL_GLB = "creator-kit-demo-local.glb"
+KIT_PROP = "ctr_kit"
+KIT_MAT_PREFIX = "ctrkit_"
+WHEEL_NAMES = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
+
+
+def glb_json(path):
+    with open(path, "rb") as f:
+        head = f.read(20)
+        if head[:4] != b"glTF":
+            raise ValueError("not a GLB: " + path)
+        return json.loads(f.read(struct.unpack_from("<I", head, 12)[0]).decode("utf-8"))
+
+
+def kit_findings(j, local):
+    # local: every kit part (mesh node kart_* or wheel_*) and its mesh carry ctr_kit, its materials ctrkit_;
+    # figure: no kit part, no ctr_kit extras, no ctrkit_ material. Returns the problems.
+    nodes, meshes, mats = j.get("nodes", []), j.get("meshes", []), j.get("materials", [])
+    kit = [n for n in nodes if "mesh" in n and (n.get("name") in WHEEL_NAMES or
+                                                 (n.get("name") or "").startswith("kart_"))]
+    probs = []
+    if local:
+        if len([n for n in kit if n.get("name") in WHEEL_NAMES]) != 4 or len(kit) < 6:
+            probs.append("kit parts: %d (want 4 wheels + kart + steering wheel)" % len(kit))
+        for n in kit:
+            if KIT_PROP not in (n.get("extras") or {}):
+                probs.append("node %s unmarked" % n.get("name"))
+            m = meshes[n["mesh"]]
+            if KIT_PROP not in (m.get("extras") or {}):
+                probs.append("mesh of %s unmarked" % n.get("name"))
+            for prim in m.get("primitives", []):
+                if "material" in prim and not mats[prim["material"]].get("name", "").startswith(KIT_MAT_PREFIX):
+                    probs.append("material of %s unmarked" % n.get("name"))
+    else:
+        probs += ["kit part %s" % n.get("name") for n in kit]
+        probs += ["extras on %s" % x.get("name") for x in nodes + meshes if KIT_PROP in (x.get("extras") or {})]
+        probs += ["material %s" % m.get("name") for m in mats if m.get("name", "").startswith(KIT_MAT_PREFIX)]
+    return probs
+
+
+def figure_warnings_ok(out):
+    # the figure alone has no wheel nodes: hires-check warns HRG-20 (the standard wheels); nothing else
+    warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
+    return "0 errors" in out and all(" HRG-20 " in (w + " ") for w in warns) and "clips 12/12" in out
 
 
 # ------------------------------------------------------------------ steps
@@ -236,7 +289,8 @@ def run_all(blender, packer, work):
     code, out = gen(r1, "--stand-in")
     rep.check(code == 0 and "creator kit: ok" in out, "1 generate",
               "exit 0, 'creator kit: ok'", "exit %s: %s" % (code, tail(out)))
-    glb1 = os.path.join(r1, "creator-kit-demo.glb")
+    fig1 = os.path.join(r1, FIGURE_GLB)
+    loc1 = os.path.join(r1, LOCAL_GLB)
     blend1 = os.path.join(r1, "creator-kit.blend")
 
     # 2 again
@@ -247,16 +301,17 @@ def run_all(blender, packer, work):
         diffs = []
         names = sorted(set(os.listdir(r1)) | set(os.listdir(r2)))
         cmp_names = [n for n in names
-                     if n in ("creator-kit.blend", "creator-kit-demo.glb") or n.startswith("kit-")]
+                     if n in ("creator-kit.blend", FIGURE_GLB, LOCAL_GLB) or n.startswith("kit-")]
         for n in cmp_names:
             a, b = os.path.join(r1, n), os.path.join(r2, n)
             if not (os.path.isfile(a) and os.path.isfile(b)) or sha256(a) != sha256(b):
                 diffs.append(n)
-        rep.check(not diffs and "creator-kit.blend" in cmp_names and "creator-kit-demo.glb" in cmp_names,
+        need = ("creator-kit.blend", FIGURE_GLB, LOCAL_GLB)
+        rep.check(not diffs and all(n in cmp_names for n in need),
                   "2 repeat", "r1 = r2 byte-identical (%d files)" % len(cmp_names),
                   "differ: %s" % ", ".join(diffs or ["blend/glb missing"]))
 
-    # 3 reopen
+    # 3 reopen: both stored exporters give the same files again
     try:
         src = open(GENERATOR, encoding="utf-8").read()
         settings = parse_gltf_settings(src)
@@ -266,62 +321,80 @@ def run_all(blender, packer, work):
         rs = os.path.join(work, "reopen.py")
         with open(rs, "w", encoding="utf-8") as f:
             f.write(REOPEN_SCRIPT)
-        reexp = os.path.join(work, "reexport.glb")
         code, out = run([blender, "--background", "--factory-startup", "--python-exit-code", "1",
-                         "--python", rs, "--", blend1, sj, reexp], env)
-        m = re.search(r"CHK sha ([0-9a-f]{64})", out)
+                         "--python", rs, "--", blend1, sj, work], env)
+        shas = dict(re.findall(r"CHK sha (figure|local) ([0-9a-f]{64})", out))
         probs = [l for l in out.splitlines() if "CHK PROBLEM" in l]
-        if code != 0 or probs or not m:
+        if code != 0 or probs or len(shas) != 2:
             rep.fail("3 reopen", "exit %s %s" % (code, "; ".join(probs) or tail(out)))
         else:
-            same = os.path.isfile(glb1) and m.group(1) == sha256(glb1)
-            rep.check(same, "3 reopen", "%d settings, 4 collections, 12 actions, re-export same sha256"
-                      % len(settings), "re-export differs from creator-kit-demo.glb")
+            same = (os.path.isfile(fig1) and shas["figure"] == sha256(fig1) and
+                    os.path.isfile(loc1) and shas["local"] == sha256(loc1))
+            rep.check(same, "3 reopen", "2 exporters x %d settings, 4 collections, 12 actions, re-exports same sha256"
+                      % len(settings), "a re-export differs from the generated file")
     except Exception as e:
         rep.fail("3 reopen", repr(e))
 
-    # 4 hires-check
-    code, out = hires(glb1, "psx")
+    # 4 hires-check of the local demo (with the kit kart)
+    code, out = hires(loc1, "psx")
     rep.check(code == 0 and "0 errors, 0 warnings" in out and "clips 12/12" in out and "wheels 4/4" in out,
-              "4 hires-check", "0 errors, 0 warnings, clips 12/12, wheels 4/4",
+              "4 hires-check local", "0 errors, 0 warnings, clips 12/12, wheels 4/4",
               "exit %s: %s" % (code, tail(out)))
 
-    # 5 make-char --check
-    code, out = run(packer + ["make-char", "--check", "--model", glb1, "--reduce", "auto", "--rig", "bind-pose",
+    # 5 hires-check of the figure alone: no wheel nodes, so only HRG-20 (standard wheels) may warn
+    code, out = hires(fig1, "psx")
+    rep.check(code == 0 and figure_warnings_ok(out) and "wheels 0/4" in out,
+              "5 hires-check figure", "0 errors, clips 12/12, wheels 0/4, only HRG-20: %s" % tail(out, 1),
+              "exit %s: %s" % (code, tail(out)))
+
+    # 6 the kit marker: everything from the kit folder marked in the local demo, nothing of it in the figure
+    try:
+        p_loc = kit_findings(glb_json(loc1), True)
+        p_fig = kit_findings(glb_json(fig1), False)
+        rep.check(not p_loc and not p_fig, "6 kit marker",
+                  "local: every kit node, mesh, material marked; figure: no kit part, no marker",
+                  "; ".join(["local " + x for x in p_loc] + ["figure " + x for x in p_fig])[:400])
+    except Exception as e:
+        rep.fail("6 kit marker", repr(e))
+
+    # 7 make-char --check (the classic fallback) of the local demo
+    code, out = run(packer + ["make-char", "--check", "--model", loc1, "--reduce", "auto", "--rig", "bind-pose",
                               "--wheels", "off", "--name", "TEST", "--template", "0"], env)
     errs = [l for l in out.splitlines() if l.startswith("ERROR")]
-    rep.check(code == 0 and not errs, "5 make-char", "exit 0, no ERROR",
+    rep.check(code == 0 and not errs, "7 make-char", "exit 0, no ERROR",
               "exit %s: %s" % (code, "; ".join(errs[:3]) or tail(out)))
 
-    # 6 measure
-    code, out = run([sys.executable, "-I", MEASURE, "measure", glb1, "--kit-info",
+    # 8 measure (the local demo: kart, wheels, hands on the steering wheel)
+    code, out = run([sys.executable, "-I", MEASURE, "measure", loc1, "--kit-info",
                      os.path.join(r1, "kit-info.json"), "--kart", os.path.join(r1, "kit-kart.glb"),
                      "--vcol", "psx"], env)
-    rep.check(code == 0 and re.search(r"fail\s+0\b", out) is not None, "6 measure", "fail 0",
+    rep.check(code == 0 and re.search(r"fail\s+0\b", out) is not None, "8 measure", "fail 0",
               "exit %s: %s" % (code, tail(out)))
 
-    # 7 gltf
+    # 9 gltf
     code, out = gen(gl, "--stand-in", "--vcol", "gltf")
     if code != 0:
-        rep.fail("7 gltf", "generate exit %s: %s" % (code, tail(out)))
+        rep.fail("9 gltf", "generate exit %s: %s" % (code, tail(out)))
     else:
-        code, out = hires(os.path.join(gl, "creator-kit-demo.glb"), "gltf")
-        rep.check(code == 0 and "0 errors, 0 warnings" in out, "7 gltf", "0 errors, 0 warnings",
-                  "hires-check exit %s: %s" % (code, tail(out)))
+        code, out = hires(os.path.join(gl, LOCAL_GLB), "gltf")
+        code2, out2 = hires(os.path.join(gl, FIGURE_GLB), "gltf")
+        rep.check(code == 0 and "0 errors, 0 warnings" in out and code2 == 0 and figure_warnings_ok(out2),
+                  "9 gltf", "local 0 errors, 0 warnings; figure only HRG-20",
+                  "hires-check exit %s/%s: %s | %s" % (code, code2, tail(out, 2), tail(out2, 2)))
 
-    # 8 version
+    # 10 version
     code, out = gen(fk, "--stand-in", "--test-fake-version", "4.5.0")
-    rep.check(code == 3 and "How to fix: install Blender 5.2" in out, "8 version",
+    rep.check(code == 3 and "How to fix: install Blender 5.2" in out, "10 version",
               "exit 3, 'How to fix: install Blender 5.2'", "exit %s: %s" % (code, tail(out)))
 
-    # 9 no path
+    # 11 no path
     try:
         data = open(blend1, "rb").read()
         found = find_paths_in_bytes(data, path_needles(work, os.path.expanduser("~")))
-        rep.check(not found, "9 no path", "no work/AppData/home path in creator-kit.blend",
+        rep.check(not found, "11 no path", "no work/AppData/home path in creator-kit.blend",
                   "found: %s" % ", ".join(found))
     except Exception as e:
-        rep.fail("9 no path", repr(e))
+        rep.fail("11 no path", repr(e))
 
     print("creator-kit-test: runtime %.0f s" % (time.time() - t0))
     print("creator-kit-test: %d steps, %d failed" % (rep.steps, rep.failed))

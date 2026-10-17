@@ -1,5 +1,8 @@
-# Creator Kit generator: builds creator-kit.blend (the template) and
-# creator-kit-demo.glb (the demo export) from the kit files. Everything the
+# Creator Kit generator: builds creator-kit.blend (the template) and its two
+# exports from the kit files: creator-kit-figure.glb (the figure alone, no
+# game data - the file to share) and creator-kit-demo-local.glb (the figure
+# with the kit kart and wheels, for a test on the user's own PC; never to
+# share: every kit part in it is marked). Everything the
 # template shows is made by code in this folder (templates/creator_kit_*.py)
 # or comes from the kit files you give it - this script holds no game data. It
 # is released under CC0 (templates/LICENSE).
@@ -16,12 +19,12 @@
 #   --stand-in                write the code-made stand-in kit files first
 #   --vcol psx|gltf|off       vertex colour mode of the file (default psx)
 #   --no-blend                do not write creator-kit.blend
-#   --no-glb                  do not write creator-kit-demo.glb
+#   --no-glb                  do not write the two .glb files
 #   --classic <glb>           not available yet
 #   --test-fake-version X.Y.Z test switch: pretend this Blender version
 #
-# Output in <folder>: creator-kit.blend, creator-kit-demo.glb,
-# creator-kit-report.json. Exit codes: 0 good, 2 wrong call, 3 wrong Blender
+# Output in <folder>: creator-kit.blend, creator-kit-figure.glb,
+# creator-kit-demo-local.glb, creator-kit-report.json. Exit codes: 0 good, 2 wrong call, 3 wrong Blender
 # version, 4 input missing or invalid, 5 the self check failed or an internal
 # error. Needs Blender 5.2; same Blender and same input give the same bytes
 # (the .blend only with --threads 1, see THREADS_NOTE).
@@ -62,6 +65,7 @@ GLTF_SETTINGS = {
     "export_reset_pose_bones": True,
     "export_rest_position_armature": True,   # bind pose = the seated rest pose
     "export_vertex_color": "ACTIVE",
+    "export_extras": True,              # custom properties -> extras: the kit marker "ctr_kit"
     # off
     "export_apply": False,              # never apply the armature modifier
     "export_tangents": False,
@@ -72,7 +76,6 @@ GLTF_SETTINGS = {
     "export_optimize_animation_size": False,
     "export_cameras": False,
     "export_lights": False,
-    "export_extras": False,
     "export_all_vertex_colors": False,
     "export_active_vertex_color_when_no_material": False,
     "export_draco_mesh_compression_enable": False,
@@ -93,13 +96,21 @@ IMPORT_SHADING = "SMOOTH"
 
 CRASH_BOX = (-33.8, 5.6, -54.1, 34.3, 88.3, 58.3)   # u, the size a driver may fill
 WHEEL_NAMES = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
-GLB_NAME = "creator-kit-demo.glb"
+# Two exporters: the figure alone (no game data, the file to share) on the collection Figure, and the
+# local demo with the kit kart and wheels (never to share) on the collection CreatorKit.
+FIGURE_GLB = "creator-kit-figure.glb"
+LOCAL_GLB = "creator-kit-demo-local.glb"
+# The kit marker: every node and mesh made from the kit folder gets the custom property ctr_kit (glTF
+# extras), every kit material the name prefix ctrkit_, so a check can find game data in a file.
+KIT_PROP = "ctr_kit"
 # Byte-identical .blend files need Blender started with --threads 1. With more threads the .blend writer
 # gives some temporary blocks (the attribute arrays of a mesh) file addresses that depend on which memory
 # the allocator hands out while other threads allocate - under CPU load about 2 runs in 100 wrote other
-# addresses (same data, other bytes). The GLB exports are byte-identical either way.
+# addresses
+# (same data, other bytes). The GLB exports are byte-identical either way.
 THREADS_NOTE = ("Blender ran with more than one thread: creator-kit.blend has the same content, but its bytes "
                 "may differ between runs. Start Blender with --threads 1 for byte-identical files.")
+KIT_MAT_PREFIX = "ctrkit_"
 BLEND_NAME = "creator-kit.blend"
 REPORT_NAME = "creator-kit-report.json"
 
@@ -307,11 +318,23 @@ def bone_parent(obj, rig, bone):
     obj.matrix_world = mw
 
 
-def suffix_materials(mesh, vcol):
+def suffix_materials(mesh, vcol, kit=False):
     tag = " [vcol %s]" % vcol
     for m in mesh.materials:
-        if m is not None and not m.name.endswith(tag):
-            m.name = m.name + tag
+        if m is None:
+            continue
+        name = m.name
+        if kit and not name.startswith(KIT_MAT_PREFIX):
+            name = KIT_MAT_PREFIX + name
+        if not name.endswith(tag):
+            name = name + tag
+        m.name = name
+
+
+def mark_kit(obj, kind):
+    """The kit marker on the object (glTF node extras) and its mesh (mesh extras)."""
+    obj[KIT_PROP] = kind
+    obj.data[KIT_PROP] = kind
 
 
 def tri_count(mesh):
@@ -354,7 +377,8 @@ def import_kart(kart_path, collection, rig, vcol):
         o.parent = None
         relink(o, collection)
         o.data.name = o.name
-        suffix_materials(o.data, vcol)
+        suffix_materials(o.data, vcol, kit=True)
+        mark_kit(o, "steer_wheel" if o.name == "kart_steer_wheel" else "kart")
         attrs = o.data.color_attributes
         if vcol == "off":
             for a in list(attrs):
@@ -381,7 +405,7 @@ def import_wheels(path, info, collection, rig, vcol):
         fail(4, "creator kit: the wheel node in kit-wheel.glb must have an identity transform.")
     mesh = src.data
     mesh.name = "wheel"
-    suffix_materials(mesh, vcol)
+    suffix_materials(mesh, vcol, kit=True)
     if vcol == "off":
         for a in list(mesh.color_attributes):
             mesh.color_attributes.remove(a)
@@ -391,6 +415,7 @@ def import_wheels(path, info, collection, rig, vcol):
     for name in WHEEL_NAMES:
         p = info["wheels"][name]
         o = bpy.data.objects.new(name, mesh)
+        mark_kit(o, "wheel")
         o.location = Bv(p)
         if p[0] < 0:
             o.rotation_euler = (0.0, 0.0, math.pi)     # right side: turned, not mirrored
@@ -405,18 +430,21 @@ def import_wheels(path, info, collection, rig, vcol):
 HOW_TO_EXPORT = [
     "Creator Kit - how to export",
     "",
-    "CreatorKit is the collection that gets exported. It holds the rig, the Figure and the Kart.",
-    "Figure: your character. The grey puppet is only an example; replace it and bind it to creator_rig.",
-    "Kart: the kart parts and the four wheels. They are fixed to the bones kart and kart_steer.",
-    "Guides: size box, seat point, stand spot and front arrow. They are not exported.",
+    "Figure: your character and creator_rig. The grey puppet is only an example; replace it and bind it to creator_rig.",
+    "Kart: the kart parts and the four wheels from YOUR game data. They are fixed to the bones kart and kart_steer.",
+    "Guides: size box, seat point, stand spot and front arrow. They are never exported.",
     "Keep the rest pose of creator_rig as it is: the figure sits in the kart.",
     "There are 12 actions: {clips}.",
     "Every action has a fake user, so none is lost. Do not rename them.",
     "Standing actions (podium_1, podium_2, podium_3, lose, menu) have a marker: hide the collection Kart for them.",
-    "To export: select the collection CreatorKit, open Collection properties > Exporters > glTF 2.0 > Export.",
-    "Or use File > Export All Collections.",
-    "The file is written next to this .blend as creator-kit-demo.glb.",
-    "Do not change the export settings of the exporter.",
+    "",
+    "Two exporters, both under Collection properties > Exporters > glTF 2.0 > Export:",
+    "- on the collection Figure: creator-kit-figure.glb, the figure alone. It holds no game data.",
+    "- on the collection CreatorKit: creator-kit-demo-local.glb, the figure WITH the kart and wheels of",
+    "  your game data, for a test on your own computer. Never share it.",
+    "File > Export All Collections writes both, next to this .blend.",
+    "Kit parts are marked (custom property ctr_kit, materials named ctrkit_...); keep them in the collection Kart.",
+    "Do not change the export settings of the exporters.",
     "Do not apply the Armature modifier and do not use scaled or mirrored objects.",
     "Keep the model under 64000 triangles.",
     "The full guide is docs/CREATOR_KIT.md (in Reload Studio: page Creator Kit, button Guide).",
@@ -425,8 +453,16 @@ HOW_TO_EXPORT = [
 
 def add_exporter(collection, filepath):
     import bpy
-    layer = bpy.context.view_layer.layer_collection.children[collection.name]
-    bpy.context.view_layer.active_layer_collection = layer
+    def find(layer):
+        if layer.collection == collection:
+            return layer
+        for child in layer.children:
+            hit = find(child)
+            if hit is not None:
+                return hit
+        return None
+
+    bpy.context.view_layer.active_layer_collection = find(bpy.context.view_layer.layer_collection)
     with bpy.context.temp_override(collection=collection):
         bpy.ops.collection.exporter_add(name="IO_FH_gltf2")
     exporter = collection.exporters[0]
@@ -551,23 +587,67 @@ def read_glb_json(path):
         return json.loads(f.read(n).decode("utf-8"))
 
 
-def check_glb(path, clip_names, vcol):
+def kit_marks(j):
+    """Everything in the GLB that carries the kit marker: node and mesh extras ctr_kit, material prefix."""
+    out = []
+    for kind in ("nodes", "meshes"):
+        for x in j.get(kind, []):
+            if KIT_PROP in (x.get("extras") or {}):
+                out.append("%s %s" % (kind[:-1], x.get("name", "?")))
+    for m in j.get("materials", []):
+        if m.get("name", "").startswith(KIT_MAT_PREFIX):
+            out.append("material " + m.get("name", ""))
+    return out
+
+
+def check_glb(path, clip_names, vcol, local):
+    """local: the demo with the kit kart (wheels, kart nodes, every kit part marked); else the figure alone
+    (no wheel node, no kart node, no kit marker)."""
     j = read_glb_json(path)
+    what = os.path.basename(path)
     anims = sorted(a.get("name", "") for a in j.get("animations", []))
     if anims != sorted(clip_names):
-        fail(5, "creator kit: self check failed: the GLB holds the clips %s, expected %s."
-                % (anims, sorted(clip_names)))
-    names = [n.get("name") for n in j.get("nodes", [])]
-    for w in WHEEL_NAMES:
-        if names.count(w) != 1:
-            fail(5, "creator kit: self check failed: the GLB has %d nodes named %s (expected 1)."
-                    % (names.count(w), w))
+        fail(5, "creator kit: self check failed: %s holds the clips %s, expected %s."
+                % (what, anims, sorted(clip_names)))
+    nodes = j.get("nodes", [])
+    names = [n.get("name") for n in nodes]
+    # kit parts: wheel nodes and kart_* nodes WITH a mesh (the bones kart and kart_steer are joints, no mesh;
+    # the figure file keeps them, they hold no game data)
+    kit_names = [n.get("name") for n in nodes
+                 if "mesh" in n and (n.get("name") in WHEEL_NAMES or (n.get("name") or "").startswith("kart_"))]
+    if local:
+        for w in WHEEL_NAMES:
+            if names.count(w) != 1:
+                fail(5, "creator kit: self check failed: %s has %d nodes named %s (expected 1)."
+                        % (what, names.count(w), w))
+        unmarked = []
+        for n in nodes:
+            if n.get("name") not in kit_names or "mesh" not in n:
+                continue
+            if KIT_PROP not in (n.get("extras") or {}):
+                unmarked.append("node " + n.get("name"))
+            if KIT_PROP not in (j["meshes"][n["mesh"]].get("extras") or {}):
+                unmarked.append("mesh of " + n.get("name"))
+        kit_mats = set()
+        for n in nodes:
+            if n.get("name") in kit_names and "mesh" in n:
+                for prim in j["meshes"][n["mesh"]].get("primitives", []):
+                    if "material" in prim:
+                        kit_mats.add(j["materials"][prim["material"]].get("name", ""))
+        unmarked += ["material " + m for m in sorted(kit_mats) if not m.startswith(KIT_MAT_PREFIX)]
+        if unmarked:
+            fail(5, "creator kit: self check failed: kit parts without the marker in %s: %s" % (what, unmarked))
+    else:
+        marks = kit_marks(j)
+        if kit_names or marks:
+            fail(5, "creator kit: self check failed: %s must hold the figure alone, but holds %s."
+                    % (what, sorted(set(kit_names)) + marks))
     if len(j.get("skins", [])) != 1:
-        fail(5, "creator kit: self check failed: the GLB has %d skins (expected 1)." % len(j.get("skins", [])))
+        fail(5, "creator kit: self check failed: %s has %d skins (expected 1)." % (what, len(j.get("skins", []))))
     tag = " [vcol %s]" % vcol
     bad = [m.get("name", "") for m in j.get("materials", []) if not m.get("name", "").endswith(tag)]
     if bad or not j.get("materials"):
-        fail(5, "creator kit: self check failed: materials without the ending '%s': %s" % (tag, bad))
+        fail(5, "creator kit: self check failed: materials without the ending '%s' in %s: %s" % (tag, what, bad))
     return j
 
 
@@ -609,7 +689,7 @@ def build(opt, started):
     scene.collection.children.link(guide_col)
 
     bones = creator_kit_puppet.bone_table(info)
-    rig = creator_kit_puppet.build_rig(kit_col, bones)
+    rig = creator_kit_puppet.build_rig(figure_col, bones)
     puppet = creator_kit_puppet.build_puppet(figure_col, rig, bones, vcol)
 
     kart_objs = import_kart(os.path.join(out, kart_file), kart_col, rig, vcol)
@@ -632,7 +712,8 @@ def build(opt, started):
     text = bpy.data.texts.new("HOW_TO_EXPORT")
     text.from_string("\n".join(HOW_TO_EXPORT).replace("{clips}", ", ".join(clip_names)) + "\n")
 
-    exporter = add_exporter(kit_col, "//" + GLB_NAME)
+    figure_exporter = add_exporter(figure_col, "//" + FIGURE_GLB)
+    local_exporter = add_exporter(kit_col, "//" + LOCAL_GLB)
 
     for obj in bpy.data.objects:
         obj.select_set(False)
@@ -645,7 +726,9 @@ def build(opt, started):
     scene.frame_set(0)
 
     blend_path = os.path.join(out, BLEND_NAME)
-    glb_path = os.path.join(out, GLB_NAME)
+    figure_path = os.path.join(out, FIGURE_GLB)
+    local_path = os.path.join(out, LOCAL_GLB)
+
     if opt["blend"]:
         for old in (blend_path, blend_path + "1"):
             if os.path.exists(old):
@@ -653,16 +736,19 @@ def build(opt, started):
         bpy.ops.wm.save_as_mainfile(filepath=blend_path, compress=False, copy=True)
         stabilize(blend_path, out)
 
-    glb_json = None
+    figure_json = local_json = None
     if opt["glb"]:
-        if os.path.exists(glb_path):
-            os.remove(glb_path)
-        exporter.filepath = glb_path
-        with bpy.context.temp_override(collection=kit_col):
-            bpy.ops.collection.exporter_export(index=0)
-        if not os.path.isfile(glb_path):
-            fail(5, "creator kit: self check failed: the exporter wrote no GLB.")
-        glb_json = check_glb(glb_path, clip_names, vcol)
+        for exporter, collection, path in ((figure_exporter, figure_col, figure_path),
+                                           (local_exporter, kit_col, local_path)):
+            if os.path.exists(path):
+                os.remove(path)
+            exporter.filepath = path
+            with bpy.context.temp_override(collection=collection):
+                bpy.ops.collection.exporter_export(index=0)
+            if not os.path.isfile(path):
+                fail(5, "creator kit: self check failed: the exporter wrote no %s." % os.path.basename(path))
+        figure_json = check_glb(figure_path, clip_names, vcol, local=False)
+        local_json = check_glb(local_path, clip_names, vcol, local=True)
 
     puppet_tris = tri_count(puppet.data)
     kart_tris = sum(tri_count(o.data) for o in kart_objs)
@@ -673,10 +759,12 @@ def build(opt, started):
         "source": info.get("source"),
         "triangles": {"puppet": puppet_tris, "kart": kart_tris, "wheels": wheel_tris,
                       "total": puppet_tris + kart_tris + wheel_tris},
-        "skin_joints": len(glb_json["skins"][0]["joints"]) if glb_json else None,
-        "clips": sorted(a.get("name", "") for a in glb_json.get("animations", [])) if glb_json else None,
+        "skin_joints": {FIGURE_GLB: len(figure_json["skins"][0]["joints"]) if figure_json else None,
+                        LOCAL_GLB: len(local_json["skins"][0]["joints"]) if local_json else None},
+        "clips": sorted(a.get("name", "") for a in figure_json.get("animations", [])) if figure_json else None,
         "sha256": {BLEND_NAME: sha256_file(blend_path) if opt["blend"] else None,
-                   GLB_NAME: sha256_file(glb_path) if opt["glb"] else None},
+                   FIGURE_GLB: sha256_file(figure_path) if opt["glb"] else None,
+                   LOCAL_GLB: sha256_file(local_path) if opt["glb"] else None},
         "seconds": round(time.time() - started, 1),
         "messages": [] if single_thread(sys.argv) else [THREADS_NOTE],
     }
@@ -684,7 +772,8 @@ def build(opt, started):
         json.dump(report, f, indent=1, sort_keys=True)
         f.write("\n")
     print("creator kit: ok vcol=%s source=%s triangles=%d joints=%s clips=%s blend=%s glb=%s %.1fs"
-          % (vcol, report["source"], report["triangles"]["total"], report["skin_joints"],
+          % (vcol, report["source"], report["triangles"]["total"],
+             "/".join(str(report["skin_joints"][k]) for k in (FIGURE_GLB, LOCAL_GLB)),
              len(report["clips"]) if report["clips"] is not None else "-",
              "yes" if opt["blend"] else "no", "yes" if opt["glb"] else "no", report["seconds"]))
 

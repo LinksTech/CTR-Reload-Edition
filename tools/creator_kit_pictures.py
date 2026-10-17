@@ -672,12 +672,12 @@ def pic_studio_steps():
     xs = [x0 + k * (w + gap) for k in range(3)]
     specs1 = [(["Reload Studio:", "Creator Kit"], COL_STUDIO), (["Generate demo files"], COL_STUDIO),
               (["Blender:", "creator-kit.blend"], COL_BLENDER)]
-    specs2 = [(["Export", "creator-kit-demo.glb"], COL_BLENDER), (["Reload Studio:", "Character"], COL_STUDIO),
+    specs2 = [(["Export (test on your PC):", "creator-kit-demo-local.glb"], COL_BLENDER), (["Reload Studio:", "Character"], COL_STUDIO),
               (["Test in game"], COL_GAME)]
     for k, (ln, fl) in enumerate(specs1):
         box(svg, xs[k], y1, w, h, ln, fl, num=k + 1)
     for k, (ln, fl) in enumerate(specs2):
-        box(svg, xs[k], y2, w, h, ln, fl, num=k + 4)
+        box(svg, xs[k], y2, w, h, ln, fl, size=12 if k == 0 else 14, num=k + 4)
     for k in range(2):
         svg.arrow([(xs[k] + w + 4, y1 + h / 2), (xs[k + 1] - 4, y1 + h / 2)])
         svg.arrow([(xs[k] + w + 4, y2 + h / 2), (xs[k + 1] - 4, y2 + h / 2)])
@@ -709,10 +709,11 @@ def tree_icon(svg, x, y, kind):
 
 def pic_template_tree():
     rows = [
-        (0, "col", "CreatorKit", "export root"), (1, "arm", "creator_rig", ""), (1, "col", "Figure", ""),
-        (2, "mesh", "puppet", ""), (1, "col", "Kart", ""), (2, "mesh", "kart_body", ""),
-        (2, "mesh", "kart_steer_wheel", ""), (2, "mesh", "wheel_fl", ""), (2, "mesh", "wheel_fr", ""),
-        (2, "mesh", "wheel_rl", ""), (2, "mesh", "wheel_rr", ""),
+        (0, "col", "CreatorKit", "second exporter: demo-local"), (1, "col", "Figure", "exporter: figure"),
+        (2, "arm", "creator_rig", ""), (2, "mesh", "puppet", ""),
+        (1, "col", "Kart", ""), (2, "mesh", "kart_body", "kit"),
+        (2, "mesh", "kart_steer_wheel", "kit"), (2, "mesh", "wheel_fl", "kit"), (2, "mesh", "wheel_fr", "kit"),
+        (2, "mesh", "wheel_rl", "kit"), (2, "mesh", "wheel_rr", "kit"),
         (0, "col", "Guides", ""), (1, "empty", "CrashSize", ""), (1, "empty", "SeatPoint", ""),
         (1, "empty", "StandSpot", ""), (1, "empty", "Front", ""),
         (0, "col", "Classic", "only with an old character"),
@@ -720,28 +721,37 @@ def pic_template_tree():
     rh = 25
     top = 64
     H = top + len(rows) * rh + 16
-    svg = Svg(640, H)
-    svg.rect(20, 18, 600, H - 36, "#2b2f36", "#14171a", 1.5, 8)
-    svg.rect(20, 18, 600, 30, "#3a3f47", "#14171a", 1.5, 8)
+    svg = Svg(760, H)
+    svg.rect(20, 18, 720, H - 36, "#2b2f36", "#14171a", 1.5, 8)
+    svg.rect(20, 18, 720, 30, "#3a3f47", "#14171a", 1.5, 8)
     svg.text(36, 38, "Outliner", 14, "start", "#e6e8eb", True)
     for k, (ind, kind, name, note) in enumerate(rows):
         y = top + k * rh
         if k % 2 == 0:
-            svg.add('<rect x="21" y="%s" width="598" height="%s" fill="#303540"/>' % (fnum(y - 17), fnum(rh)))
+            svg.add('<rect x="21" y="%s" width="718" height="%s" fill="#303540"/>' % (fnum(y - 17), fnum(rh)))
         x = 40 + ind * 24
         tree_icon(svg, x, y, kind)
         svg.text(x + 22, y, name, 14, "start", "#e6e8eb")
-        if note:
+        if note == "kit":
+            tx = x + 22 + len(name) * 8.2 + 10
+            svg.circle(tx + 4, y - 4, 4, "#f08c00", "#f08c00", 1)
+            svg.text(tx + 12, y, "kit", 12, "start", "#ffa94d", True)
+        elif note:
             svg.text(x + 22 + len(name) * 8.2 + 12, y, note, 12, "start", "#9aa3ad", italic=True)
-    # brackets: exported / not exported
-    bx = 540
-    y0, y1 = top - 14, top + 10 * rh + 6
-    svg.poly([(bx, y0), (bx + 8, y0), (bx + 8, y1), (bx, y1)], stroke="#6fd08c", sw=2)
-    svg.text(bx + 16, (y0 + y1) / 2 + 5, "exported", 13, "start", "#6fd08c", True)
-    y0, y1 = top + 11 * rh - 14, top + 16 * rh + 6
-    svg.poly([(bx, y0), (bx + 8, y0), (bx + 8, y1), (bx, y1)], stroke="#9aa3ad", sw=2)
-    svg.text(bx + 16, (y0 + y1) / 2 - 3, "not", 13, "start", "#c3c9d0", True)
-    svg.text(bx + 16, (y0 + y1) / 2 + 13, "exported", 13, "start", "#c3c9d0", True)
+    # brackets: what each part is exported into
+    bx = 400
+
+    def bracket(r0, r1, col, tcol, lines):
+        y0, y1 = top + r0 * rh - 14, top + r1 * rh + 6
+        svg.poly([(bx, y0), (bx + 8, y0), (bx + 8, y1), (bx, y1)], stroke=col, sw=2)
+        ym = (y0 + y1) / 2 + 4 - (len(lines) - 1) * 8
+        for q, t in enumerate(lines):
+            svg.text(bx + 18, ym + q * 17, t, 13, "start", tcol, q == 0)
+
+    bracket(1, 3, "#6fd08c", "#6fd08c", ["creator-kit-figure.glb", "no game data (share)"])
+    bracket(4, 10, "#ffa94d", "#ffa94d", ["only in creator-kit-demo-local.glb",
+                                          "your game data (keep local)"])
+    bracket(11, 16, "#9aa3ad", "#c3c9d0", ["never exported"])
     return svg, H
 
 
@@ -1033,30 +1043,35 @@ def pic_clips(kit, f):
 
 
 def pic_export_path():
-    svg = Svg(760, 366)
-    w, h, gap = 200, 66, 56
-    x0 = (760 - (3 * w + 2 * gap)) / 2
-    xs = [x0 + k * (w + gap) for k in range(3)]
-    y1, y2, y3 = 60, 176, 298
-    svg.text(380, 34, "Where to click in Blender", 16, "middle", INK, True)
-    specs1 = [["Outliner:", "select CreatorKit"], ["Properties:", "Collection"], ["Collection properties:", "Exporters"]]
-    for k, ln in enumerate(specs1):
-        box(svg, xs[k], y1, w, h, ln, COL_BLENDER, num=k + 1)
-    for k in range(2):
-        svg.arrow([(xs[k] + w + 4, y1 + h / 2), (xs[k + 1] - 4, y1 + h / 2)])
-    ym = (y1 + h + y2) / 2
-    svg.arrow([(xs[2] + w / 2, y1 + h + 4), (xs[2] + w / 2, ym), (xs[0] + w / 2, ym), (xs[0] + w / 2, y2 - 4)])
-    box(svg, xs[0], y2, w, h, ["Exporter:", "glTF 2.0"], COL_BLENDER, num=4)
-    box(svg, xs[1], y2, w, h, ["Press", "Export"], COL_BLENDER, num=5)
-    box(svg, xs[2], y2, w, h, ["Result:", "creator-kit-demo.glb"], COL_GAME)
-    svg.arrow([(xs[0] + w + 4, y2 + h / 2), (xs[1] - 4, y2 + h / 2)])
-    svg.arrow([(xs[1] + w + 4, y2 + h / 2), (xs[2] - 4, y2 + h / 2)])
-    svg.text(xs[2] + w / 2, y2 + h + 18, "written next to the .blend", 12.5, "middle", GREY)
-    # the alternative way
-    svg.rect(xs[0], y3, w + gap + w, 48, "#fff", LINE, 1.4, 8, dash="6 4")
-    svg.label(xs[0] + w + gap / 2, y3 + 29, ["or  File > Export All Collections"], 14, "middle", INK, True)
-    svg.arrow([(xs[1] + w / 2, y3 - 4), (xs[1] + w / 2, y2 + h + 4)], LINE, 1.8, 8, dash="5 4")
-    svg.text(xs[1] + w / 2 + 10, (y3 + y2 + h) / 2 + 5, "same result", 12, "start", GREY)
+    svg = Svg(800, 396)
+    ws = [140, 160, 160, 230]
+    gap = 28
+    x0 = (800 - (sum(ws) + 3 * gap)) / 2
+    xs = [x0]
+    for k in range(3):
+        xs.append(xs[-1] + ws[k] + gap)
+    h = 62
+    svg.text(400, 34, "Where to click in Blender", 16, "middle", INK, True)
+    lanes = [
+        (52, "#e6f7ea", "#2f9e44", "#15803d", "(a) the file to share: the figure alone", "select Figure",
+         "creator-kit-figure.glb", "figure alone, no game data", "#b2f2bb"),
+        (196, "#fff0e0", "#e8590c", "#c2410c", "(b) for a test on your own PC", "select CreatorKit",
+         "creator-kit-demo-local.glb", "with your kart, keep it local", "#ffc078"),
+    ]
+    for (T, bg, edge, tcol, title, sel, res, cap, rfill) in lanes:
+        svg.rect(6, T, 788, 128, bg, edge, 1.6, 10)
+        svg.text(20, T + 22, title, 14, "start", tcol, True)
+        by = T + 34
+        specs = [(["Outliner:", sel], 14), (["Properties:", "Collection tab"], 14),
+                 (["Exporters:", "glTF 2.0 > Export"], 14)]
+        for k, (ln, sz) in enumerate(specs):
+            box(svg, xs[k], by, ws[k], h, ln, "#fff", size=sz, num=k + 1)
+        box(svg, xs[3], by, ws[3], h, ["Result:", res], rfill, size=13)
+        for k in range(3):
+            svg.arrow([(xs[k] + ws[k] + 4, by + h / 2), (xs[k + 1] - 4, by + h / 2)])
+        svg.text(xs[3] + ws[3] / 2, by + h + 18, cap, 12.5, "middle", tcol)
+    svg.rect(200, 342, 400, 40, "#fff", LINE, 1.4, 8, dash="6 4")
+    svg.text(400, 367, "or  File > Export All Collections (writes both)", 14, "middle", INK, True)
     return svg.done("export-path")
 
 
