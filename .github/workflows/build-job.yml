@@ -67,6 +67,12 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Python modules some self-tests import: numpy (tools/hires_mask_sharp.py)
+      # and Pillow (tools/hires_sheet.py). Fixed versions, as everything else here.
+      - name: Install the Python modules of the test suite
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --no-input numpy==2.2.6 pillow==11.3.0
+
       # The cache holds only the installed SDK. It is written only by runs
       # on main, tags, nightly and manual runs, never by pull requests.
       - name: Restore Vulkan SDK from cache
