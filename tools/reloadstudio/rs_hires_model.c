@@ -971,6 +971,16 @@ static void RsHires_Fill(const RldHiresReport *rep, const RldHiresModel *m, stru
     out->glbBytes = m->glbSize;
 }
 
+void RsHires_Budget(unsigned long long *triangles, unsigned *edge, unsigned long long *textureBytes)
+{
+    if (triangles)
+        *triangles = RLDHIRES_BUDGET_TRIANGLES;
+    if (edge)
+        *edge = RLDHIRES_BUDGET_TEXTURE_EDGE;
+    if (textureBytes)
+        *textureBytes = RLDHIRES_BUDGET_TEXTURE_BYTES;
+}
+
 int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out)
 {
     static RldHiresReport rep;   // 13 KB; the page checks on its own thread only

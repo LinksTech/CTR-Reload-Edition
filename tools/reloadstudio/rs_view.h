@@ -115,6 +115,11 @@ void RsView_SetBackground(HWND view, int light);  // 0 dark (default), 1 light
 void RsView_SetCrashRef(HWND view, int on);       // the dummy "Crash size" beside the model; default 1
 void RsView_SetOverlays(HWND view, int shadow, int exhaust);  // display only, default 1 1
 void RsView_SetShowNative(HWND view, int native); // 1 = the native model when loaded (default), 0 = the classic one
+// The label above the model (the page Character's CHRG routes: "Hi-Res model",
+// "Low-Poly model", "Classic fallback"), also over a model without a native
+// part; NULL = as always ("Native model" / "Classic model" over a native model,
+// none otherwise). Display only.
+void RsView_SetModelLabel(HWND view, const wchar_t *label);
 int  RsView_HasNative(HWND view);                 // 1 = the preview carries a native model
 int  RsView_GetToggles(HWND view, int *light, int *crash, int *shadow, int *exhaust, int *native);  // returns native drawn (0/1)
 // Bench: frames pictures, each one step further in an orbit (yaw +3, pitch swinging), timed (microseconds).

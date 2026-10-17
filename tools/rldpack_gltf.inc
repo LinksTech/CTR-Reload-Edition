@@ -79,6 +79,19 @@
 // as a direction: without the shift. RldGltf_FreeMorphs frees it.
 // Machine line per name (model and poses): @model shape-key <name> <key|unknown>.
 //
+// A RIG (make-char --rig, s_rldGltfRigBindPose). Without the switch, or with
+// --rig refuse, a skin or a JOINTS_0 / WEIGHTS_0 attribute is refused
+// (model-rig, below). --rig bind-pose reads such a model in its bind pose, the
+// way Reload Studio draws the bind pose of a hi-res driver
+// (tools/reloadstudio/rs_hires_model.c): a node with a skin in mesh space
+// - its node matrix and those above it are not applied, as glTF ignores the
+// node matrix of a skinned mesh (the bind pose is mesh space when the inverse
+// bind matrices are those of the rest pose, as exporters write them) - every
+// other node with its world matrix as above; the skin, JOINTS_0 and WEIGHTS_0
+// are not read. Shape keys stay as they are. Said once per model: info
+// rig-bind-pose. This is how the classic fallback of a hi-res driver (the
+// chunk CHRG) is made from the same .glb.
+//
 // REFUSED (error, no file): a file cgltf cannot parse or whose buffers it
 // cannot load, a buffer file shorter than its byteLength, a bufferView,
 // accessor or sparse block that reaches past its buffer (each checked in 64
@@ -130,6 +143,11 @@ struct RldGltfMorphs
 };
 
 static struct RldGltfMorphs s_rldGltfMorphs;
+
+// make-char --rig bind-pose: 1 = a skinned model is read in its bind pose
+// (the head of this file, A RIG); 0 (the default, --rig refuse) = model-rig.
+// make-char sets it from its switch on every run.
+static int s_rldGltfRigBindPose;
 
 static void RldGltf_FreeMorphs(void)
 {
@@ -1380,6 +1398,10 @@ static int RldGltf_Primitive(struct RldGltfRead *r, const cgltf_mesh *mesh, cons
 
 		if ((a->type == cgltf_attribute_type_joints) || (a->type == cgltf_attribute_type_weights))
 		{
+			if (s_rldGltfRigBindPose)
+			{
+				continue; // --rig bind-pose: the weights are not read
+			}
 			RldMk_Say("error", "model-rig", a->name, "Rigs are not supported yet, please use shape keys");
 			return 0;
 		}
@@ -1686,10 +1708,14 @@ static void RldGltf_Multiply(const double a[16], const double b[16], double out[
 }
 
 // A node with a mesh: its group, its targets' keys, its primitives. 0 = said.
-static int RldGltf_Node(struct RldGltfRead *r, const cgltf_node *node, const double w[16], struct RldGltfTable *vTable, struct RldGltfTable *vnTable)
+// A skinned node with --rig bind-pose stands in mesh space (the identity in
+// place of its world matrix).
+static int RldGltf_Node(struct RldGltfRead *r, const cgltf_node *node, const double world[16], struct RldGltfTable *vTable, struct RldGltfTable *vnTable)
 {
+	static const double meshSpace[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 	struct RldObjModel *m = &r->m;
 	const cgltf_mesh *mesh = node->mesh;
+	const double *w = ((node->skin != NULL) && s_rldGltfRigBindPose) ? meshSpace : world;
 	const double det = w[0] * (w[5] * w[10] - w[9] * w[6]) - w[4] * (w[1] * w[10] - w[9] * w[2]) + w[8] * (w[1] * w[6] - w[5] * w[2]);
 	const u32 index = (u32)cgltf_node_index(r->data, node);
 	int *keys = NULL;
@@ -1699,7 +1725,7 @@ static int RldGltf_Node(struct RldGltfRead *r, const cgltf_node *node, const dou
 	u32 i;
 	int ok = 1;
 
-	if (node->skin != NULL)
+	if ((node->skin != NULL) && !s_rldGltfRigBindPose)
 	{
 		RldMk_Say("error", "model-rig", (node->name != NULL) ? node->name : NULL, "Rigs are not supported yet, please use shape keys");
 		return 0;
@@ -2356,14 +2382,21 @@ static int RldGltf_Parse(const char *path, const u8 *data, size_t size, struct R
 		return 0;
 	}
 
-	// Refused before anything is made: a rig, compressed buffers.
+	// Refused before anything is made: a rig (unless --rig bind-pose), compressed buffers.
 	if (r.data->skins_count != 0u)
 	{
 		char skins[24];
 
 		snprintf(skins, sizeof(skins), "%u skin%s", (u32)r.data->skins_count, (r.data->skins_count == 1u) ? "" : "s");
-		RldMk_Say("error", "model-rig", skins, "Rigs are not supported yet, please use shape keys");
-		ok = 0;
+		if (s_rldGltfRigBindPose)
+		{
+			RldMk_Say("info", "rig-bind-pose", skins, "The rig was ignored: the classic model stands in the bind pose.");
+		}
+		else
+		{
+			RldMk_Say("error", "model-rig", skins, "Rigs are not supported yet, please use shape keys");
+			ok = 0;
+		}
 	}
 	for (i = 0; ok && (i < (u32)r.data->buffer_views_count); i++)
 	{

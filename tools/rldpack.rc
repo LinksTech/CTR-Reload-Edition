@@ -31,9 +31,11 @@
 
 // The version of the TOOL, not of the format (that is in rldtrack.inc as
 // RLD_VERSION_MAJOR/MINOR) - separate names, so that a search keeps them apart.
-#define RLDPACK_VERSION_MAJOR 0
-#define RLDPACK_VERSION_MINOR 1
-#define RLDPACK_VERSION_PATCH 0
+// It is the tools version, shared with Reload Studio: CTR_TOOLS_VERSION and its
+// parts, passed by CMakeLists.txt from its one line set(CTR_TOOLS_VERSION ...).
+#define RLDPACK_VERSION_MAJOR CTR_TOOLS_VERSION_MAJOR
+#define RLDPACK_VERSION_MINOR CTR_TOOLS_VERSION_MINOR
+#define RLDPACK_VERSION_PATCH CTR_TOOLS_VERSION_PATCH
 #define RLDPACK_VERSION_BUILD 0
 
 VS_VERSION_INFO VERSIONINFO
@@ -51,12 +53,12 @@ BEGIN
 		BEGIN
 			VALUE "CompanyName",      "CTR Reload"
 			VALUE "FileDescription",  "rldpack - packer for .rldtrack track and .rldchar character containers"
-			VALUE "FileVersion",      "0.1.0.0"
+			VALUE "FileVersion",      CTR_TOOLS_VERSION
 			VALUE "InternalName",     "rldpack"
 			VALUE "LegalCopyright",   "CTR Reload"
 			VALUE "OriginalFilename", "rldpack.exe"
 			VALUE "ProductName",      "CTR Reload"
-			VALUE "ProductVersion",   "0.1.0.0"
+			VALUE "ProductVersion",   CTR_TOOLS_VERSION
 			VALUE "Comments",         "Builds and checks .rldtrack track containers (format 4.1) and .rldchar character containers."
 		END
 	END

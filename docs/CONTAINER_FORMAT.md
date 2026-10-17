@@ -1373,7 +1373,12 @@ ignored: `steer_left`, `steer_right`, `reverse`, `crash`, `jump`, `win`,
 `lose`. The base mesh is the neutral pose. A name the packer does not know
 is said (warning `pose-unknown-key`, `@char pose-unknown <name>`) and left
 out; it changes no byte. A glTF with a skin is refused (error `model-rig`:
-"Rigs are not supported yet, please use shape keys") and no file is written.
+"Rigs are not supported yet, please use shape keys") and no file is written -
+unless make-char gets `--rig bind-pose`: then the model is read standing in
+its bind pose (skinned meshes in mesh space, as glTF ignores their node
+matrix; the skin, `JOINTS_0` and `WEIGHTS_0` are not read; info
+`rig-bind-pose`). That is how the classic fallback of a hi-res driver (chunk
+CHRG) is made from the same `.glb`. `--rig refuse` is the default.
 OBJ and PLY have no shape keys: their files stay byte for byte as before.
 
 THE 47 FRAMES (make-char step 4k, `RldMk_StepKeys` in
