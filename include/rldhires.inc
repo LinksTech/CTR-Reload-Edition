@@ -277,13 +277,18 @@ static int RldHires_WheelByName(const char *name)
 #define RLDHIRES_HULL_SAMPLES 16
 #define RLDHIRES_HULL_MARGIN 0.05f
 
-// THE BUDGET of one hi-res driver: measured in the load run of this round (H5);
-// placeholder until then (the triangles set high enough that the load run can
-// load every variant it measures). Over it, the driver falls back to its classic model
-// (HRG-27, RldHires_CheckBudget), with a line in the log and the Studio.
-#define RLDHIRES_BUDGET_TRIANGLES 400000u                     // all drawn primitives, wheels included
+// THE BUDGET of one hi-res driver, measured 2026-10-17 in load run R2 of the
+// hi-res round of 2026-10-17: 8 hi-res drivers at 3440x1440, MSAA 4, frame
+// time CPU + GPU p99 <= 16.7 ms. Passed: 10k to 80k triangles (80k with a
+// 2048 base colour and a 2048 normal map: 12.70 ms); failed: 160k (23.74 ms)
+// and 320k (35.88 ms). The triangle limit is 80 % of the largest level that
+// passed (0.8 x 80000); the texture bytes are what the passing 2048 variants
+// upload (two 2048 x 2048 RGBA8 level 0 images). Over it, the driver falls
+// back to its classic model (HRG-27, RldHires_CheckBudget), with a line in the
+// log and the Studio.
+#define RLDHIRES_BUDGET_TRIANGLES 64000u                      // all drawn primitives, wheels included
 #define RLDHIRES_BUDGET_TEXTURE_EDGE 2048u                    // the largest edge after the round-up (RldHires_UpEdge)
-#define RLDHIRES_BUDGET_TEXTURE_BYTES (64u * 1024u * 1024u)   // RGBA8 level 0 of every image, summed
+#define RLDHIRES_BUDGET_TEXTURE_BYTES (32u * 1024u * 1024u)   // RGBA8 level 0 of every upload, summed (textureBytes)
 
 //========================================================================================
 // THE REPORT
