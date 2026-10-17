@@ -70,6 +70,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sys
 import tempfile
 from fractions import Fraction
@@ -578,6 +579,17 @@ def run_eval(run, a=None, shots_in_log=()):
 
 
 def selftest():
+    """One work folder per run (<TEMP>/hires_budget_eval-selftest-<pid>-<random>),
+    removed at the end, also when a check raises: two runs at the same time
+    never share a file and nothing is left behind."""
+    root = tempfile.mkdtemp(prefix="hires_budget_eval-selftest-%d-" % os.getpid(), dir=tempfile.gettempdir())
+    try:
+        return _selftest(root)
+    finally:
+        shutil.rmtree(root)
+
+
+def _selftest(root):
     import contextlib
     import io
     c = Checker()
@@ -590,8 +602,6 @@ def selftest():
     c.check(variant_info("testdriver-t320k-x2048.glb") == ("testdriver-t320k-x2048", 320000, 2048), "variant name .glb")
     c.check(variant_info("testdriver-0shots-t40k-x1024.rldchar") == ("testdriver-t40k-x1024", 40000, 1024), "shots copy = same variant")
     c.check(variant_info("Crash JP.rldchar") == ("Crash JP", None, None), "unknown name kept")
-
-    root = tempfile.mkdtemp(prefix="hbe-")
 
     # ---- 1. the ladder, keyed by load-end lines: t160k and t320k fail
     res = run_eval(build_ladder(os.path.join(root, "r1")))

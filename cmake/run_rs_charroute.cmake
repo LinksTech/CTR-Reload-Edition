@@ -52,6 +52,19 @@ endforeach()
 file(REMOVE_RECURSE "${DIR}")
 file(MAKE_DIRECTORY "${DIR}")
 
+# rldpack's temporary files (the copies of a glTF's own images,
+# tools/rldpack_gltf.inc; the reduction's cache, tools/rldpack_reduce.inc) go
+# to TEMP, else TMP. The Studio's rldpack face (--rldpack) never reads
+# --settings, so every program this script starts gets TEMP and TMP in a
+# folder of this run below <folder>: two test runs at the same time never
+# share one, and nothing of the test lands in the user's %TEMP%. At the end
+# the folder must be empty - every program removed its own copies.
+set(tempDir "${DIR}/temp")
+file(MAKE_DIRECTORY "${tempDir}")
+file(TO_NATIVE_PATH "${tempDir}" tempDirNative)
+set(ENV{TEMP} "${tempDirNative}")
+set(ENV{TMP} "${tempDirNative}")
+
 macro(run what)
     execute_process(COMMAND ${ARGN} RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
     if(NOT result EQUAL 0)
@@ -189,4 +202,9 @@ if(PAGE)
     set(pageDo "")
     message("charroute page passed: vertex colours psx off gltf")
     message("charroute page passed: 3 routes")
+endif()
+
+file(GLOB_RECURSE tempLeft LIST_DIRECTORIES true "${tempDir}/*")
+if(tempLeft)
+    message(FATAL_ERROR "charroute FAILED: files left in the run's TEMP ${tempDir}: ${tempLeft}")
 endif()

@@ -231,6 +231,19 @@ else:
 
 
 def selftest():
+    """One work folder per run (<TEMP>/hires_chars_dir-selftest-<pid>-<random>),
+    removed at the end, also when a check raises: two runs at the same time
+    never share a file and nothing is left behind. The tool runs it starts get
+    that folder as TEMP, so their work folder (WORK_DIR) is inside it too."""
+    run_dir = tempfile.mkdtemp(prefix="hires_chars_dir-selftest-%d-" % os.getpid(),
+                               dir=tempfile.gettempdir())
+    try:
+        return _selftest(run_dir)
+    finally:
+        shutil.rmtree(run_dir)
+
+
+def _selftest(run_dir):
     fails = []
     n = [0]
 
@@ -240,9 +253,7 @@ def selftest():
             fails.append(what)
             print("FAIL: " + what)
 
-    fake_dir = os.path.join(WORK_ROOT, "fake")
-    if os.path.isdir(fake_dir):
-        shutil.rmtree(fake_dir)
+    fake_dir = os.path.join(run_dir, "fake")
     src = os.path.join(fake_dir, "src")
     os.makedirs(src)
     fake = os.path.join(fake_dir, "fake_packer.py")
@@ -259,6 +270,7 @@ def selftest():
 
     def tool(*a, env=None):
         e = dict(os.environ)
+        e.update({"TEMP": run_dir, "TMP": run_dir, "TMPDIR": run_dir})
         if env:
             e.update(env)
         p = subprocess.run([sys.executable, me] + list(a), capture_output=True,

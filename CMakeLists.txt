@@ -399,6 +399,17 @@ if(BUILD_TESTING)
     # step against fixed cases. The hashing is self-written in this tree, so it
     # has to prove itself.
     add_test(NAME rldpack_selftest COMMAND $<TARGET_FILE:rldpack> selftest)
+    # The self-test of the reduction's cache (tools/rldpack_reduce.inc,
+    # RldRed_TestCache) writes, damages and removes rldpack-reduce-<nn>.bin in
+    # TEMP. Each test that runs it gets a TEMP and TMP of its own in the build
+    # tree (made here), so that the rldpack and the Reload Studio copy of it,
+    # and two test runs at the same time, never touch one file. The folder is
+    # empty after a run: the test removes its file.
+    set(ctr_selftest_temp_rldpack "${CMAKE_BINARY_DIR}/selftest/temp-rldpack")
+    file(MAKE_DIRECTORY "${ctr_selftest_temp_rldpack}")
+    file(TO_NATIVE_PATH "${ctr_selftest_temp_rldpack}" ctr_selftest_temp_rldpack)
+    set_tests_properties(rldpack_selftest PROPERTIES
+        ENVIRONMENT "TEMP=${ctr_selftest_temp_rldpack};TMP=${ctr_selftest_temp_rldpack}")
     # rldpack --version: "rldpack <CTR_TOOLS_VERSION> (<build id>)" and the
     # line "container format <major>.<minor>", the numbers read here from
     # include/rldtrack.inc - the tools version and the format each from its one
@@ -439,7 +450,12 @@ if(BUILD_TESTING)
     # built-in version is the same one and talks over the pipe.
     if(MSVC)
         add_test(NAME reloadstudio_rldpack_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest)
-        set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
+        # A TEMP of its own, as rldpack_selftest above (the cache's self-test).
+        set(ctr_selftest_temp_rs_rldpack "${CMAKE_BINARY_DIR}/selftest/temp-rs-rldpack")
+        file(MAKE_DIRECTORY "${ctr_selftest_temp_rs_rldpack}")
+        file(TO_NATIVE_PATH "${ctr_selftest_temp_rs_rldpack}" ctr_selftest_temp_rs_rldpack)
+        set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed"
+            ENVIRONMENT "TEMP=${ctr_selftest_temp_rs_rldpack};TMP=${ctr_selftest_temp_rs_rldpack}")
         # The rldpack inside Reload Studio has the same version.
         add_test(NAME reloadstudio_rldpack_version COMMAND $<TARGET_FILE:ReloadStudio> --rldpack --version)
         set_tests_properties(reloadstudio_rldpack_version PROPERTIES PASS_REGULAR_EXPRESSION "${ctr_rldpack_version_re}")

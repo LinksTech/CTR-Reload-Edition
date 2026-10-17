@@ -394,9 +394,17 @@ def _selftest_sparse(base, check):
 
 
 def selftest():
-    base = os.path.join(tempfile.gettempdir(), "hires_sheet_selftest")
-    shutil.rmtree(base, ignore_errors=True)
-    os.makedirs(base)
+    """One work folder per run (<TEMP>/hires_sheet-selftest-<pid>-<random>),
+    removed at the end, also when a check raises: two runs at the same time
+    never share a file and nothing is left behind."""
+    base = tempfile.mkdtemp(prefix="hires_sheet-selftest-%d-" % os.getpid(), dir=tempfile.gettempdir())
+    try:
+        return _selftest(base)
+    finally:
+        shutil.rmtree(base)
+
+
+def _selftest(base):
     n = [0, 0]
 
     def check(cond, text):
