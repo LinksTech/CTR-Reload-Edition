@@ -20,13 +20,22 @@
 // with their world matrix, skinned meshes as they are in mesh space (glTF
 // ignores the node matrix of a skinned mesh; the bind pose is mesh space when
 // the inverse bind matrices are those of the rest pose, as exporters write
-// them). A corner's colour is the base colour factor times the base colour
-// texture at its UV (nearest texel, repeat), lit by one fixed light from the
-// front left above (half ambient, half diffuse) - a picture to judge shape and
-// paint by, not the engine's shading. The first pose carries the triangles;
-// the second holds the framing box (the bind pose's bounds and 0.25 m around
-// them) as two triangles without area, so that the view frames every frame of
-// a clip the same; the third is empty. The view draws pose 0 only.
+// them). Behind it the same triangles TEXTURED ("RLDPN2", read by rs_tex.c,
+// drawn by the view in place of the flat ones): per primitive its base colour
+// image (sized up as the engine uploads it, bilinear like EngineStatic_ResampleUp,
+// and sampled with the engine's hi-res filter - trilinear, anisotropy 16, in
+// linear light: RS_TEX_MATERIAL_FILTERED, rs_tex.h), the colour the engine's "ns"
+// program makes - texel x COLOR_0 x base colour factor, both factors on the
+// display curve, COLOR_0 quantised to a byte as the engine holds it - lit by
+// one fixed light from the front left above (half ambient, half diffuse): a
+// picture to judge shape and paint by, not the engine's sun or normal maps.
+// The flat RLDPV2 colours each corner by the texel at its UV (the fallback when
+// the view cannot take the textures: more than RS_TEX_TEXTURES_MAX textures,
+// RS_TEX_TRIANGLES_MAX triangles or RS_TEX_BUDGET of texture memory - then
+// previewWhy says so). The first pose carries the triangles; the second holds
+// the framing box (the bind pose's bounds and 0.25 m around them) as two
+// triangles without area, so that the view frames every frame of a clip the
+// same; the third is empty. The view draws pose 0 only.
 
 #ifndef RS_HIRES_MODEL_H
 #define RS_HIRES_MODEL_H
@@ -89,6 +98,10 @@ struct RsHiresCheck {
     unsigned char *preview;
     size_t previewBytes;
     int previewTriangles;
+    int previewTextured;             // 1 = the picture carries the textured model (RLDPN2), drawn by the view
+    wchar_t previewWhy[RS_HIRES_TEXT_MAX];   // previewTextured 0: why only the flat picture
+    size_t previewKeepAt;            // the part of every picture of this model that never changes (textures,
+    size_t previewKeepBytes;         // materials): RsView_UpdatePreviewData leaves it alone
 
     // The clips (RsHires_AnimFrame): animReady 1 = the skeleton and the clips
     // were built; animWhy says why one could not be (a clip that cannot be
@@ -136,10 +149,24 @@ float RsHires_AnimLocal(const struct RsHiresCheck *c, int clip, float seconds, f
 // missing); 0 for the rest pose.
 float RsHires_AnimLength(const struct RsHiresCheck *c, int clip);
 
+// 1 = the pictures of the next checks sample their textures nearest (point
+// sampling, as the engine with --engine-hires-chars-filter nearest), 0 = the
+// engine's hi-res filter (the default). For comparison images only.
+void RsHires_SetPointSampling(int on);
+
 // The arguments of the pack step, for Rs_RunRldpack: hires-add <character>
 // <model> -o <out> --machine (--machine changes no byte of the file). args
 // needs room for RS_HIRES_PACK_ARGS; returns the count.
 #define RS_HIRES_PACK_ARGS 6
 int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar_t *out, const wchar_t **args);
+
+// THE OPTION "Upscale small textures": before packing, rldpack hires-upscale
+// <model> -o <derived> --machine writes a new model (the source is only read;
+// tools/rldpack_hires_upscale.inc), and the pack step packs that one.
+// RsHires_UpscaledPath: <folder of out>\<model name without .glb>-upscaled.glb;
+// 0 when it does not fit cap (path is then empty).
+#define RS_HIRES_UPSCALE_ARGS 5
+int RsHires_UpscaleArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args);
+int RsHires_UpscaledPath(const wchar_t *model, const wchar_t *out, wchar_t *path, int cap);
 
 #endif

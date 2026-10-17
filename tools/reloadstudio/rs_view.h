@@ -149,6 +149,14 @@ void RsView_LoadPreview(HWND view, const wchar_t *path);
 // The same from memory (the bytes are copied). TRUE if the model is shown.
 BOOL RsView_LoadPreviewData(HWND view, const void *data, size_t bytes);
 
+// A new picture of the same model in the same layout (a frame of a clip on the
+// page Hi-Res): the same size and the same 16 bytes in front as the one shown,
+// and data[keepAt .. keepAt + keepBytes) the same as before (its textures and
+// materials - only checked by its first bytes). Copied over the shown one in
+// place, without reading it again: the framing, the camera and the mip levels
+// stay. FALSE (nothing changed) when the layout differs - then load it.
+BOOL RsView_UpdatePreviewData(HWND view, const void *data, size_t bytes, size_t keepAt, size_t keepBytes);
+
 // Which pose to draw: RS_VIEW_POSE_* (other values are clamped to 0..2) -
 // frame 10, 0 or 20 of animation 0, as RsView_SetAnimFrame.
 void RsView_SetPose(HWND view, int pose);

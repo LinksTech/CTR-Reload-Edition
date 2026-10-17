@@ -61,6 +61,7 @@ struct HrTestSpec
 	int texPairs;           // materials appended, each with its own base colour and normal map image
 	int sameImageNormal;    // material 0 uses its base colour image as normal map too
 	int clampTexture;       // a second material uses the same image through a clamping sampler
+	float colour0;          // > 0: the body's three vertices get COLOR_0 (linear grey of this value)
 };
 
 static int s_hrChecks;
@@ -136,6 +137,94 @@ static u32 HrTest_Png(u8 *out, u32 w, u32 h, u32 colorType, u32 bitDepth)
 	return n;
 }
 
+// A 16 x 16 RGBA PNG that decodes (one stored deflate block): red, with a
+// green square in the middle (texels 4..11 on both axes) - a texture whose
+// corners and middle differ, for the textured preview of Reload Studio.
+static u32 HrTest_PngReal(u8 *out)
+{
+	static const u8 sig[8] = {0x89u, 0x50u, 0x4Eu, 0x47u, 0x0Du, 0x0Au, 0x1Au, 0x0Au};
+	static u8 raw[16u * (1u + 64u)];
+	static u8 idat[2u + 5u + sizeof(raw) + 4u];
+	const u32 rawSize = (u32)sizeof(raw);
+	u8 ihdr[13] = {0, 0, 0, 16, 0, 0, 0, 16, 8, 6, 0, 0, 0};
+	u32 a = 1;
+	u32 b = 0;
+	u32 n = 8;
+	u32 x;
+	u32 y;
+	u32 i;
+	struct
+	{
+		const char *type;
+		const u8 *body;
+		u32 len;
+	} chunks[3];
+	int c;
+
+	for (y = 0; y < 16u; y++)
+	{
+		raw[y * 65u] = 0; // filter none
+		for (x = 0; x < 16u; x++)
+		{
+			u8 *px = &raw[y * 65u + 1u + x * 4u];
+			const int middle = (x >= 4u) && (x <= 11u) && (y >= 4u) && (y <= 11u);
+
+			px[0] = middle ? 0u : 255u;
+			px[1] = middle ? 255u : 0u;
+			px[2] = 0u;
+			px[3] = 255u;
+		}
+	}
+	for (i = 0; i < rawSize; i++)
+	{
+		a = (a + raw[i]) % 65521u;
+		b = (b + a) % 65521u;
+	}
+	idat[0] = 0x78u;
+	idat[1] = 0x01u;
+	idat[2] = 0x01u; // final stored block
+	idat[3] = (u8)(rawSize & 0xffu);
+	idat[4] = (u8)(rawSize >> 8);
+	idat[5] = (u8)(~rawSize & 0xffu);
+	idat[6] = (u8)((~rawSize >> 8) & 0xffu);
+	memcpy(&idat[7], raw, rawSize);
+	idat[7u + rawSize + 0u] = (u8)(b >> 8);
+	idat[7u + rawSize + 1u] = (u8)b;
+	idat[7u + rawSize + 2u] = (u8)(a >> 8);
+	idat[7u + rawSize + 3u] = (u8)a;
+	chunks[0].type = "IHDR";
+	chunks[0].body = ihdr;
+	chunks[0].len = 13u;
+	chunks[1].type = "IDAT";
+	chunks[1].body = idat;
+	chunks[1].len = (u32)sizeof(idat);
+	chunks[2].type = "IEND";
+	chunks[2].body = NULL;
+	chunks[2].len = 0u;
+	memcpy(out, sig, 8);
+	for (c = 0; c < 3; c++)
+	{
+		u32 crc;
+
+		out[n + 0] = (u8)(chunks[c].len >> 24);
+		out[n + 1] = (u8)(chunks[c].len >> 16);
+		out[n + 2] = (u8)(chunks[c].len >> 8);
+		out[n + 3] = (u8)chunks[c].len;
+		memcpy(&out[n + 4], chunks[c].type, 4);
+		if (chunks[c].len != 0u)
+		{
+			memcpy(&out[n + 8], chunks[c].body, chunks[c].len);
+		}
+		crc = RldPng_Crc(&out[n + 4], 4u + chunks[c].len);
+		out[n + 8 + chunks[c].len + 0] = (u8)(crc >> 24);
+		out[n + 8 + chunks[c].len + 1] = (u8)(crc >> 16);
+		out[n + 8 + chunks[c].len + 2] = (u8)(crc >> 8);
+		out[n + 8 + chunks[c].len + 3] = (u8)crc;
+		n += 12u + chunks[c].len;
+	}
+	return n;
+}
+
 // The views of the BIN chunk, in this order; HrTest_Glb lays them out 4-aligned.
 enum
 {
@@ -152,6 +241,7 @@ enum
 	HRV_WPOS,
 	HRV_WNRM,
 	HRV_ATR,  // the translation keys of hullShift
+	HRV_COL,  // COLOR_0 of the body (colour0)
 	HRV_IMG,
 	HRV_COUNT
 };
@@ -206,6 +296,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	len[HRV_WPOS] = 36;
 	len[HRV_WNRM] = 36;
 	len[HRV_ATR] = 24;
+	len[HRV_COL] = 36;
 	len[HRV_IMG] = 0;
 	for (i = 0; i < HRV_COUNT; i++)
 	{
@@ -233,6 +324,9 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 			case 6:
 				len[i] = HrTest_Png(img, pngW, pngH, 6u, 8u);
 				memcpy(&img[12], "IDAT", 4); // the first chunk is no IHDR
+				break;
+			case 7:
+				len[i] = HrTest_PngReal(img);
 				break;
 			default:
 				len[i] = HrTest_Png(img, pngW, pngH, 6u, 8u);
@@ -298,6 +392,10 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 		HrTest_PutF(&bin[off[HRV_WGT] + 32], 0.5f);
 	}
 	HrTest_PutF(&bin[off[HRV_ATR] + 12], sp->hullShift);
+	for (i = 0; i < 9; i++)
+	{
+		HrTest_PutF(&bin[off[HRV_COL] + 4u * (u32)i], sp->colour0);
+	}
 	for (i = 0; i < 6; i++)
 	{
 		HrTest_PutF(&bin[off[HRV_AOUTC] + 16u * (u32)i + 12u], 1.0f);
@@ -372,6 +470,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}", HRV_WNRM);
 	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}", HRV_ATR);   // 12
 	HrTest_Append(json, sizeof(json), ",{\"componentType\":5126,\"count\":%d,\"type\":\"VEC3\"}", (sp->bigVertices > 0) ? sp->bigVertices : 3); // 13: zeros
+	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}", HRV_COL);              // 14: COLOR_0
 	HrTest_Append(json, sizeof(json), "]");
 
 	// Image, texture, material.
@@ -456,6 +555,10 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 			first = 0;
 		}
 		HrTest_Append(json, sizeof(json), "%s\"TEXCOORD_0\":2", first ? "" : ",");
+		if (sp->colour0 > 0.0f)
+		{
+			HrTest_Append(json, sizeof(json), ",\"COLOR_0\":14");
+		}
 		if ((skins > 0) && !sp->noJoints)
 		{
 			HrTest_Append(json, sizeof(json), ",\"JOINTS_0\":3");
@@ -723,6 +826,206 @@ static void HrTest_FromBytes(const u8 *bytes, struct RldHiresPackIn *in)
 	}
 }
 
+// The colour of pixel (x, y) of a w-wide RGBA image.
+static const u8 *HrTest_Px(const u8 *img, u32 w, u32 x, u32 y)
+{
+	return &img[((size_t)y * w + x) * 4u];
+}
+
+// HIRES-UPSCALE (rldpack_hires_upscale.inc): Scale2x on a neutral pixel-art
+// image, then the derived GLB of a model with a 16 x 16 texture.
+static void HrTest_Upscale(void)
+{
+	static const u8 grey[4] = {128, 128, 128, 255};
+	static const u8 dark[4] = {32, 32, 32, 255};
+	static const u8 orange[4] = {255, 128, 0, 255};
+	static u8 src[8u * 8u * 4u];
+	u8 *two;
+	u8 *four;
+	u8 *again;
+	u32 x;
+	u32 y;
+	int inPalette = 1;
+	int nearestOnEdges = 1;
+
+	// The image: grey, a 3 x 3 orange square at (4..6, 4..6), a dark diagonal
+	// line of single pixels (0, 3), (1, 2), (2, 1), (3, 0).
+	for (y = 0; y < 8u; y++)
+	{
+		for (x = 0; x < 8u; x++)
+		{
+			const u8 *c = ((x >= 4u) && (x <= 6u) && (y >= 4u) && (y <= 6u)) ? orange : (((x + y) == 3u) && (x <= 3u)) ? dark : grey;
+
+			memcpy(&src[(y * 8u + x) * 4u], c, 4);
+		}
+	}
+	HrTest_Check(RldUp_Factor(16, 16) == 4u && RldUp_Factor(4, 4) == 4u && RldUp_Factor(63, 10) == 4u && RldUp_Factor(64, 64) == 2u &&
+	                 RldUp_Factor(127, 1) == 2u && RldUp_Factor(128, 16) == 1u && RldUp_Factor(2048, 2048) == 1u,
+	             "upscale: the factor doubles while the larger edge is below 128, at most 4 (16 -> 4, 64 -> 2, 128 -> 1)");
+	two = RldUp_Scale(src, 8, 8, 2);
+	four = RldUp_Scale(src, 8, 8, 4);
+	again = RldUp_Scale(src, 8, 8, 4);
+	if ((two == NULL) || (four == NULL) || (again == NULL))
+	{
+		HrTest_Check(0, "upscale: out of memory");
+		free(two);
+		free(four);
+		free(again);
+		return;
+	}
+	{
+		u8 *twice = RldUp_Scale(two, 16, 16, 2);
+
+		HrTest_Check(twice != NULL && memcmp(twice, four, 32u * 32u * 4u) == 0, "upscale: Scale4x is Scale2x applied twice (32 x 32 from 8 x 8)");
+		free(twice);
+	}
+	HrTest_Check(memcmp(four, again, 32u * 32u * 4u) == 0, "upscale: the same image gives the same bytes");
+	for (y = 0; y < 32u; y++)
+	{
+		for (x = 0; x < 32u; x++)
+		{
+			const u8 *p = HrTest_Px(four, 32, x, y);
+
+			inPalette &= RldUp_Same(p, grey) || RldUp_Same(p, dark) || RldUp_Same(p, orange);
+		}
+	}
+	HrTest_Check(inPalette, "upscale: every output pixel is a colour of the source (no blend, no new colour)");
+	// Straight edges stay sharp: along the middle of each side of the square
+	// the 2x picture is the nearest enlargement, both sides of the edge.
+	for (x = 0; x < 2u; x++)
+	{
+		nearestOnEdges &= RldUp_Same(HrTest_Px(two, 16, 10u + x, 7), grey) && RldUp_Same(HrTest_Px(two, 16, 10u + x, 8), orange);    // top
+		nearestOnEdges &= RldUp_Same(HrTest_Px(two, 16, 10u + x, 13), orange) && RldUp_Same(HrTest_Px(two, 16, 10u + x, 14), grey);  // bottom
+		nearestOnEdges &= RldUp_Same(HrTest_Px(two, 16, 7, 10u + x), grey) && RldUp_Same(HrTest_Px(two, 16, 8, 10u + x), orange);     // left
+		nearestOnEdges &= RldUp_Same(HrTest_Px(two, 16, 13, 10u + x), orange) && RldUp_Same(HrTest_Px(two, 16, 14, 10u + x), grey);  // right
+	}
+	HrTest_Check(nearestOnEdges, "upscale: the straight edges of the square stay sharp (one source pixel on each side, no step)");
+	HrTest_Check(RldUp_Same(HrTest_Px(two, 16, 8, 8), grey) && RldUp_Same(HrTest_Px(two, 16, 9, 8), orange) && RldUp_Same(HrTest_Px(two, 16, 9, 9), orange),
+	             "upscale: a corner of the square loses its outer quarter (the Scale2x rule: E0 = D where D == B)");
+	// The diagonal: grey pixel (1, 1) between dark (2, 1) and dark (1, 2)
+	// takes the dark colour in its bottom right quarter - the stairs fill in.
+	HrTest_Check(RldUp_Same(HrTest_Px(two, 16, 3, 3), dark) && RldUp_Same(HrTest_Px(two, 16, 2, 2), grey) &&
+	                 RldUp_Same(HrTest_Px(two, 16, 2, 4), dark) && RldUp_Same(HrTest_Px(two, 16, 3, 5), dark),
+	             "upscale: a diagonal line of single pixels is smoothed by half a pixel, its own pixels kept");
+	free(two);
+	free(four);
+	free(again);
+
+	// THE DERIVED GLB: the 16 x 16 test texture (red, green middle) becomes
+	// 64 x 64; the source's JSON and BIN stay byte for byte around the edits.
+	{
+		static RldHiresReport rep;
+		static struct RldUpResult res;
+		static struct RldUpResult res2;
+		struct HrTestSpec sp;
+		RldHiresModel m;
+		u32 size = 0;
+		u8 *glb;
+		u8 *out;
+		u8 *out2;
+		size_t outSize = 0;
+		size_t outSize2 = 0;
+
+		memset(&sp, 0, sizeof(sp));
+		sp.image = 7;
+		glb = HrTest_Glb(&sp, &size);
+		out = (glb != NULL) ? RldUp_Glb(glb, size, &outSize, &res) : NULL;
+		out2 = (glb != NULL) ? RldUp_Glb(glb, size, &outSize2, &res2) : NULL;
+		HrTest_Check(out != NULL && res.upscaled == 1 && res.list[0].image == 0 && res.list[0].factor == 4u && res.images == 1 && res.baseColour == 1,
+		             "upscale GLB: the 16 x 16 base colour is enlarged 4x");
+		HrTest_Check(out != NULL && out2 != NULL && outSize == outSize2 && memcmp(out, out2, outSize) == 0, "upscale GLB: the same model gives the same bytes");
+		if ((out != NULL) && (glb != NULL))
+		{
+			const u32 jl = Rld_ReadLE32(&glb[12]);
+			const u32 bl = Rld_ReadLE32(&glb[20u + jl]);
+			const u32 jl2 = Rld_ReadLE32(&out[12]);
+			const u8 *bin2 = &out[28u + jl2];
+			cgltf_options options;
+			cgltf_data *a = NULL;
+			cgltf_data *b = NULL;
+			int same = 0;
+
+			HrTest_Check(memcmp(&glb[28u + jl], bin2, bl) == 0, "upscale GLB: the BIN of the source is the start of the new BIN, byte for byte");
+			memset(&options, 0, sizeof(options));
+			if ((cgltf_parse(&options, glb, size, &a) == cgltf_result_success) && (cgltf_parse(&options, out, outSize, &b) == cgltf_result_success))
+			{
+				cgltf_size i;
+
+				same = (a->meshes_count == b->meshes_count) && (a->accessors_count == b->accessors_count) && (a->nodes_count == b->nodes_count) &&
+				       (a->animations_count == b->animations_count) && (a->materials_count == b->materials_count) &&
+				       (b->buffer_views_count == a->buffer_views_count + 1u) && (b->images_count == 1u) &&
+				       (cgltf_buffer_view_index(b, b->images[0].buffer_view) == a->buffer_views_count) &&
+				       (b->buffers[0].size == (cgltf_size)(res.list[0].offset + res.list[0].pngSize));
+				for (i = 0; same && (i < a->accessors_count); i++)
+				{
+					const cgltf_buffer_view *va = a->accessors[i].buffer_view;
+					const cgltf_buffer_view *vb = b->accessors[i].buffer_view;
+
+					same = (a->accessors[i].offset == b->accessors[i].offset) && ((va == NULL) == (vb == NULL)) &&
+					       ((va == NULL) || (cgltf_buffer_view_index(a, va) == cgltf_buffer_view_index(b, vb)));
+				}
+				for (i = 0; same && (i < a->buffer_views_count); i++)
+				{
+					same = (a->buffer_views[i].offset == b->buffer_views[i].offset) && (a->buffer_views[i].size == b->buffer_views[i].size);
+				}
+			}
+			HrTest_Check(same, "upscale GLB: every accessor and old bufferView as in the source, one bufferView more, the image on it");
+			cgltf_free(a);
+			cgltf_free(b);
+
+			RldHires_ReportClear(&rep);
+			HrTest_Check(RldHires_Open(out, (u32)outSize, &m, &rep) == 1 && rep.count == 0 && m.images[0].fileWidth == 64u && m.images[0].fileHeight == 64u,
+			             "upscale GLB: the game's rules open it clean, the texture 64 x 64");
+			{
+				u32 n = 0;
+				const u8 *png = RldHires_ImageBytes(&m, 0, &n);
+				struct RldPngImage big;
+				struct RldPngImage small;
+				const char *why = NULL;
+				int match = 0;
+
+				memset(&big, 0, sizeof(big));
+				memset(&small, 0, sizeof(small));
+				if ((png != NULL) && (RldPng_Decode(png, n, &big, &why) == RLDPNG_OK))
+				{
+					u8 *expect;
+					u32 len = 0;
+					u8 *srcPng = (u8 *)malloc(4096);
+
+					len = (srcPng != NULL) ? HrTest_PngReal(srcPng) : 0u;
+					if ((len != 0u) && (RldPng_Decode(srcPng, len, &small, &why) == RLDPNG_OK))
+					{
+						expect = RldUp_Scale(small.rgba, 16, 16, 4);
+						match = (expect != NULL) && (big.width == 64u) && (memcmp(expect, big.rgba, 64u * 64u * 4u) == 0);
+						free(expect);
+					}
+					free(srcPng);
+				}
+				HrTest_Check(match, "upscale GLB: the new texture is Scale4x of the source texture, pixel for pixel");
+				RldPng_Free(&big);
+				RldPng_Free(&small);
+			}
+			RldHires_Close(&m);
+		}
+		RldUp_FreeResult(&res);
+		RldUp_FreeResult(&res2);
+		free(out);
+		free(out2);
+
+		// The base model's PNG (a 3 x 2 header without pixels the decoder can
+		// read) is left alone: with nothing to enlarge the copy is the source.
+		sp.image = 0;
+		free(glb);
+		glb = HrTest_Glb(&sp, &size);
+		out = (glb != NULL) ? RldUp_Glb(glb, size, &outSize, &res) : NULL;
+		HrTest_Check(out != NULL && res.upscaled == 0 && res.skipped == 1 && outSize == size && memcmp(out, glb, size) == 0,
+		             "upscale GLB: with nothing to enlarge the result is the source, byte for byte");
+		RldUp_FreeResult(&res);
+		free(out);
+		free(glb);
+	}
+}
+
 // Add, replace, strip and the 64-chunk bound on containers made in memory.
 static void HrTest_Pack(void)
 {
@@ -856,11 +1159,12 @@ static void HrTest_Pack(void)
 // finding), hires-warn.glb (warnings only: no 'hit', no wheels), hires-bad.glb
 // (an error: a JPEG texture), hires-anim.glb (the skinning case of the engine's
 // selftest, for Reload Studio's clip playback: rs_hires_test.c), hires-hull.glb
-// (clips that take the model to 4.05 m: HRG-18 of the clip hull). The folder
-// must exist.
+// (clips that take the model to 4.05 m: HRG-18 of the clip hull), hires-tex.glb
+// (a decodable texture, red with a green middle, and COLOR_0 at sRGB 128: the
+// textured preview and HRG-36). The folder must exist.
 static int RldHires_TestFilesCommand(int argc, char **argv)
 {
-	static const char *const names[5] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb"};
+	static const char *const names[6] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb", "hires-tex.glb"};
 	int k;
 
 	if (argc != 1)
@@ -868,7 +1172,7 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		fprintf(stderr, "usage: rldpack hires-test-files <folder>\n");
 		return 2;
 	}
-	for (k = 0; k < 5; k++)
+	for (k = 0; k < 6; k++)
 	{
 		struct HrTestSpec sp;
 		char path[RLD_PATH_MAX];
@@ -894,6 +1198,11 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		else if (k == 4)
 		{
 			sp.hullShift = 2.3f; // every clip moves the body to 4.05 m (HRG-18 of the clip hull)
+		}
+		else if (k == 5)
+		{
+			sp.image = 7;            // a texture that decodes: red, green in the middle
+			sp.colour0 = 0.2158605f; // COLOR_0 at sRGB 128 on the body (HRG-36)
 		}
 		glb = HrTest_Glb(&sp, &size);
 		snprintf(path, sizeof(path), "%s/%s", argv[0], names[k]);
@@ -1263,8 +1572,12 @@ static int RldHires_SelfTest(void)
 	memset(&sp, 0, sizeof(sp));
 	sp.clipsMissing = 0x0FFF;
 	HrTest_Open(&sp, &rep, NULL, NULL);
-	HrTest_Check(rep.warnings == 12 && strcmp(rep.msg[rep.count - 1].text, "clip 'menu' is missing - the kart keeps its rest pose") == 0,
-	             "HRG-19: no clip at all: 12 warnings, the rest pose");
+	HrTest_Check(rep.warnings == 1 && rep.count == 1 && strncmp(rep.msg[0].text, "no clips - the driver stays in its rest pose", 44) == 0,
+	             "HRG-19: no clip at all: one warning, the rest pose");
+	memset(&sp, 0, sizeof(sp));
+	sp.clipsMissing = 0x0FFE; // only idle
+	HrTest_Open(&sp, &rep, NULL, NULL);
+	HrTest_Check(rep.warnings == 11, "HRG-19: only idle: one warning per missing clip");
 
 	// The chains themselves (section 4 of the format).
 	{
@@ -1536,6 +1849,26 @@ static int RldHires_SelfTest(void)
 		glb = NULL;
 	}
 
+	// HRG-36: COLOR_0 on textured faces that looks like PS1 shading.
+	memset(&sp, 0, sizeof(sp));
+	sp.colour0 = 0.2158605f; // sRGB 128
+	HrTest_Rule("HRG-36", &sp, "textured faces with COLOR_0 at 128 (sRGB)");
+	sp.colour0 = 0.125f; // sRGB 99: below 0.4
+	HrTest_Clean("HRG-36", &sp, "COLOR_0 at 99");
+	sp.colour0 = 0.3185f; // sRGB 153: the top of the band
+	HrTest_Rule("HRG-36", &sp, "COLOR_0 at 153");
+	sp.colour0 = 0.3231f; // sRGB 154: above 0.6
+	HrTest_Clean("HRG-36", &sp, "COLOR_0 at 154");
+	sp.colour0 = 1.0f;
+	HrTest_Clean("HRG-36", &sp, "white COLOR_0");
+	memset(&sp, 0, sizeof(sp));
+	sp.image = 7;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(rep.count == 0 && m.images[0].isPng && m.images[0].fileWidth == 16u, "the decodable 16 x 16 test texture opens clean");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
 	// Every rule of the table has a level and a known id; every rule fired above.
 	for (i = 0; i < RLDHIRES_RULE_COUNT; i++)
 	{
@@ -1552,6 +1885,9 @@ static int RldHires_SelfTest(void)
 
 	// HIRES-ADD AND HIRES-STRIP, the pure part (RldHiresPack_Rebuild).
 	HrTest_Pack();
+
+	// HIRES-UPSCALE: Scale2x and the derived GLB.
+	HrTest_Upscale();
 
 	// A REPORT keeps at most RLDHIRES_REPORT_MAX messages and counts the rest.
 	RldHires_ReportClear(&rep);

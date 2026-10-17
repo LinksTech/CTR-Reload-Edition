@@ -44,7 +44,9 @@
 //                      for that, the caller passes the differences of its own
 //                      u and v (Q16) to the right and below the pixel to
 //                      RsTex_Level instead - same rule, more work.
-//   per pixel:         T = RsTex_Texel(img, level, u, v), then
+//   per pixel:         T = RsTex_Texel(img, level, u, v) (a material with
+//                      RS_TEX_MATERIAL_FILTERED: RsTex_FilterTexel, set up
+//                      once per triangle by RsTex_FilterSetup), then
 //                      RsTex_Shade(T or NULL, C, material) -> 0x00RRGGBB or
 //                      RS_TEX_DISCARD.
 // u and v are Q16 of the texture (65536 = once across), v from the top as in
@@ -62,9 +64,9 @@
 #include <stddef.h>
 #include <wchar.h>
 
-#define RS_TEX_TEXTURES_MAX 16                  // RLDCHAR_TEX_COUNT_MAX
+#define RS_TEX_TEXTURES_MAX 64                  // RLDHIRES_TEXTURE_SLOTS_MAX (the hi-res preview); the native model's 16 (RLDCHAR_TEX_COUNT_MAX) are rldpack's to check
 #define RS_TEX_MATERIALS_MAX 64                 // RLDCHAR_NET_MATERIALS_MAX
-#define RS_TEX_TRIANGLES_MAX 30000              // RLDCHAR_NET_TRIANGLES_MAX
+#define RS_TEX_TRIANGLES_MAX 65536              // the hi-res preview (budget RLDHIRES_BUDGET_TRIANGLES); the native model's 30000 (RLDCHAR_NET_TRIANGLES_MAX) are rldpack's to check
 #define RS_TEX_VERTICES_MAX 65536               // the u16 corner index of RLDPN3 (the game's own limit is lower)
 #define RS_TEX_WHEEL_TRIANGLES_MAX 1024         // RLDCHAR_WHEEL_TRIANGLES_MAX
 #define RS_TEX_LEVELS_MAX 12                    // RLDMIP_LEVELS_MAX: 2048 down to 1
@@ -114,7 +116,16 @@ struct RsTexMaterial {
     int texture;                                // index into the textures, -1 none
     int alphaMode;                              // RS_TEX_ALPHA_*
     int nearest;                                // the material's flag "always nearest" (the preview is nearest anyway)
+    int filtered;                               // flag 0x2 (RS_TEX_MATERIAL_FILTERED): sampled as the engine samples a hi-res driver
 };
+
+// The material flag byte (byte 7 of a material): bit 0 "always nearest" (CNET),
+// bit 1 the engine's hi-res filter - trilinear with anisotropy 16, in linear
+// light for sRGB (RsTex_FilterSetup, RsTex_FilterTexel). rldpack never sets
+// bit 1; the Hi-Res page of the Studio does (rs_hires_model.c).
+#define RS_TEX_MATERIAL_NEAREST 0x1u
+#define RS_TEX_MATERIAL_FILTERED 0x2u
+#define RS_TEX_ANISO_MAX 16                     // the engine's hi-res sampler (engine_vram.c, EngTex_Sampling: 16)
 
 // One corner as RsTex_NativeCorner and RsTex_WheelCorner give it.
 struct RsTexCorner {
@@ -226,6 +237,36 @@ static inline const unsigned char *RsTex_Texel(const struct RsTexImage *img, int
     y = RsTex_Coord(v, img->shiftH[level], img->wrapV);
     return img->level[level] + (((size_t)y << img->shiftW[level]) + (size_t)x) * 4;
 }
+
+// THE ENGINE'S HI-RES FILTER (a material with RS_TEX_MATERIAL_FILTERED): what
+// the sampler of a hi-res driver's texture does (platform/engine_hires_char.c,
+// THE FILTER: linear magnification and minification, linear between the mip
+// levels, anisotropy 16), after the reference of the Vulkan specification
+// ("Texel Anisotropic Filtering", "Linear Filtering", "Level-of-detail
+// operation"):
+//   Px, Py   the lengths of (du, dv) x (width, height) per pixel along x and y
+//   N        min(ceil(Pmax / Pmin), RS_TEX_ANISO_MAX), 1 when both are 0
+//   lambda   log2(Pmax / N), held to 0 .. levels - 1
+//   T        1/N sum over i = 1..N of the trilinear texel at
+//            (u, v) + (i / (N + 1) - 1/2) x (du, dv) of the major axis -
+//            per level the four texels around (u x w - 1/2, v x h - 1/2),
+//            wrapped per axis, weighted by 8-bit fractions; the two levels
+//            floor(lambda) and the next blended by the 8-bit fraction of lambda
+// sRGB colour is decoded to linear light (include/rldmip.inc, the game's
+// tables), filtered and encoded back to the byte the shader sees; alpha and
+// linear data are filtered as stored. Per triangle (RsTex_FilterSetup, the
+// derivatives at the centroid as for RsTex_Level: the GPU takes them per 2 x 2
+// pixels, so N and lambda can differ near a boundary), per pixel
+// RsTex_FilterTexel. Integers only; lambda in Q8 (log2 by repeated squaring).
+struct RsTexFilter {
+    int lodQ8;                                  // lambda x 256, 0 .. (levels - 1) x 256
+    int samples;                                // N, 1 .. RS_TEX_ANISO_MAX
+    long long du, dv;                           // the major axis' derivative, Q16 of the texture per pixel
+};
+void RsTex_FilterSetup(const struct RsTexImage *img, const long long slope[4], struct RsTexFilter *f);
+void RsTex_FilterTexel(const struct RsTexImage *img, const struct RsTexFilter *f, long long u, long long v, unsigned char out[4]);
+// lambda of the plain trilinear rule (N = 1) in Q8, for the self-test.
+int RsTex_LodQ8(unsigned long long rho2Q32, int levels);
 
 // The "nr" program for one pixel: texel T (NULL untextured), corner colour C
 // (0..255 each, interpolated), material m. 0x00RRGGBB, or RS_TEX_DISCARD when

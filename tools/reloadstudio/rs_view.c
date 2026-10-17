@@ -150,7 +150,9 @@
 // game's "nr" program does (rs_tex.h): u, v and the corner colour
 // perspective correct, all in integers (the weights of the corners in Q16,
 // each value times the corner depth, divided by the interpolated depth);
-// the texel of the triangle's mip level, nearest, wrapped per CTXT flags;
+// the texel of the triangle's mip level, nearest, wrapped per CTXT flags
+// (a material of the Hi-Res page: the engine's hi-res filter instead -
+// trilinear, anisotropic, RsTex_FilterTexel);
 // texel x corner colour x material colour (RsTex_Shade); a mask material
 // leaves out what lies below one half of alpha. Back faces are culled (CNET
 // winds counter-clockwise from outside). No light, like the model of the
@@ -289,6 +291,7 @@ enum { RS_VIEW_SOLID_KART = 0, RS_VIEW_SOLID_BARE = RS_VIEW_POSE_COUNT, RS_VIEW_
 struct RsView {
     // The model. data owns the bytes of the file; loaded = 0: none.
     unsigned char *data;
+    size_t dataBytes;
     struct RsViewPoseData poses[RS_VIEW_FRAMES];   // poseCount of them, in the file's order (RsView_FilePose)
     int poseCount;             // RS_VIEW_FRAMES (RLDPC1), or RS_VIEW_POSE_COUNT (RLDPV2/RLDPV1 alone)
     unsigned char *frames;     // RLDPC1: its 47 frames as RLDPV2 records (RsView_ParseFrames), owned
@@ -679,6 +682,7 @@ static void RsView_DropModel(struct RsView *v)
     RsTex_FreeNative(&v->native);   // its levels; level 0 lies in data
     Rs_Free(v->data);
     v->data = NULL;
+    v->dataBytes = 0;
     Rs_Free(v->frames);
     v->frames = NULL;
     memset(v->poses, 0, sizeof(v->poses));
@@ -872,6 +876,7 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
 
     RsView_DropModel(v);
     v->data = data;
+    v->dataBytes = bytes;
     v->frames = frames;
     memcpy(v->poses, poses, (size_t)count * sizeof(poses[0]));
     v->poseCount = (int)count;
@@ -1472,15 +1477,17 @@ static void RsView_Fill(const struct RsViewTarget *t, const struct RsViewVert *a
 // program per pixel (rs_tex.h). The same edges and depth; u, v and the
 // corner colour C (RGBA) perspective correct, as the GPU interpolates them
 // (weights in Q16 times value x z, divided by the same sum of z); T = the
-// texel of the triangle's mip level (RsTex_Texel; img NULL: untextured),
-// then RsTex_Shade with the material m. A pixel the mask leaves out keeps
-// the depth and colour below it, as in the game. Products stay below 2^63:
+// texel of the triangle's mip level (RsTex_Texel; img NULL: untextured) -
+// or, for a material of the Hi-Res page (filter not NULL), the engine's
+// hi-res filter (RsTex_FilterTexel: trilinear, anisotropic) - then
+// RsTex_Shade with the material m. A pixel the mask leaves out keeps the
+// depth and colour below it, as in the game. Products stay below 2^63:
 // weights 2^16, z below 2^23, u and v within +-2^22, colours 255. The
 // weights and the depth are carried along the row exactly (RsViewQuot); u
 // and v (and C where the corners differ) are divided per pixel.
 static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert *a, const struct RsViewVert *b,
                            const struct RsViewVert *c, const struct RsTexImage *img, int level,
-                           const struct RsTexMaterial *m)
+                           const struct RsTexMaterial *m, const struct RsTexFilter *filter)
 {
     const long long auz = a->u * a->z, buz = b->u * b->z, cuz = c->u * c->z;
     const long long avz = a->v * a->z, bvz = b->v * b->z, cvz = c->v * c->z;
@@ -1528,12 +1535,18 @@ static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert
                     const long long w0 = qw0.q, w1 = qw1.q, w2 = qw2.q;
                     const long long zs = w0 * a->z + w1 * b->z + w2 * c->z;
                     const unsigned char *texel = NULL;
+                    unsigned char filtered[4];
                     int cr = a->r, cg = a->g, cb = a->b, ca = a->a, out;
                     if (zs > 0) {
                         if (img) {
                             const long long uq = (w0 * auz + w1 * buz + w2 * cuz) / zs;
                             const long long vq = (w0 * avz + w1 * bvz + w2 * cvz) / zs;
-                            texel = RsTex_Texel(img, level, uq, vq);
+                            if (filter) {
+                                RsTex_FilterTexel(img, filter, uq, vq, filtered);
+                                texel = filtered;
+                            } else {
+                                texel = RsTex_Texel(img, level, uq, vq);
+                            }
                         }
                         if (!flat) {
                             const long long half = zs / 2;
@@ -1543,7 +1556,12 @@ static void RsView_FillTex(const struct RsViewTarget *t, const struct RsViewVert
                             ca = (int)((w0 * aaz + w1 * baz + w2 * caz + half) / zs);
                         }
                     } else if (img) {
-                        texel = RsTex_Texel(img, level, a->u, a->v);
+                        if (filter) {
+                            RsTex_FilterTexel(img, filter, a->u, a->v, filtered);
+                            texel = filtered;
+                        } else {
+                            texel = RsTex_Texel(img, level, a->u, a->v);
+                        }
                     }
                     out = RsTex_Shade(texel, cr, cg, cb, ca, m);
                     if (out != RS_TEX_DISCARD) {
@@ -1583,6 +1601,8 @@ struct RsViewTri {
     const struct RsTexImage *img;           // RS_VIEW_TRI_TEX: the texture, NULL none
     const struct RsTexMaterial *mat;        // RS_VIEW_TRI_TEX: the material
     int level;                              // RS_VIEW_TRI_TEX: the mip level of the triangle
+    int filtered;                           // RS_VIEW_TRI_TEX: 1 = the material asks for the engine's hi-res filter (filter)
+    struct RsTexFilter filter;              // its lambda, samples and major axis (RsTex_FilterSetup)
     int kind;                               // RS_VIEW_TRI_*
     int maskMode;                           // RS_VIEW_MASK_*
 };
@@ -1624,7 +1644,8 @@ static void RsView_TriPrep(struct RsViewTri *o, int *rows, const struct RsViewVe
     o->img = img;
     o->mat = mat;
     o->level = 0;
-    if (kind == RS_VIEW_TRI_TEX && img && img->levels > 1) {
+    o->filtered = kind == RS_VIEW_TRI_TEX && img && mat && mat->filtered;
+    if (kind == RS_VIEW_TRI_TEX && img && (img->levels > 1 || o->filtered)) {
         long long x[3], y[3], z[3], u[3], vv[3], slope[4];
         for (i = 0; i < 3; i++) {
             x[i] = v[i].x;
@@ -1635,6 +1656,8 @@ static void RsView_TriPrep(struct RsViewTri *o, int *rows, const struct RsViewVe
         }
         RsTex_TriangleSlopes(x, y, z, u, vv, slope);
         o->level = RsTex_Level(img, slope[0], slope[1], slope[2], slope[3]);
+        if (o->filtered)
+            RsTex_FilterSetup(img, slope, &o->filter);
     }
     rows[0] = (int)-RsView_FloorDiv16(-(RsView_Min3(v[0].y, v[1].y, v[2].y) - 8));
     rows[1] = (int)RsView_FloorDiv16(RsView_Max3(v[0].y, v[1].y, v[2].y) - 8);
@@ -2743,7 +2766,7 @@ static void RsView_RasterJob(void *ctx, int firstBand, int endBand)
             if (o->kind == RS_VIEW_TRI_FILL)
                 RsView_Fill(&t, &o->v[0], &o->v[1], &o->v[2]);
             else if (o->kind == RS_VIEW_TRI_TEX)
-                RsView_FillTex(&t, &o->v[0], &o->v[1], &o->v[2], o->img, o->level, o->mat);
+                RsView_FillTex(&t, &o->v[0], &o->v[1], &o->v[2], o->img, o->level, o->mat, o->filtered ? &o->filter : NULL);
             else if (o->kind == RS_VIEW_TRI_SHADOW)
                 RsView_FillShadow(&t, &o->v[0], &o->v[1], &o->v[2]);
         }
@@ -4193,6 +4216,26 @@ BOOL RsView_LoadPreviewData(HWND view, const void *data, size_t bytes)
     copy = (unsigned char *)Rs_Alloc(bytes + 1);
     memcpy(copy, data, bytes);
     return RsView_Take(view, v, copy, bytes) ? TRUE : FALSE;
+}
+
+BOOL RsView_UpdatePreviewData(HWND view, const void *data, size_t bytes, size_t keepAt, size_t keepBytes)
+{
+    struct RsView *v = RsView_Data(view);
+    const unsigned char *src = (const unsigned char *)data;
+    int p;
+    if (!v || !v->loaded || !v->data || !data || bytes != v->dataBytes || keepAt > bytes || keepBytes > bytes - keepAt ||
+        bytes < RS_VIEW_MAGIC_BYTES + 8 || memcmp(v->data, src, RS_VIEW_MAGIC_BYTES + 8) != 0 ||
+        (keepBytes != 0 && memcmp(v->data + keepAt, src + keepAt, keepBytes < 64 ? keepBytes : 64) != 0))
+        return FALSE;
+    // The same layout: every pointer into data (poses, the native model, level 0
+    // of its textures) stays right; the kept part (the textures and their
+    // materials) is not copied, so their levels stay valid too.
+    memcpy(v->data, src, keepAt);
+    memcpy(v->data + keepAt + keepBytes, src + keepAt + keepBytes, bytes - keepAt - keepBytes);
+    for (p = 0; p < v->native.poses; p++)
+        RsView_PosBox(v->native.pos[p], v->native.vertices, v->nativeBox[p]);
+    RsView_Changed(view, v);
+    return TRUE;
 }
 
 // The turn frames of RS_VIEW_POSE_*.

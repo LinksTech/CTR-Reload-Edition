@@ -11,6 +11,10 @@
 #    (RsHires_PackArgs: hires-add <character> <model> -o <out> --machine,
 #    through --rldpack, as the page's button starts it) into studio.rldchar.
 #    Both files must be byte for byte the same (SHA-256).
+# 2b. The option "Upscale small textures": rldpack hires-upscale and the Studio
+#    with the page's arguments (RsHires_UpscaleArgs) enlarge hires-tex.glb into
+#    packer-upscaled.glb and hires-tex-upscaled.glb - the same bytes, and the
+#    source unchanged.
 # 3. rs_hires_selftest <folder> checks the page's model side on these files.
 # Prints "rs_hires files passed: sha256 <hash>" when all of it held.
 
@@ -43,6 +47,23 @@ file(SHA256 "${DIR}/packer.rldchar" packerHash)
 file(SHA256 "${DIR}/studio.rldchar" studioHash)
 if(NOT packerHash STREQUAL studioHash)
     message(FATAL_ERROR "rs_hires files FAILED: the Studio packed other bytes than rldpack (${studioHash} against ${packerHash})")
+endif()
+
+file(SHA256 "${DIR}/hires-tex.glb" sourceBefore)
+run("rldpack hires-upscale" "${PACKER}" hires-upscale "${DIR}/hires-tex.glb" -o "${DIR}/packer-upscaled.glb")
+run("Reload Studio --rldpack hires-upscale" "${STUDIO}" --rldpack hires-upscale "${DIR}/hires-tex.glb" -o "${DIR}/hires-tex-upscaled.glb" --machine)
+string(FIND "${out}" "@written" at)
+if(at LESS 0)
+    message(FATAL_ERROR "rs_hires files FAILED: the Studio's upscale step wrote no @written line\n${out}")
+endif()
+file(SHA256 "${DIR}/hires-tex.glb" sourceAfter)
+file(SHA256 "${DIR}/packer-upscaled.glb" upPacker)
+file(SHA256 "${DIR}/hires-tex-upscaled.glb" upStudio)
+if(NOT sourceBefore STREQUAL sourceAfter)
+    message(FATAL_ERROR "rs_hires files FAILED: hires-upscale changed its source model")
+endif()
+if(NOT upPacker STREQUAL upStudio)
+    message(FATAL_ERROR "rs_hires files FAILED: the Studio upscaled to other bytes than rldpack (${upStudio} against ${upPacker})")
 endif()
 
 execute_process(COMMAND "${TEST}" "${DIR}" RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
