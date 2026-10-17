@@ -15,7 +15,7 @@
 // THE PICTURE is a preview file "RLDPV2" in memory (the format rs_view.c reads,
 // tools/reloadstudio/reloadstudio.h at "--preview"): every drawn triangle of
 // the bind pose - the body nodes and, when all four are usable, the wheel
-// nodes - with the glTF axes (+X the kart's left, +Y up, +Z forward), which
+// nodes, else the engine's standard wheels - with the glTF axes (+X the kart's left, +Y up, +Z forward), which
 // are the preview's; 1 m = 64 model units = 1024 file units. Rigid nodes stand
 // with their world matrix, skinned meshes as they are in mesh space (glTF
 // ignores the node matrix of a skinned mesh; the bind pose is mesh space when
@@ -41,7 +41,11 @@
 // hemisphere ambient from below to above by 0.5 + 0.5 n.y, plus the sun's
 // diffuse share x max(0, n . sun), the sun in the axes of the model (the kart
 // faces +Z as on a straight to the north). Per corner (the engine per pixel),
-// without the normal maps.
+// without the normal maps. A file in PSX blend is drawn unlit by the engine
+// (its shading is in COLOR_0, as on the PS1): its picture has no light.
+// THE STANDARD WHEELS: a model without its four wheel nodes carries the
+// engine's standard 3D wheels in its picture (rs_hires_model.c), so the page
+// shows no wheels of the view's own under it.
 // The flat RLDPV2 colours each corner by the texel at its UV (the fallback when
 // the view cannot take the textures: more than RS_TEX_TEXTURES_MAX textures,
 // RS_TEX_TRIANGLES_MAX triangles or RS_TEX_BUDGET of texture memory - then
@@ -161,9 +165,10 @@ int RsHires_SetColourMode(struct RsHiresCheck *c, int mode);
 // One channel of the picture as the engine makes it, for the self-test: the
 // base colour texel (a byte on the display curve), COLOR_0 (linear 0..1; has0
 // 0 = the primitive has none), the material's base colour factor (linear) and
-// the light, in a mode -> the byte of the picture (the flat RLDPV2 and the
-// view's RsTex_ShadeLit alike), and the corner colour C of the textured one
-// (the byte of RS_TEX_MATERIAL_LIT, C / 128).
+// the light (glTF and off; PSX blend is drawn unlit, the light is not used),
+// in a mode -> the byte of the picture (the flat RLDPV2 and the view's
+// RsTex_ShadeLit alike), and the corner colour C of the textured one (the
+// byte of RS_TEX_MATERIAL_LIT, C / 128).
 int RsHires_PreviewChannel(int mode, int has0, float colour0, unsigned texel, float factor, float light, int *corner);
 
 // The light of a corner with normal n (need not be unit; 0 0 0 = straight up)

@@ -281,7 +281,7 @@ static int Hires_ShowClipFrame(void)
         RsView_LoadPreviewData(g_hires.view, bytes, size);
     }
     RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
-    RsView_SetWheels(g_hires.view, g_hires.check.wheels < 4);
+    RsView_SetWheels(g_hires.view, 0);   // the picture carries the standard wheels (rs_hires_model.c)
     g_hires.shownTris = n;
     return n;
 }
@@ -446,7 +446,7 @@ static void Hires_ShowView(void)
         RsView_SetModelKey(g_hires.view, g_hires.checkedPath);
         RsView_LoadPreviewData(g_hires.view, c->preview, c->previewBytes);
         RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
-        RsView_SetWheels(g_hires.view, c->wheels < 4);
+        RsView_SetWheels(g_hires.view, 0);
         return;
     }
     if (!c->read) {

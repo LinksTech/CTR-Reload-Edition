@@ -90,7 +90,26 @@ static int RsHires_Severity(int level)
 // glTF), on the display curve as RldHiresColor_Apply puts it (Encode,
 // continued above 1). A primitive without COLOR_0 has the factor 1 in every
 // mode. The light is the engine's (RsHires_Light, the RLDHIRES_LIGHT_*
-// constants); the engine has its normal maps as well, which the view has not.
+// constants) for glTF and off; a file in PSX blend is drawn UNLIT by the
+// engine (its shading is in COLOR_0, as on the PS1): light 1 on every corner.
+// The engine has its normal maps as well, which the view has not.
+//
+// THE STANDARD WHEELS. A model without its four wheel nodes gets the engine's
+// standard 3D wheels (platform/engine_hires_char.c, EngHc_StdWheel): a
+// cylinder of 20 sides, radius 16 and half width 5 model units, the axle along
+// x, not mirrored, at the middles of Engine_HiresWheelMiddle at the scale
+// 0x1000 (as the engine's hull); the tread dark (38), the sides grey (112),
+// the hubs light (170) - bytes the engine shows as display values, unlit in
+// PSX blend, lit in glTF and off - with the engine's white two-sided
+// material (the preview's default material). They are corners of the picture
+// like the model's, so the view draws no wheels of its own under a hi-res
+// model (RsView_SetWheels off).
+
+// The standard wheels' size in the race: a kart's wheelSize 0xccc of 4096
+// (game/GhostReplay.c:486), the k of EngHc_StdWheel's draw in the race
+// (platform/engine_hires_char.c, pl.k = wheelSize / 4096); the middles stay
+// those of the hull.
+#define RS_HIRES_STD_RACE_SIZE (3276.0f / 4096.0f)
 
 // One record of RLDPV2: s16 x, y, z (1/16 game units), u8 r, g, b, pad.
 #define RS_HIRES_RECORD 10
@@ -106,6 +125,8 @@ struct RsHiresCorner {
     u8 alpha;              // its alpha as the engine's byte; 255 without
     u8 has0;               // 1 = the primitive has COLOR_0
     u8 textured;           // 1 = its material has a base colour texture (RldHiresColor_ModeFor)
+    u8 grey;               // a standard wheel's corner: its display value (38, 112, 170), 0 = a corner of the model
+    float mid[3];          // a standard wheel's middle (metres, kart space; p is about it), 0 0 0 else
     u8 texel[3];           // the base colour texel at this UV (nearest; 255 without) - the flat picture only
     u8 pad;                // bit 0: drawn from both sides (doubleSided)
     unsigned short material; // the preview material: the glTF material, or the default one after them
@@ -403,6 +424,67 @@ static void RsHires_CollectPrimitive(const RldHiresModel *m, struct RsHiresImg *
     }
 }
 
+// THE STANDARD WHEELS (above): the engine's mesh of EngHc_StdWheel, corner by
+// corner, for the four wheels.
+#define RS_HIRES_STD_SEGMENTS 20
+#define RS_HIRES_STD_RADIUS 16.0f          // model units (64 a metre)
+#define RS_HIRES_STD_HALF_WIDTH 5.0f
+
+static void RsHires_StdWheels(const RldHiresModel *m, struct RsHiresCorners *list)
+{
+    float pos[RS_HIRES_STD_SEGMENTS * 4 + 2][3], nrm[RS_HIRES_STD_SEGMENTS * 4 + 2][3];
+    u8 grey[RS_HIRES_STD_SEGMENTS * 4 + 2];
+    int s, side, v = 0, w, t, c, k;
+    for (s = 0; s < RS_HIRES_STD_SEGMENTS; s++) {
+        const double a = 2.0 * 3.14159265358979323846 * (double)s / (double)RS_HIRES_STD_SEGMENTS;
+        const float cy = (float)cos(a), sz = (float)sin(a);
+        for (side = 0; side < 2; side++) {
+            const float x = side == 0 ? RS_HIRES_STD_HALF_WIDTH : -RS_HIRES_STD_HALF_WIDTH;
+            // The tread vertex (radial normal), then the side vertex (axial normal).
+            pos[v][0] = x, pos[v][1] = cy * RS_HIRES_STD_RADIUS, pos[v][2] = sz * RS_HIRES_STD_RADIUS;
+            nrm[v][0] = 0.0f, nrm[v][1] = cy, nrm[v][2] = sz;
+            memcpy(pos[v + 1], pos[v], sizeof(pos[v]));
+            nrm[v + 1][0] = side == 0 ? 1.0f : -1.0f, nrm[v + 1][1] = 0.0f, nrm[v + 1][2] = 0.0f;
+            v += 2;
+        }
+    }
+    for (side = 0; side < 2; side++, v++) {
+        pos[v][0] = side == 0 ? RS_HIRES_STD_HALF_WIDTH : -RS_HIRES_STD_HALF_WIDTH, pos[v][1] = pos[v][2] = 0.0f;
+        nrm[v][0] = side == 0 ? 1.0f : -1.0f, nrm[v][1] = nrm[v][2] = 0.0f;
+    }
+    for (v = 0; v < RS_HIRES_STD_SEGMENTS * 4 + 2; v++)
+        grey[v] = (u8)((v < RS_HIRES_STD_SEGMENTS * 4 && (v & 1) == 0) ? 38 : (v >= RS_HIRES_STD_SEGMENTS * 4 ? 170 : 112));
+    for (w = 0; w < RLDHIRES_WHEEL_COUNT; w++) {
+        // Engine_HiresWheelMiddle(w, 0x1000, 0x1000, 0x1000): model units / 4.
+        const float mid[3] = { (float)((w & 1) == 0 ? 0x90 : -0x90) * 0.25f / 64.0f, (float)0x40 * 0.25f / 64.0f,
+                               (float)(w < 2 ? 0xc7 : -0x60) * 0.25f / 64.0f };
+        for (s = 0; s < RS_HIRES_STD_SEGMENTS; s++) {
+            const int a0 = 4 * s, a1 = 4 * ((s + 1) % RS_HIRES_STD_SEGMENTS), hub0 = RS_HIRES_STD_SEGMENTS * 4, hub1 = hub0 + 1;
+            const int tri[4][3] = { { a0, a1, a0 + 2 }, { a0 + 2, a1, a1 + 2 }, { hub0, a1 + 1, a0 + 1 }, { hub1, a0 + 3, a1 + 3 } };
+            for (t = 0; t < 4; t++)
+                for (c = 0; c < 3; c++) {
+                    struct RsHiresCorner *q = RsHires_NewCorner(list);
+                    const int vi = tri[t][c];
+                    if (!q)
+                        return;
+                    for (k = 0; k < 3; k++) {
+                        q->p[k] = pos[vi][k] / 64.0f * RS_HIRES_STD_RACE_SIZE;
+                        q->n[k] = nrm[vi][k];
+                        q->mid[k] = mid[k];
+                    }
+                    q->colour0[0] = q->colour0[1] = q->colour0[2] = 1.0f;
+                    q->alpha = 255;
+                    q->grey = grey[vi];
+                    q->texel[0] = q->texel[1] = q->texel[2] = 255;
+                    q->pad = 1;                                                   // the engine's material is two-sided
+                    q->material = (unsigned short)m->data->materials_count;      // the default material: white
+                    q->node = -1;
+                    q->wheel = (signed char)w;
+                }
+        }
+    }
+}
+
 static void RsHires_CollectNode(const RldHiresModel *m, struct RsHiresImg *img, int nodeIndex, int wheel, struct RsHiresCorners *list)
 {
     const cgltf_node *node = &m->data->nodes[nodeIndex];
@@ -553,11 +635,30 @@ static u8 RsHires_CornerC(int mode, int has0, int textured, float colour0)
     return RsHires_LitByte(RldHiresColor_Encode(RldHiresColor_Factor(m, colour0)));
 }
 
+// The corner colour C of one channel of a corner: a standard wheel its grey
+// as a display value, the model's corner RsHires_CornerC.
+static u8 RsHires_CornerOf(const struct RsHiresCorner *q, int mode, int k)
+{
+    if (q->grey)
+        return RsHires_LitByte((float)q->grey / 255.0f);
+    return RsHires_CornerC(mode, q->has0, q->textured, q->colour0[k]);
+}
+
+// The light of a corner in a mode: none (1) for a file in PSX blend - the
+// engine draws it unlit -, the engine's light for glTF and off.
+static float RsHires_ModeLight(int mode, const float n[3])
+{
+    return mode == RLDHIRES_VCOL_PSX ? 1.0f : RsHires_Light(n);
+}
+
 int RsHires_PreviewChannel(int mode, int has0, float colour0, unsigned texel, float factor, float light, int *corner)
 {
     const u8 c = RsHires_CornerC(mode, has0, 1, colour0);
     if (corner)
         *corner = c;
+    // PSX blend is drawn unlit (RsHires_ModeLight): the light given is not used.
+    if (mode == RLDHIRES_VCOL_PSX)
+        light = 1.0f;
     return (int)RsTex_LitChannel(texel, c, RsHires_Byte(RsHires_Encode(factor)), RsHires_LitByte(light));
 }
 
@@ -616,12 +717,12 @@ static unsigned char *RsHires_Write(const struct RsHiresAnim *a, const float *p,
             const struct RsHiresCorner *q = &a->corners[i * 3u + (size_t)c];
             const float *cn = &n[(i * 3u + (size_t)c) * 3u];
             const int flat = q->n[0] == 0.0f && q->n[1] == 0.0f && q->n[2] == 0.0f;
-            const u8 light = RsHires_LitByte(RsHires_Light(flat ? face : cn));
+            const u8 light = RsHires_LitByte(RsHires_ModeLight(a->mode, flat ? face : cn));
             const u8 *mm = (q->material < a->materials && a->matRgba) ? a->matRgba[q->material] : NULL;
             u8 lit[3];
             for (k = 0; k < 3; k++) {
                 const short s = RsHires_Coord(tp[c * 3 + k]);
-                lit[k] = RsHires_CornerC(a->mode, q->has0, q->textured, q->colour0[k]);
+                lit[k] = RsHires_CornerOf(q, a->mode, k);
                 RsHires_PutS16(at + k * 2, s);
                 // The view's formula of a LIT material, with the corner's texel.
                 at[6 + k] = (u8)RsTex_LitChannel(q->texel[k], lit[k], mm ? mm[k] : 255u, light);
@@ -716,6 +817,8 @@ static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
     if (m->wheelNode[0] >= 0)
         for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
             RsHires_CollectNode(m, img, m->wheelNode[i], i, &list);
+    else
+        RsHires_StdWheels(m, &list);
     a->matRgba = (u8(*)[4])calloc(RS_TEX_MATERIALS_MAX, 4);
     if (a->matRgba && list.count / 3 <= RS_TEX_TRIANGLES_MAX)
         a->blob = RsHires_Blob(m, img, &a->blobBytes, a->matRgba, &a->materials, out->previewWhy, RS_HIRES_TEXT_MAX);
@@ -763,6 +866,14 @@ static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
         a->box[0][k] = m->boundsMin[k] - 0.25f;
         a->box[1][k] = m->boundsMax[k] + 0.25f;
     }
+    // The standard wheels inside the framing too (the engine's hull has them).
+    for (i = 0; i < list.count; i++)
+        if (list.c[i].node < 0)
+            for (k = 0; k < 3; k++) {
+                const float at = list.c[i].p[k] + list.c[i].mid[k];
+                a->box[0][k] = at - 0.25f < a->box[0][k] ? at - 0.25f : a->box[0][k];
+                a->box[1][k] = at + 0.25f > a->box[1][k] ? at + 0.25f : a->box[1][k];
+            }
 
     // The bind pose: every corner at the rest transform of its node (cgltf, as
     // RldHires_Open measured the bounds); a skinned one as it is.
@@ -771,6 +882,13 @@ static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
         float world[16];
         for (i = 0; i < list.count; i++) {
             const struct RsHiresCorner *q = &list.c[i];
+            if (q->node < 0) {
+                for (k = 0; k < 3; k++) {
+                    p[i * 3 + k] = q->p[k] + q->mid[k];
+                    n[i * 3 + k] = q->n[k];
+                }
+                continue;
+            }
             if (q->skinned || m->data->nodes[q->node].skin) {
                 memcpy(&p[i * 3], q->p, sizeof(q->p));
                 memcpy(&n[i * 3], q->n, sizeof(q->n));
@@ -935,7 +1053,9 @@ int RsHires_AnimFrame(struct RsHiresCheck *c, int clip, float seconds, float whe
                 ln[2] = q->n[1] * sn + q->n[2] * cs;
             }
             if (!w) {
-                memcpy(op, lp, sizeof(lp));
+                // A standard wheel (no node): turned about its own axle, at its middle.
+                for (k = 0; k < 3; k++)
+                    op[k] = lp[k] + q->mid[k];
                 memcpy(on, ln, sizeof(ln));
                 continue;
             }

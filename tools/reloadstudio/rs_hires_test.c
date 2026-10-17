@@ -593,7 +593,8 @@ static int Kt_RowsOf(const struct RsHiresCheck *c, const wchar_t *rule)
 // - times the light, clamped, as a byte.
 static int Kt_Expect(int mode, float colour0, unsigned texel, float light)
 {
-    const float lit = RldHiresColor_Apply(RldHiresColor_Factor(mode, colour0), (float)texel / 255.0f) * light;
+    // PSX blend is drawn unlit (the engine draws such a file as the PS1 drew its drivers).
+    const float lit = RldHiresColor_Apply(RldHiresColor_Factor(mode, colour0), (float)texel / 255.0f) * (mode == RS_HIRES_VCOL_PSX ? 1.0f : light);
     const float v = (lit < 1.0f ? lit : 1.0f) * 255.0f + 0.5f;
     return (int)v;
 }
@@ -625,7 +626,7 @@ static void Kt_SelfTestColours(void)
                     int corner = 0, got, view, d;
                     const unsigned char t[4] = { (unsigned char)texels[j], (unsigned char)texels[j], (unsigned char)texels[j], 255 };
                     const int want = Kt_Expect(mode, c0s[i], texels[j], lights[k]);
-                    const int l = (int)(lights[k] * 128.0f + 0.5f);
+                    const int l = mode == RS_HIRES_VCOL_PSX ? 128 : (int)(lights[k] * 128.0f + 0.5f);   // PSX: unlit
                     got = RsHires_PreviewChannel(mode, 1, c0s[i], texels[j], 1.0f, lights[k], &corner);
                     view = RsTex_ShadeLit(t, corner, corner, corner, 255, l, &mat) & 0xFF;
                     d = abs(got - want);
@@ -650,9 +651,11 @@ static void Kt_SelfTestColours(void)
         Check(a == 255, "PSX white lights up to twice: C = 255 (255/128)");
         RsHires_PreviewChannel(RS_HIRES_VCOL_OFF, 1, 0.0f, 100u, 1.0f, 1.0f, &a);
         Check(a == 128, "off: black COLOR_0 is ignored");
-        Check(abs(RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, 1.0f, 200u, 1.0f, 0.8f, NULL) - 204) <= 1 &&
-                  Kt_Expect(RS_HIRES_VCOL_PSX, 1.0f, 200u, 0.8f) == 204,
-              "PSX blend clamps before the light, as the engine: texel 200 x 255/128 -> white, x 0.8 = 204 (the light 102/128: within 1)");
+        Check(RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, 1.0f, 200u, 1.0f, 0.8f, NULL) == 255 &&
+                  RsHires_PreviewChannel(RS_HIRES_VCOL_PSX, 1, RldHiresColor_Decode(128.0f / 255.0f), 200u, 1.0f, 1.35f, NULL) == 200,
+              "PSX blend is unlit: texel 200 x 255/128 clamps to white, grey 128 shows the texel as it is, whatever the light");
+        Check(abs(RsHires_PreviewChannel(RS_HIRES_VCOL_GLTF, 1, 1.0f, 200u, 1.0f, 0.8f, NULL) - 160) <= 1,
+              "glTF stays lit: texel 200 x white x 0.8 = 160");
     }
 
     // 2. The suggestion and the switch, on karts made here (16 x 16 texture).
@@ -1133,7 +1136,19 @@ int wmain(int argc, wchar_t **argv)
           "hires-warn.glb: the clip warning");
     Check(c.wheels == 0 && c.clips == 11 && c.clipState[6] == RS_HIRES_CLIP_FALLBACK && c.clipVia[6] == 0 && c.clipFullLock[6] == 0,
           "hires-warn.glb: no wheels, 'hit' falls back to 'idle'");
-    Check(c.previewTriangles == 1, "hires-warn.glb: the picture has the body only (the found wheels are not drawn)");
+    Check(c.previewTriangles == 1 + 4 * 80, "hires-warn.glb: the picture has the body and the engine's 4 standard wheels of 80 triangles (not the found ones)");
+    if (c.preview && c.previewTriangles == 321) {
+        // The first standard wheel's first corner (a tread vertex, grey 38 shown
+        // as the display value) in glTF mode, lit: no texel, the white default material.
+        const unsigned char *t = c.preview + 16 + 30;   // after the body triangle (3 records of 10 bytes)
+        float n[3] = { 0.0f, 1.0f, 0.0f };
+        const int want = (int)(38.0f / 255.0f * RsHires_Light(n) * 255.0f + 0.5f);
+        char what[160];
+        snprintf(what, sizeof(what), "a standard wheel's tread: its byte 38 as the display value, lit in glTF (%d, want %d)", t[6], want);
+        Check(abs(t[6] - want) <= 2 && t[6] == t[7] && t[7] == t[8] && t[9] == 1, what);
+        Check(RsHires_SetColourMode(&c, RS_HIRES_VCOL_PSX) == 1 && c.preview[16 + 30 + 6] == 38,
+              "a standard wheel in PSX blend: unlit, its byte 38 as it is");
+    }
     RsHires_CheckFree(&c);
 
     // The clip hull (include/rldhires_hull.inc) in the Studio's check: clips that

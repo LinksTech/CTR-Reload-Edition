@@ -5969,7 +5969,7 @@ static void Char_HiresShow(void)
     RsView_SetModelLabel(g_char.view, g_char.route == RS_ROUTE_LOWPOLY ? L"Low-Poly model" : L"Hi-Res model");
     RsView_LoadPreviewData(g_char.view, c->preview, c->previewBytes);
     RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
-    RsView_SetWheels(g_char.view, c->wheels < 4);
+    RsView_SetWheels(g_char.view, 0);   // the picture carries the engine's standard wheels itself
     g_char.hiresShown = 1;
     if (c->animReady && c->clips > 0) {
         // In automation the first frame of idle only, without the timer: the
