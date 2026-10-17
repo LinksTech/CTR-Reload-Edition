@@ -21,7 +21,10 @@
 //   0x00 u16 version      1. Another version: only the hi-res part is dropped.
 //   0x02 u16 headerBytes  >= 16, a multiple of 4; a newer, longer header is
 //                         allowed, readers skip the rest.
-//   0x04 u32 flags        0. An unknown bit: only the hi-res part is dropped.
+//   0x04 u32 flags        bits 0..1 the vertex colour mode (include/rldhires_color.inc:
+//                         0 glTF, 1 PSX blend, 2 off; 3 is refused), every other
+//                         bit 0. An unknown bit or mode 3: only the hi-res part
+//                         is dropped (HRG-3).
 //   0x08 u32 glbOffset    = headerBytes, from the start of the chunk.
 //   0x0C u32 glbSize      glbOffset + glbSize = the chunk's size.
 //
@@ -40,10 +43,13 @@
 // left seen from behind, 1 metre = 64 kart model units, origin on the ground
 // under the kart.
 //
-// VERTEX COLOURS (format V1, decision 11): COLOR_0 follows glTF - a linear
-// multiplier on the base colour, nothing else. There is no PS1 rule on the
-// hi-res path (no "128 = unchanged"); vertex colours that look like PS1
-// shading get a note (HRG-36), they are the author's to change.
+// VERTEX COLOURS (format V1, decision 11b): the chunk's flags name how COLOR_0
+// is read - glTF (white is neutral, a linear multiplier; every CHRG written
+// before the mode existed has flags 0 and keeps this), PSX blend (grey 128 is
+// neutral, texture x colour / 128 as on the PS1, clamped) or off (COLOR_0 is
+// ignored). The one way to turn COLOR_0 into a colour is
+// include/rldhires_color.inc. Vertex colours that look like PS1 shading in a
+// glTF-mode file get a warning (HRG-36: the kart will look too dark).
 //
 // THE RULES are HRG-1 .. HRG-36 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
@@ -79,6 +85,9 @@
 #endif
 #endif
 
+// The vertex colour mode of the chunk's flags and the one way to read COLOR_0.
+#include <rldhires_color.inc>
+
 //========================================================================================
 // THE CHUNK CHRG
 //========================================================================================
@@ -86,7 +95,9 @@
 #define RLDHIRES_CHUNK_TYPE "CHRG"
 #define RLDHIRES_CHUNK_VERSION 1u
 #define RLDHIRES_CHUNK_HEADER_BYTES 16u           // the header this version writes; a reader accepts more
-#define RLDHIRES_CHUNK_FLAGS_KNOWN 0u
+// The flag bits this version knows: the vertex colour mode (bits 0..1). Its
+// value 3 is no mode and is refused like an unknown bit (RldHires_ParseChunk).
+#define RLDHIRES_CHUNK_FLAGS_KNOWN RLDHIRES_FLAG_VCOL_MASK
 #define RLDHIRES_CHUNK_LIMIT (64u * 1024u * 1024u) // the whole chunk, header included
 
 // What RldHires_ParseChunk read. glb points INTO the chunk: the chunk must stay
@@ -376,7 +387,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-33", RLDHIRES_ERROR, "more than 1048576 vertices, the wheels counted (the engine's vertex limit)"},
     {"HRG-34", RLDHIRES_ERROR, "more than 255 skinning entries: joints + body nodes with a mesh but no skin + 4 wheels"},
     {"HRG-35", RLDHIRES_ERROR, "more than 64 texture uploads: one per image, colour space and sampler wrap"},
-    {"HRG-36", RLDHIRES_NOTE, "vertex colours on textured faces look like PS1 shading (median 0.4..0.6 sRGB): the hi-res path multiplies them 1:1"},
+    {"HRG-36", RLDHIRES_WARNING, "glTF mode: vertex colours on textured faces look like PS1 shading (median 0.4..0.6 sRGB) - the kart will look too dark"},
 };
 
 // The level of a rule id, -1 for an unknown id.
@@ -561,6 +572,11 @@ static int RldHires_ParseChunk(const u8 *chunk, size_t size, RldHiresChunk *out,
 			r = "HRG-3";
 			snprintf(text, sizeof(text), "CHRG flags 0x%08x have a bit this game does not know - the classic model is used", (unsigned)flags);
 		}
+		else if (RldHiresColor_Mode(flags) < 0)
+		{
+			r = "HRG-3";
+			snprintf(text, sizeof(text), "CHRG flags 0x%08x name vertex colour mode 3, which this game does not know - the classic model is used", (unsigned)flags);
+		}
 		else if ((glbOffset != headerBytes) || ((u64)glbOffset + (u64)glbSize != (u64)size))
 		{
 			r = "HRG-4";
@@ -589,10 +605,12 @@ static int RldHires_ParseChunk(const u8 *chunk, size_t size, RldHiresChunk *out,
 	return r == NULL;
 }
 
-// The bytes of a CHRG chunk for a GLB: the 16-byte header of version 1 and the
-// GLB unchanged. malloc'ed (the caller frees), NULL when the chunk would pass
-// RLDHIRES_CHUNK_LIMIT or memory runs out. The same GLB gives the same bytes.
-static u8 *RldHires_BuildChunk(const u8 *glb, u32 glbSize, size_t *sizeOut)
+// The bytes of a CHRG chunk for a GLB: the 16-byte header of version 1 with
+// these flags (the vertex colour mode, include/rldhires_color.inc) and the GLB
+// unchanged. malloc'ed (the caller frees), NULL when the chunk would pass
+// RLDHIRES_CHUNK_LIMIT, the flags are not ones RldHires_ParseChunk reads, or
+// memory runs out. The same GLB and flags give the same bytes.
+static u8 *RldHires_BuildChunkFlags(const u8 *glb, u32 glbSize, u32 flags, size_t *sizeOut)
 {
 	u8 *chunk;
 
@@ -600,7 +618,8 @@ static u8 *RldHires_BuildChunk(const u8 *glb, u32 glbSize, size_t *sizeOut)
 	{
 		*sizeOut = 0;
 	}
-	if ((glb == NULL) || ((u64)glbSize + RLDHIRES_CHUNK_HEADER_BYTES > (u64)RLDHIRES_CHUNK_LIMIT))
+	if ((glb == NULL) || ((u64)glbSize + RLDHIRES_CHUNK_HEADER_BYTES > (u64)RLDHIRES_CHUNK_LIMIT) || ((flags & ~RLDHIRES_CHUNK_FLAGS_KNOWN) != 0u) ||
+	    (RldHiresColor_Mode(flags) < 0))
 	{
 		return NULL;
 	}
@@ -611,7 +630,7 @@ static u8 *RldHires_BuildChunk(const u8 *glb, u32 glbSize, size_t *sizeOut)
 	}
 	RldHires_PutLE16(&chunk[0x00], RLDHIRES_CHUNK_VERSION);
 	RldHires_PutLE16(&chunk[0x02], RLDHIRES_CHUNK_HEADER_BYTES);
-	RldHires_PutLE32(&chunk[0x04], 0u);
+	RldHires_PutLE32(&chunk[0x04], flags);
 	RldHires_PutLE32(&chunk[0x08], RLDHIRES_CHUNK_HEADER_BYTES);
 	RldHires_PutLE32(&chunk[0x0C], glbSize);
 	memcpy(&chunk[RLDHIRES_CHUNK_HEADER_BYTES], glb, glbSize);
@@ -620,6 +639,13 @@ static u8 *RldHires_BuildChunk(const u8 *glb, u32 glbSize, size_t *sizeOut)
 		*sizeOut = (size_t)glbSize + RLDHIRES_CHUNK_HEADER_BYTES;
 	}
 	return chunk;
+}
+
+// RldHires_BuildChunkFlags with flags 0 (glTF): the bytes every CHRG had before
+// the vertex colour mode.
+static u8 *RldHires_BuildChunk(const u8 *glb, u32 glbSize, size_t *sizeOut)
+{
+	return RldHires_BuildChunkFlags(glb, glbSize, 0u, sizeOut);
 }
 
 #if defined(RLDTRACK_INC)
@@ -789,6 +815,7 @@ typedef struct RldHiresModel
 	u32 textureSlots;                       // textures the engine uploads (textureBytes counts each of them)
 	int clipsPresent;                       // clips in the file (0..12)
 	int ps1ColourMedian;                    // median sRGB byte of COLOR_0 on textured faces, -1 = none (HRG-36)
+	int vcolMode;                           // the vertex colour mode it was opened for (RldHires_OpenAs; HRG-36 only in glTF)
 } RldHiresModel;
 
 // The edge the game makes of an image edge: the next power of two, at least
@@ -1279,7 +1306,9 @@ static int RldHires_SrgbByte(float lin)
 // HRG-36: COLOR_0 of the drawn primitives whose material has a base colour
 // texture; per vertex the mean of its three channels as an sRGB byte. A median
 // from 102 to 153 (0.4 to 0.6) is what PS1 shading looks like, where 128 shows
-// the texture unchanged - on the hi-res path (glTF) 128 halves it.
+// the texture unchanged - in glTF mode 128 halves it. The median is always
+// measured (ps1ColourMedian, the Studio's suggestion of a mode); the warning is
+// said only in glTF mode: PSX blend reads such colours right, off ignores them.
 static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
 {
 	u32 histogram[256];
@@ -1339,9 +1368,9 @@ static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
 		}
 	}
 	m->ps1ColourMedian = b;
-	if ((b >= 102) && (b <= 153))
+	if ((b >= 102) && (b <= 153) && (m->vcolMode == RLDHIRES_VCOL_GLTF))
 	{
-		RldHires_Say(rep, "HRG-36", "vertex colours look like PS1 shading (128 = unchanged; median %d) - the hi-res path multiplies them 1:1 (glTF), so the kart will be darker; export vertex colours with white as neutral or remove them",
+		RldHires_Say(rep, "HRG-36", "vertex colours look like PS1 shading (128 = unchanged; median %d) - in glTF mode they multiply 1:1, so the kart will look too dark - use PSX blend",
 		             b);
 	}
 }
@@ -1353,7 +1382,10 @@ static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
 // here. The GLB must stay alive until RldHires_Close. The budget is a check of
 // its own: a 1 here is not yet "draw it" - every loader calls
 // RldHires_CheckBudget after it (rldpack hires-check and hires-add, the game).
-static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresReport *rep)
+// vcolMode is the vertex colour mode of the chunk (RldHiresColor_Mode of its
+// flags, or the mode a writer is about to store): only HRG-36 depends on it.
+// RldHires_Open below is this in glTF mode (flags 0).
+static int RldHires_OpenAs(const u8 *glb, u32 size, int vcolMode, RldHiresModel *out, RldHiresReport *rep)
 {
 	RldHiresModel *m = out;
 	const int errorsBefore = (rep != NULL) ? rep->errors : 0;
@@ -1386,6 +1418,7 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 		return 0;
 	}
 	memset(m, 0, sizeof(*m));
+	m->vcolMode = vcolMode;
 	m->scene = -1;
 	m->skin = -1;
 	for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
@@ -2112,6 +2145,13 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 	localErrors = rep->errors - errorsBefore;
 	m->usable = (localErrors == 0);
 	return m->usable;
+}
+
+// RldHires_OpenAs in glTF mode: a GLB of a chunk with flags 0, as every reader
+// opened it before the vertex colour mode.
+static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresReport *rep)
+{
+	return RldHires_OpenAs(glb, size, RLDHIRES_VCOL_GLTF, out, rep);
 }
 
 // HRG-27: the budget of a model RldHires_Open read. 1 = within, 0 = over (an

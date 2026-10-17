@@ -968,8 +968,8 @@ int wmain(int argc, wchar_t **argv)
     }
     Path(path, argv[1], L"hires-tex-upscaled.glb");
     Check(RsHires_CheckFile(path, &c) == 1 && c.usable == 1 && c.previewTextured == 1 && c.textures == 1 && c.textureEdge == 64u &&
-              c.errors == 0 && c.warnings == 0,
-          "hires-tex-upscaled.glb (the Studio's upscale step): usable, no error or warning, its texture 64 x 64, textured preview");
+              c.errors == 0 && c.warnings == 1,
+          "hires-tex-upscaled.glb (the Studio's upscale step): usable, no error, one warning (HRG-36: its COLOR_0 128 read in glTF mode), its texture 64 x 64, textured preview");
     RsHires_CheckFree(&c);
 
     Check(wcscmp(RsHires_ClipName(0), L"idle") == 0 && wcscmp(RsHires_ClipName(11), L"menu") == 0 && wcscmp(RsHires_ClipName(12), L"?") == 0,
