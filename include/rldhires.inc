@@ -74,7 +74,12 @@
 //                              original kart from the player's own game data
 //                              (the in-game insertion is a later package; until
 //                              then the bit is read and reported only). With
-//                              bit 0 set too, bit 0 wins (HRG-40).
+//                              bit 0 set too, bit 0 wins (HRG-40). Such a file
+//                              needs no wheel nodes (a note, HRG-42, instead of
+//                              the warning HRG-20), and a node "kart" WITHOUT a
+//                              mesh in its subtree (the joints kart and
+//                              kart_steer a figure keeps for the inserted kart)
+//                              is fine (no HRG-39).
 //   8..15 kartDonor            with bit 1: the retail driver 0..14 whose kart
 //                              (its colours) is taken, 0xFF = the CHRI template.
 // Every other bit: 0 when written, ignored when read (HRG-40, a note) - the
@@ -85,7 +90,7 @@
 // and meshes and material names "ctrkit_<name>"; either in a file is HRG-41 (a
 // warning: the file holds the original kart from the game data - not to share).
 //
-// THE RULES are HRG-1 .. HRG-41 (s_rldHiresRules below), each with a fixed
+// THE RULES are HRG-1 .. HRG-42 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
 // WARNING means the driver runs but something falls back to a standard (a clip,
 // the wheels, flat normals), a NOTE says what is ignored. The texts are short
@@ -405,7 +410,7 @@ typedef struct RldHiresRule
 	const char *about;
 } RldHiresRule;
 
-#define RLDHIRES_RULE_COUNT 41
+#define RLDHIRES_RULE_COUNT 42
 
 static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-1", RLDHIRES_ERROR, "CHRG version is not 1"},
@@ -449,6 +454,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-39", RLDHIRES_NOTE, "kart part: a node 'kart' without the kart part in the header - drawn as before (hires-add --kart-part)"},
     {"HRG-40", RLDHIRES_NOTE, "parts field: an unknown bit, a second node 'kart', or both kart bits - ignored"},
     {"HRG-41", RLDHIRES_WARNING, "the file contains the original kart from your game data - don't share it, or export without the kart"},
+    {"HRG-42", RLDHIRES_NOTE, "the game's kart (parts bit 1): no wheel nodes - the game brings the kart and its wheels"},
 };
 
 // The level of a rule id, -1 for an unknown id.
@@ -1520,7 +1526,48 @@ static void RldHires_CheckParts(RldHiresModel *m, RldHiresReport *rep, u32 parts
 	}
 	if ((m->kartNode >= 0) && !wantKart)
 	{
-		RldHires_Say(rep, "HRG-39", "a node is named 'kart', but the header does not announce the kart part - it is drawn everywhere, as before (rldpack hires-add --kart-part)");
+		// With the game's kart a node "kart" without a mesh below it is the
+		// figure's joint for the inserted kart: nothing to say.
+		int meshBelow = 1;
+
+		if (m->gameKart && (work != NULL))
+		{
+			u8 *seen = (u8 *)calloc(gd->nodes_count, 1);
+			int top = 0;
+
+			if (seen != NULL)
+			{
+				meshBelow = 0;
+				work[top++] = m->kartNode;
+				while ((top > 0) && !meshBelow)
+				{
+					const int ni = work[--top];
+					const cgltf_node *node = &gd->nodes[ni];
+					cgltf_size c;
+
+					if (seen[ni])
+					{
+						continue;
+					}
+					seen[ni] = 1;
+					meshBelow = (node->mesh != NULL);
+					for (c = 0; c < node->children_count; c++)
+					{
+						const int ci = (int)cgltf_node_index(gd, node->children[c]);
+
+						if (!seen[ci])
+						{
+							work[top++] = ci;
+						}
+					}
+				}
+				free(seen);
+			}
+		}
+		if (meshBelow)
+		{
+			RldHires_Say(rep, "HRG-39", "a node is named 'kart', but the header does not announce the kart part - it is drawn everywhere, as before (rldpack hires-add --kart-part)");
+		}
 	}
 	if (wantKart && (m->kartNode < 0))
 	{
@@ -1962,7 +2009,13 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 			         s_rldHiresWheelName[i], why);
 		}
 		m->wheelsFound = have;
-		if (have == 0)
+		if ((have == 0) && ((parts & RLDHIRES_PART_GAME_KART) != 0u) && ((parts & RLDHIRES_PART_KART) == 0u))
+		{
+			// THE PARTS: the game's kart brings its wheels.
+			RldHires_Say(rep, "HRG-42", "no wheel nodes - the game puts in the original kart from the player's game data with its wheels");
+			wheelOk = 0;
+		}
+		else if (have == 0)
 		{
 			RldHires_Say(rep, "HRG-20", "no wheel nodes (wheel_fl, wheel_fr, wheel_rl, wheel_rr) - standard wheels are used");
 			wheelOk = 0;

@@ -1820,6 +1820,35 @@ static void HrTest_Parts(void)
 	free(glb);
 	glb = NULL;
 
+	// The game's kart: no wheel nodes is a note (HRG-42), not HRG-20; a joint
+	// "kart" without a mesh below is fine (no HRG-39); 0 warnings in all.
+	memset(&sp, 0, sizeof(sp));
+	sp.wheelsMissing = 0xF;
+	sp.kartJoint = 1;
+	sp.parts = RLDHIRES_PART_GAME_KART | (RLDHIRES_PART_DONOR_TEMPLATE << RLDHIRES_PART_DONOR_SHIFT);
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && rep.errors == 0 && rep.warnings == 0 && RldHires_ReportHas(&rep, "HRG-42") &&
+	                 !RldHires_ReportHas(&rep, "HRG-20") && !RldHires_ReportHas(&rep, "HRG-39") && m.gameKart && (m.wheelsFound == 0),
+	             "parts: the game's kart - no wheels is HRG-42 (a note), the joint 'kart' without a mesh is fine, 0 warnings");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	sp.parts = 0u;
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && RldHires_ReportHas(&rep, "HRG-20") && RldHires_ReportHas(&rep, "HRG-39") &&
+	                 !RldHires_ReportHas(&rep, "HRG-42"),
+	             "parts: the same file without the field - HRG-20 and HRG-39 as before");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	memset(&sp, 0, sizeof(sp));
+	sp.extraRigid = 2;
+	sp.kartRigid = 1;
+	sp.parts = RLDHIRES_PART_GAME_KART | (3u << RLDHIRES_PART_DONOR_SHIFT);
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && RldHires_ReportHas(&rep, "HRG-39") && !RldHires_ReportHas(&rep, "HRG-42"),
+	             "parts: the game's kart and a node 'kart' WITH a mesh - HRG-39 (the file brings a kart after all); wheels there - no HRG-42");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
 	// The bytes: parts 0 = the 16-byte chunk of before; parts != 0 = 20 bytes,
 	// the field at 0x10, the GLB unchanged; ParseChunk reads it back; a 16-byte
 	// header reads as parts 0; unknown parts bits are not written.
@@ -1853,12 +1882,12 @@ static void HrTest_Parts(void)
 		free(glb);
 		glb = NULL;
 	}
-	for (i = 37; i <= 41; i++)
+	for (i = 37; i <= 42; i++)
 	{
 		char id[8];
 
 		snprintf(id, sizeof(id), "HRG-%d", i);
-		HrTest_Check(RldHires_RuleLevel(id) >= 0, "parts: HRG-37..41 are in the rule table");
+		HrTest_Check(RldHires_RuleLevel(id) >= 0, "parts: HRG-37..42 are in the rule table");
 	}
 }
 
