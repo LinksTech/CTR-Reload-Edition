@@ -1469,6 +1469,7 @@ struct RldMkOptions
 	int maskModel;    // the own mask (--mask-model): the profile of RldMk_BuildMaskOnce, sizePercent
 	                  // is --mask-size then
 	int yFull;        // --y-full: the up axis on every value 0..255, CHRI flag RLDCHAR_FLAG_FULL_HEIGHT
+	int figureOnly;   // --figure-only: a figure without a kart, the stand-in kart put under it (RldMk_AddStandInKart)
 	int nativeKeep;   // --native-model on: a reduction keeps the positions before it for the native
 	                  // model (RldMkBuild.nativePosition); without a reduction nothing changes
 	const struct RldMkPoseKeys *keys;  // shape keys of the model (RldMk_StepKeys); NULL = none, the
@@ -13644,6 +13645,238 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 	}
 }
 
+// --figure-only (the Creator Kit's figure, K11): the model is a figure without
+// a kart - the hi-res figure gets the original kart from the player's game
+// data in the game (CHRG parts bit 1, rldpack hires-add --game-kart), and its
+// classic model must not carry any game data. make-char puts a plain STAND-IN
+// KART under the figure, made by code from the dummy's measures
+// (tools/rldpack_dummy.inc RldDum_Mesh without the ground plate, the seat
+// cushion and the wheels: floor, sides, steering column and ring, each a
+// closed solid in grey; the cushion is left out because, small and low in the
+// middle, it would be taken as a steering wheel in front of a figure that sits
+// a little back),
+// as one mesh of its own (the repair welds within one mesh only), in the
+// file's frame (--up, --forward) and in meters, the Creator Kit template's
+// units (fitted, the stand-in is Crash's kart: --fit crash keeps the figure
+// where the template put it). The chain then takes it as the kart and its
+// ring as the steering wheel, as for any model with a kart; the classic model
+// shows the figure in that grey kart - the classic fallback of a figure-only
+// file. Shape keys move it by 0. 1 = added; 0 = out of memory or too many
+// points (said).
+static int RldMk_AddStandInKart(struct RldMkPly *ply, const struct RldMkOptions *opt)
+{
+	static const double wheelCenter[3] = RLDDUM_WHEEL_CENTER;
+	struct RldDumMeshOut ground;
+	struct RldDumMeshOut steer;
+	u32 positions = 0;
+	u32 seatP;
+	u32 seatT;
+	u32 boxP;
+	u32 boxT;
+	u32 p;
+	u32 triangles;
+	u32 firstP;
+	u32 firstT;
+	u32 newV;
+	u32 newF;
+	u32 mesh = 0;
+	double *pos;
+	u32 *tri;
+	u32 *col;
+	u32 i;
+	int k;
+	int ok = 1;
+
+	triangles = RldDum_Mesh(0, NULL, 0u, NULL, NULL, 0u, &positions);
+	memset(&ground, 0, sizeof(ground));
+	RldDum_MeshBox(&ground, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0u); // the ground plate comes first: left out
+	firstP = ground.positions;
+	firstT = ground.triangles;
+	boxP = ground.positions; // the seat is one box as well, just before the steering wheel
+	boxT = ground.triangles;
+	memset(&steer, 0, sizeof(steer));
+	RldDum_MeshBox(&steer, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0u);
+	RldDum_MeshRing(&steer, wheelCenter, RLDDUM_WHEEL_RADIUS, 1.0);
+	seatP = positions - steer.positions - boxP;
+	seatT = triangles - steer.triangles - boxT;
+	newV = positions - firstP - boxP;
+	newF = triangles - firstT - boxT;
+	if (((u64)ply->vertexCount + newV > RLDMK_PLY_MAX) || ((u64)ply->faceCount + newF > RLDMK_PLY_MAX))
+	{
+		RldMk_Say("error", "ply-big", NULL, "The model and the stand-in kart of --figure-only have more than %u points or faces.", RLDMK_PLY_MAX);
+		return 0;
+	}
+	pos = (double *)malloc((size_t)positions * 3u * sizeof(double));
+	tri = (u32 *)malloc((size_t)triangles * 3u * sizeof(u32));
+	col = (u32 *)malloc((size_t)triangles * sizeof(u32));
+	if ((pos == NULL) || (tri == NULL) || (col == NULL) || (RldDum_Mesh(0, pos, positions, tri, col, triangles, &positions) != triangles))
+	{
+		free(pos);
+		free(tri);
+		free(col);
+		return RldMk_OutOfMemory();
+	}
+
+	// The arrays grow (each pointer is replaced only when its realloc worked).
+	{
+		const u32 nv = ply->vertexCount + newV;
+		const u32 nf = ply->faceCount + newF;
+		double *xyz = (double *)realloc(ply->xyz, ((size_t)nv * 3u + 1u) * sizeof(double));
+		u8 *rgb;
+		u32 *corners;
+		u32 *cornerCount;
+		u32 *moreStart;
+
+		ply->xyz = (xyz != NULL) ? xyz : ply->xyz;
+		rgb = (xyz != NULL) ? (u8 *)realloc(ply->rgb, (size_t)nv * 3u + 1u) : NULL;
+		ply->rgb = (rgb != NULL) ? rgb : ply->rgb;
+		corners = (rgb != NULL) ? (u32 *)realloc(ply->corners, ((size_t)nf * 4u + 1u) * sizeof(u32)) : NULL;
+		ply->corners = (corners != NULL) ? corners : ply->corners;
+		cornerCount = (corners != NULL) ? (u32 *)realloc(ply->cornerCount, ((size_t)nf + 1u) * sizeof(u32)) : NULL;
+		ply->cornerCount = (cornerCount != NULL) ? cornerCount : ply->cornerCount;
+		moreStart = (cornerCount != NULL) ? (u32 *)realloc(ply->moreStart, ((size_t)nf + 1u) * sizeof(u32)) : NULL;
+		ply->moreStart = (moreStart != NULL) ? moreStart : ply->moreStart;
+		ok = (moreStart != NULL);
+		if (ok)
+		{
+			u32 *faceMesh = (u32 *)realloc(ply->faceMesh, (size_t)nf * sizeof(u32) + 4u);
+
+			if (faceMesh == NULL)
+			{
+				ok = 0;
+			}
+			else
+			{
+				// One mesh of its own: a model read as one mesh (PLY, OBJ) gets
+				// mesh 0 for its faces, the stand-in the next.
+				if (ply->faceMesh == NULL)
+				{
+					memset(faceMesh, 0, (size_t)ply->faceCount * sizeof(u32));
+				}
+				ply->faceMesh = faceMesh;
+				for (i = 0; i < ply->faceCount; i++)
+				{
+					mesh = (faceMesh[i] >= mesh) ? (faceMesh[i] + 1u) : mesh;
+				}
+				mesh = (ply->faceCount == 0u) ? 1u : mesh;
+			}
+		}
+		if (ok && (ply->faceSource != NULL))
+		{
+			u32 *faceSource = (u32 *)realloc(ply->faceSource, (size_t)nf * sizeof(u32) + 4u);
+
+			ok = (faceSource != NULL);
+			ply->faceSource = ok ? faceSource : ply->faceSource;
+		}
+		// The shape keys: 0 for the stand-in's points.
+		for (k = 0; ok && s_rldGltfMorphs.read && (s_rldGltfMorphs.pointCount == ply->vertexCount) && (k < RLDGLTF_KEY_COUNT); k++)
+		{
+			if (s_rldGltfMorphs.point[k] != NULL)
+			{
+				double *d = (double *)realloc(s_rldGltfMorphs.point[k], ((size_t)nv * 3u + 1u) * sizeof(double));
+
+				ok = (d != NULL);
+				if (ok)
+				{
+					memset(&d[(size_t)ply->vertexCount * 3u], 0, (size_t)newV * 3u * sizeof(double));
+					s_rldGltfMorphs.point[k] = d;
+				}
+			}
+		}
+	}
+	if (!ok)
+	{
+		free(pos);
+		free(tri);
+		free(col);
+		return RldMk_OutOfMemory();
+	}
+
+	// The points: the dummy's (game units, y up, z front) in the file's frame
+	// and meters, without the ground's and the seat's.
+	for (p = firstP, i = 0; p < positions; p++)
+	{
+		const double *at = &pos[(size_t)p * 3u];
+		double x = at[0] / RLDMK_UNITS;
+		double y = at[1] / RLDMK_UNITS;
+		double z = at[2] / RLDMK_UNITS;
+		double *out = &ply->xyz[(size_t)(ply->vertexCount + i) * 3u];
+
+		if ((p >= seatP) && (p < seatP + boxP))
+		{
+			continue;
+		}
+
+		if (opt->backwards)
+		{
+			x = -x;
+			z = -z;
+		}
+		if (opt->upZ)
+		{
+			out[0] = x;
+			out[1] = -z;
+			out[2] = y;
+		}
+		else
+		{
+			out[0] = x;
+			out[1] = y;
+			out[2] = z;
+		}
+		ply->rgb[(size_t)(ply->vertexCount + i) * 3u + 0u] = 0x80;
+		ply->rgb[(size_t)(ply->vertexCount + i) * 3u + 1u] = 0x80;
+		ply->rgb[(size_t)(ply->vertexCount + i) * 3u + 2u] = 0x80;
+		i++;
+	}
+	// The faces, outward as the dummy winds them; a point takes the colour of its first triangle.
+	for (p = firstT, i = 0; p < triangles; p++)
+	{
+		const u32 f = ply->faceCount + i;
+		const u32 rgb = col[p];
+		int c;
+
+		if ((p >= seatT) && (p < seatT + boxT))
+		{
+			continue;
+		}
+		i++;
+		for (c = 0; c < 3; c++)
+		{
+			const u32 d = tri[(size_t)p * 3u + (u32)c];
+			const u32 v = ply->vertexCount + (d - firstP) - ((d >= seatP + boxP) ? boxP : 0u);
+
+			ply->corners[(size_t)f * 4u + (u32)c] = v;
+			ply->rgb[(size_t)v * 3u + 0u] = (u8)(rgb >> 16);
+			ply->rgb[(size_t)v * 3u + 1u] = (u8)(rgb >> 8);
+			ply->rgb[(size_t)v * 3u + 2u] = (u8)rgb;
+		}
+		ply->corners[(size_t)f * 4u + 3u] = 0u;
+		ply->cornerCount[f] = 3u;
+		ply->moreStart[f] = 0u;
+		ply->faceMesh[f] = mesh;
+		if (ply->faceSource != NULL)
+		{
+			ply->faceSource[f] = f; // a face of its own (the sources of the model's faces are below its face count)
+		}
+	}
+	// The colours: a point shared by triangles of two colours keeps the last
+	// one's; the dummy's solids share no points, so each solid is one grey.
+	ply->vertexCount += newV;
+	ply->faceCount += newF;
+	if (s_rldGltfMorphs.read && (s_rldGltfMorphs.pointCount == ply->vertexCount - newV))
+	{
+		s_rldGltfMorphs.pointCount = ply->vertexCount;
+	}
+	free(pos);
+	free(tri);
+	free(col);
+	RldMk_Say("info", "figure-only", NULL,
+	          "--figure-only: a plain grey stand-in kart (%u triangles, made by code from the dummy's measures - no game data) is put under the figure; the classic model shows the figure in it. In the game the hi-res figure gets the original kart from the player's game data (rldpack hires-add --game-kart).",
+	          newF);
+	return 1;
+}
+
 // The shape keys the model reader found (s_rldGltfMorphs, after
 // RldMk_LoadModel) for the chain: opt->keys stays NULL without any, and the
 // build is then the one of a model without keys.
@@ -14303,6 +14536,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			opt.yFull = 1;
 		}
+		else if (strcmp(arg, "--figure-only") == 0)
+		{
+			opt.figureOnly = 1;
+		}
 		else if (strcmp(arg, "--check") == 0)
 		{
 			check = 1;
@@ -14881,6 +15118,15 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		return RldMk_Fail(1);
 	}
 	s_rldObjNativeWant = 0;
+
+	// --figure-only: the stand-in kart under the figure (RldMk_AddStandInKart).
+	if (opt.figureOnly && !RldMk_AddStandInKart(&ply, &opt))
+	{
+		RldMk_FreePly(&ply);
+		RldObj_FreeNative(&s_rldObjNative);
+		free(cvoi);
+		return RldMk_Fail(1);
+	}
 
 	// THE SHAPE KEYS of a glTF model (tools/rldpack_gltf.inc), per point of
 	// the model as read: the chain bakes them into the frames (RldMk_StepKeys).
@@ -16317,6 +16563,11 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --scale <f>                 multiply the model (default 1), only with\n");
 	fprintf(out, "                              --fit none\n");
 	fprintf(out, "  --two-sided                 draw both sides of every triangle\n");
+	fprintf(out, "  --figure-only               the model is a figure without a kart (the\n");
+	fprintf(out, "                              Creator Kit's): a plain grey stand-in kart,\n");
+	fprintf(out, "                              made by code, is put under it for the classic\n");
+	fprintf(out, "                              model; the game gives the hi-res figure the\n");
+	fprintf(out, "                              original kart (hires-add --game-kart)\n");
 	fprintf(out, "  --y-full                    the up axis on every value instead of the even\n");
 	fprintf(out, "                              ones: half the height step (CHRI bit 4; a game\n");
 	fprintf(out, "                              from before it draws odd heights one value lower)\n");
@@ -23561,6 +23812,78 @@ static void RldMk_SelfTestFaceSource(struct RldMkTestMesh *mesh)
 	}
 }
 
+// --figure-only: a figure alone (a box of 432 triangles above the seat, in
+// meters) has no kart and is refused; with the stand-in kart under it the
+// chain takes the stand-in's floor and sides as the kart (228
+// triangles), its column and ring as the steering wheel (108) and the box as
+// the driver, the stand-in a mesh of its own and grey.
+static void RldMk_SelfTestFigureOnly(struct RldMkTestMesh *mesh)
+{
+	static const double figureLo[3] = {-0.25, 0.20, -0.40};
+	static const double figureHi[3] = {0.25, 1.00, 0.10};
+	int with;
+
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, figureLo, figureHi, 6u, 10u, 0, -1);
+	for (with = 0; with < 2; with++)
+	{
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		size_t size = 0;
+		u8 *data = RldMk_TestPly(mesh, 0, 1, 0, &size);
+		u32 faces = 0;
+		int ok;
+
+		memset(&ply, 0, sizeof(ply));
+		memset(&b, 0, sizeof(b));
+		RldMk_ResetSaid();
+		RldMk_TestOptions(&opt);
+		opt.figureOnly = with;
+		ok = (data != NULL) && RldMk_ParsePly(data, size, &ply);
+		faces = ply.faceCount;
+		if (ok && with)
+		{
+			u32 f;
+			int grey = 1;
+			int ownMesh = (ply.faceMesh == NULL);
+
+			ok = RldMk_AddStandInKart(&ply, &opt);
+			RldMk_Test(ok && (ply.faceCount == faces + 336u) && (ply.faceMesh != NULL), "figure-only: the stand-in kart adds 336 triangles", "added %d, faces %u",
+			           ok, ply.faceCount - faces);
+			for (f = faces; ok && (f < ply.faceCount); f++)
+			{
+				const u8 *rgb = &ply.rgb[3u * ply.corners[4u * f]];
+
+				grey &= (rgb[0] == rgb[1]) && (rgb[1] == rgb[2]);
+				ownMesh &= (ply.faceMesh[f] == 1u) && (ply.cornerCount[f] == 3u);
+			}
+			for (f = 0; ok && (f < faces); f++)
+			{
+				ownMesh &= (ply.faceMesh[f] == 0u);
+			}
+			RldMk_Test(ok && grey && ownMesh, "figure-only: the stand-in is grey and a mesh of its own (the figure mesh 0, the stand-in 1)", "grey %d, own mesh %d", grey,
+			           ownMesh);
+		}
+		ok = ok && RldMk_BuildModel(&ply, &opt, &b);
+		if (with)
+		{
+			RldMk_Test(ok && (b.groupTriangles[RLDMK_GROUP_KART] == 228u) && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 108u) && (b.driverPart >= 0) &&
+			               (b.parts[b.driverPart].triangles == 432u),
+			           "figure-only: the stand-in is the kart (228) and the steering wheel (108), the figure the driver (432)", "built %d, kart %u, wheel %u, driver %u", ok,
+			           b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_WHEEL], b.groupTriangles[RLDMK_GROUP_DRIVER]);
+		}
+		else
+		{
+			RldMk_Test(!ok, "figure-only: a figure without a kart is refused without --figure-only", "built %d", ok);
+		}
+		free(data);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 // --wheels off: (a) a flat square of 2 triangles far off with nearly half
 // the surface of a vehicle does not change its size and is named
 // (ply-stray); (b) on a short vehicle, low front wheels in front of the
@@ -23767,6 +24090,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestFaceSource(mesh);
 	RldMk_SelfTestStrayAndWheels(mesh);
 	RldMk_SelfTestSplitVehicle(mesh);
+	RldMk_SelfTestFigureOnly(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 

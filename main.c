@@ -122,6 +122,9 @@
 // machine, the characters, their selftests.
 #include <rldhires.inc>
 #include <rldhires_anim.inc>
+// The Creator Kit (K11): the retail kart of a figure-only driver made at load
+// from the player's own game data (header-only, engine_hires_char.c THE GAME'S KART).
+#include <rldkit.inc>
 #include "platform/engine_hires_testglb.c"
 #include "platform/engine_hires_pose.c"
 #include "platform/engine_hires_selftest.c"

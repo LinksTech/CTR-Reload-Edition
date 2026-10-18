@@ -58,6 +58,14 @@
 //   colour on display values, as "ne" does it for the classic driver - so a
 //   hi-res driver on dark ground is as dark as the classic one
 //   (engine_static_shader.inc THE DRAW TINT, Engine_NsTints).
+//   THE GAME'S KART (CHRG parts bit 1, K11): a figure-only file names a retail
+//   driver (its kart donor, or its CHRI template); the kart, steering wheel and
+//   wheels of that driver are made at the load stage from the player's own
+//   game data (include/rldkit.inc, the code of rldpack kit-extract) and drawn
+//   with the figure: two more rigid palette entries (the kart on the figure's
+//   node "kart", the steering wheel on "kart_steer" - its clips turn it), the
+//   kit's wheels on the standard wheels' matrices. Kept in host memory for the
+//   session, never written to a file (THE GAME'S KART below).
 
 // On by default whenever the engine draws (round of 2026-10-17, format 4.2);
 // 0 with --no-hires-chars (main.c), and 0 from the roster on when no file of
@@ -91,7 +99,9 @@ int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 // The engine's hard limits are include/rldhires.inc's (HRG-32..35, checked by
 // RldHires_Open as the packer and the Studio check them); the checks here are
 // the second line with the same rule ids.
-#define ENG_HC_MATERIALS_MAX (RLDHIRES_MATERIALS_MAX + 2u) // the file's materials + the default + the standard wheels'
+#define ENG_HC_MATERIALS_MAX (RLDHIRES_MATERIALS_MAX + 4u) // the file's materials + the default + the standard wheels' + the game's kart (textured, plain)
+#define ENG_HC_NO_NODE 0xffffffffu // EngHcChar.rigidNode: an entry in the model's own space (the identity)
+#define ENG_HC_IMAGE_KIT (-2)      // EngHcTex.image: the atlas of the game's kart, not an image of the file
 #define ENG_HC_TEXTURES_MAX RLDHIRES_TEXTURE_SLOTS_MAX
 #define ENG_HC_PALETTE_MAX RLDHIRES_PALETTE_MAX
 #define ENG_HC_VERTICES_MAX RLDHIRES_VERTICES_MAX // an external mesh's frame (engine_mesh.c MESH_VERTICES_TOTAL_MAX)
@@ -205,6 +215,16 @@ typedef struct
 	int kartPart;
 	u32 kartEntries;   // of them, the four wheels included
 	u32 kartLogged;    // bit per slot: "kart hidden" said once
+	// THE GAME'S KART (CHRG parts bit 1): the kit of the donor, made from the
+	// player's own game data (not owned here), NULL without. The rigid entries
+	// gkFirst and gkFirst + 1 are the kart and the steering wheel, on the
+	// figure's nodes gkAnchor[0..1] (-1 = the model's space). kitWheels: the
+	// four wheels are the kit's, on the standard wheels' matrices.
+	const RldKitResult *gkKit;
+	int gkDonor;
+	int kitWheels;
+	u32 gkFirst;
+	int gkAnchor[2];
 	int levelMaterial[ENG_HC_MATERIALS_MAX];
 	u32 materialLevel;
 	char clipText[320];
@@ -361,6 +381,12 @@ internal void EngHc_Mul3(const double a[3][3], const double b[3][3], double out[
 			out[r][c] = a[r][0] * b[0][c] + a[r][1] * b[1][c] + a[r][2] * b[2][c];
 		}
 	}
+}
+
+internal void EngHc_Identity16(float m[16])
+{
+	memset(m, 0, 16u * sizeof(float));
+	m[0] = m[5] = m[10] = m[15] = 1.0f;
 }
 
 internal u8 EngHc_PackUnit(float v)
@@ -759,6 +785,10 @@ internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds)
 			{
 				RldAnim_JointMatrix(&c->skel, worlds, e, m);
 			}
+			else if (c->rigidNode[e - c->joints] == ENG_HC_NO_NODE)
+			{
+				EngHc_Identity16(m);
+			}
 			else
 			{
 				memcpy(m, &worlds[(size_t)c->rigidNode[e - c->joints] * 16u], sizeof(m));
@@ -797,7 +827,7 @@ internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds)
 			else
 			{
 				Engine_HiresWheelMiddle(k, 0x1000, 0x1000, 0x1000, mid);
-				r = ENG_HC_STD_RADIUS;
+				r = c->wheelRadius[k];
 			}
 			for (a = 0; a < 3; a++)
 			{
@@ -807,6 +837,371 @@ internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds)
 		}
 	}
 	free(box);
+}
+
+// ---------------------------------------------------------------------------
+// THE GAME'S KART (CHRG parts bit 1, include/rldhires.inc THE PARTS; K11).
+//
+// A figure-only file has no kart: its CHRG header names a retail driver (the
+// kart donor 0..14, or the file's CHRI template) whose kart the game puts in.
+// The kart, its steering wheel and its wheels are made here at the load stage
+// from the PLAYER'S OWN GAME DATA by include/rldkit.inc - the same code as
+// rldpack kit-extract (the kart told from the figure by the 15 drivers, PN
+// triangles, the atlas Scale2x twice, the kit wheel): BIGFILE 242..256, 258
+// and 259 read through the disc layer (NativeCD_ReadSectorsAt, about 0.4 MB,
+// the load queue's place kept), made once per donor and kept in host memory
+// for the session. Nothing is written to a file and nothing of it is in the
+// .rldchar: the file a player shares holds no game data.
+// Placement: the kit's meshes are in the model's space (CHRG axes, metres),
+// the space the Creator Kit's template is built in. The kart hangs on the
+// figure's node "kart", the steering wheel (about the ring's centre) on
+// "kart_steer" - the clips that turn the figure's hands turn it - each moved
+// into the rest space of its node, so that at rest it sits where the kit put
+// it and follows its node in every clip; without such a node the model's space.
+// The wheels are the kit's on the standard wheels' matrices (the game's wheel
+// points, steer, roll and wobble), wheels 1 and 3 (the -x side) turned half
+// about y, so that the rim faces out; the file's own wheel nodes win when it
+// has all four. Colours as the kit's GLB of the file's mode has them (kit-kart.glb
+// in PSX blend, kit-kart-gltf.glb in glTF), so the figure and the kit draw
+// alike. Without game data (or a donor out of range) one line says so and the
+// figure is drawn without a kart, on standard wheels.
+
+#define ENG_HC_KIT_SECTOR 0x800u
+
+typedef struct
+{
+	int tried;
+	int ok;
+	RldKitResult r;
+	char why[160];
+} EngHcKit;
+
+internal EngHcKit s_hcKit[RLDKIT_DRIVERS];
+internal const RldKitResult *s_hcKitTest; // the selftest's made kit (no game data); NULL in a game
+
+// The node of that name, -1 none.
+internal int EngHc_NodeNamed(const cgltf_data *gltf, const char *name)
+{
+	cgltf_size i;
+
+	for (i = 0; i < gltf->nodes_count; i++)
+	{
+		if ((gltf->nodes[i].name != NULL) && (strcmp(gltf->nodes[i].name, name) == 0))
+		{
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+// "own", "kit" or "standard" (the ready and tick lines).
+internal const char *EngHc_WheelsName(const EngHcChar *c)
+{
+	return c->ownWheels ? "own" : (c->kitWheels ? "kit" : "standard");
+}
+
+// The engine's colour byte of a kit vertex colour: COLOR_0 as the kit's GLB of
+// the file's mode writes it (tools/rldpack_kit.inc RldKitGlb_Colour: textured in
+// glTF mode the PS1 factor, at most 1; else the byte decoded), read as
+// EngHc_ReadPrimitive reads a primitive of that mode.
+internal u8 EngHc_KitColour(int vcolMode, int textured, u8 byte)
+{
+	const int mode = RldHiresColor_ModeFor(vcolMode, textured);
+	float colour0 = RldHiresColor_Decode((float)byte / 255.0f);
+
+	if (textured && (vcolMode == RLDHIRES_VCOL_GLTF))
+	{
+		const float f = RldHiresColor_Factor(RLDHIRES_VCOL_PSX, colour0);
+
+		colour0 = (f < 1.0f) ? f : 1.0f;
+	}
+	return RldHiresColor_VertexByte(mode, RldHiresColor_Factor(mode, colour0));
+}
+
+// The inverse of an affine node matrix (column-major, glTF): out[row][col],
+// col 3 the translation. 0 = not invertible (then the identity).
+internal int EngHc_AffineInverse(const float *w, double out[3][4])
+{
+	double r[3][3];
+	double inv[3][3];
+	int a;
+	int b;
+
+	for (a = 0; a < 3; a++)
+	{
+		for (b = 0; b < 3; b++)
+		{
+			r[a][b] = (double)w[b * 4 + a];
+		}
+	}
+	if (!EngHires_Inverse3(r, inv))
+	{
+		memset(out, 0, 12u * sizeof(double));
+		out[0][0] = out[1][1] = out[2][2] = 1.0;
+		return 0;
+	}
+	for (a = 0; a < 3; a++)
+	{
+		for (b = 0; b < 3; b++)
+		{
+			out[a][b] = inv[a][b];
+		}
+		out[a][3] = -(inv[a][0] * (double)w[12] + inv[a][1] * (double)w[13] + inv[a][2] * (double)w[14]);
+	}
+	return 1;
+}
+
+// One kit mesh (metres, the model's space) into src/base from vertex `first`
+// and its indices: moved by offset (metres), then into the rest space of its
+// node (restWorld NULL: the model's space), on palette entry `entry`.
+internal void EngHc_KitPart(const EngHcChar *c, const RldKitMesh *mesh, const float *restWorld, const double offset[3], u32 entry, EngHcSrc *src,
+                            EngineVertex *base, u32 *indices, u32 first)
+{
+	double inv[3][4] = {{1.0, 0.0, 0.0, 0.0}, {0.0, 1.0, 0.0, 0.0}, {0.0, 0.0, 1.0, 0.0}};
+	u32 v;
+
+	if (restWorld != NULL)
+	{
+		(void)EngHc_AffineInverse(restWorld, inv);
+	}
+	for (v = 0; v < mesh->vertices; v++)
+	{
+		const RldKitVertex *kv = &mesh->v[v];
+		EngHcSrc *s = &src[v];
+		EngineVertex *b = &base[v];
+		double p[3];
+		double n[3];
+		double len;
+		int a;
+
+		for (a = 0; a < 3; a++)
+		{
+			p[a] = (double)kv->p[a] + offset[a];
+		}
+		memset(s, 0, sizeof(*s));
+		memset(b, 0, sizeof(*b));
+		for (a = 0; a < 3; a++)
+		{
+			s->p[a] = (float)(inv[a][0] * p[0] + inv[a][1] * p[1] + inv[a][2] * p[2] + inv[a][3]);
+			n[a] = inv[a][0] * (double)kv->n[0] + inv[a][1] * (double)kv->n[1] + inv[a][2] * (double)kv->n[2];
+		}
+		len = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+		for (a = 0; a < 3; a++)
+		{
+			s->n[a] = (len > 0.0) ? (float)(n[a] / len) : 0.0f;
+		}
+		s->hasNormal = (len > 0.0) ? 1 : 0;
+		s->j[0] = (u8)entry;
+		s->w[0] = 1.0f;
+		b->texcoord[0] = mesh->textured ? kv->uv[0] : 0.0f;
+		b->texcoord[1] = mesh->textured ? kv->uv[1] : 0.0f;
+		for (a = 0; a < 3; a++)
+		{
+			b->color[a] = EngHc_KitColour(c->vcolMode, mesh->textured, kv->c[a]);
+		}
+		b->color[3] = 255;
+	}
+	for (v = 0; v < mesh->indices; v++)
+	{
+		indices[v] = first + ((mesh->index[v] < mesh->vertices) ? mesh->index[v] : 0u);
+	}
+}
+
+// The kit's wheel `wheel` (0 fl, 1 fr, 2 rl, 3 rr) in model units about its
+// middle, axle +x (wheels 1 and 3 turned half about y: their outer side -x),
+// on the palette entry of the wheel (the standard wheels' matrices).
+internal void EngHc_KitWheel(const EngHcChar *c, int wheel, EngHcSrc *src, EngineVertex *base, u32 *indices, u32 first, u32 entry)
+{
+	const RldKitMesh *mesh = &c->gkKit->wheel;
+	const float turn = ((wheel & 1) != 0) ? -1.0f : 1.0f;
+	u32 v;
+
+	for (v = 0; v < mesh->vertices; v++)
+	{
+		const RldKitVertex *kv = &mesh->v[v];
+		EngHcSrc *s = &src[v];
+		EngineVertex *b = &base[v];
+		int a;
+
+		memset(s, 0, sizeof(*s));
+		memset(b, 0, sizeof(*b));
+		s->p[0] = turn * kv->p[0] * ENG_HC_UNITS;
+		s->p[1] = kv->p[1] * ENG_HC_UNITS;
+		s->p[2] = turn * kv->p[2] * ENG_HC_UNITS;
+		s->n[0] = turn * kv->n[0];
+		s->n[1] = kv->n[1];
+		s->n[2] = turn * kv->n[2];
+		s->hasNormal = 1;
+		s->j[0] = (u8)entry;
+		s->w[0] = 1.0f;
+		for (a = 0; a < 3; a++)
+		{
+			b->color[a] = EngHc_KitColour(c->vcolMode, 0, kv->c[a]);
+		}
+		b->color[3] = 255;
+	}
+	for (v = 0; v < mesh->indices; v++)
+	{
+		indices[v] = first + ((mesh->index[v] < mesh->vertices) ? mesh->index[v] : 0u);
+	}
+}
+
+// The two materials of the game's kart after the file's (EngHc_Materials):
+// materials_count + 2 the kart (the atlas, a mask where the atlas has a
+// transparent texel), + 3 the steering wheel and the kit wheels (plain); one
+// sided, factor 1, the file's vertex colour mode - as kit-extract's GLB.
+internal void EngHc_KitMaterials(EngHcChar *c, const cgltf_data *gltf)
+{
+	int k;
+
+	c->matCount = (int)gltf->materials_count + 4;
+	for (k = 0; k < 2; k++)
+	{
+		EngHcMat *m = &c->mats[gltf->materials_count + 2u + (u32)k];
+
+		memset(m, 0, sizeof(*m));
+		m->baseTex = -1;
+		m->normalTex = -1;
+		m->factor[0] = m->factor[1] = m->factor[2] = m->factor[3] = 1.0f;
+		m->normalScale = 1.0f;
+		m->psxFile = (c->vcolMode == RLDHIRES_VCOL_PSX);
+		m->psxBlend = (RldHiresColor_ModeFor(c->vcolMode, k == 0) == RLDHIRES_VCOL_PSX);
+		if (k == 0)
+		{
+			m->mask = c->gkKit->atlasAlpha ? 1 : 0;
+			m->cutoff = 0.5f;
+			if (c->texCount < (int)ENG_HC_TEXTURES_MAX)
+			{
+				EngHcTex *t = &c->tex[c->texCount];
+
+				memset(t, 0, sizeof(*t));
+				t->image = ENG_HC_IMAGE_KIT;
+				t->linear = 0;
+				t->wrapU = NATIVE_GFX_WRAP_CLAMP;
+				t->wrapV = NATIVE_GFX_WRAP_CLAMP;
+				t->texture = 0xffffffffu;
+				m->baseTex = c->texCount++;
+			}
+			else
+			{
+				c->texOverflow = 1;
+			}
+		}
+	}
+}
+
+// One BIGFILE entry, whole (u32 size first, as kit-extract reads it), malloc'ed.
+internal u8 *EngHc_KitEntry(struct BigHeader *big, u32 index, u32 *size, char *why, size_t whySize)
+{
+	const struct BigEntry *entries = BIG_GETENTRY(big);
+	u32 bytes;
+	s32 sectors;
+	u8 *buf;
+
+	*size = 0;
+	if (index >= (u32)big->numEntry)
+	{
+		snprintf(why, whySize, "the game data has no entry %u", (unsigned)index);
+		return NULL;
+	}
+	bytes = (u32)entries[index].size;
+	sectors = (s32)((bytes + ENG_HC_KIT_SECTOR - 1u) / ENG_HC_KIT_SECTOR);
+	buf = (bytes > 0u) ? (u8 *)malloc((size_t)sectors * ENG_HC_KIT_SECTOR) : NULL;
+	if (buf == NULL)
+	{
+		snprintf(why, whySize, "entry %u: %s", (unsigned)index, (bytes > 0u) ? "out of memory" : "empty");
+		return NULL;
+	}
+	if (!NativeCD_ReadSectorsAt(big->cdpos + entries[index].offset, sectors, buf))
+	{
+		free(buf);
+		snprintf(why, whySize, "entry %u: the disc read failed", (unsigned)index);
+		return NULL;
+	}
+	*size = bytes;
+	return buf;
+}
+
+// The kit of retail driver `donor` (0..14), made once from the game data; NULL
+// with *why when it cannot be made.
+internal const RldKitResult *EngHc_Kit(int donor, const char **why)
+{
+	EngHcKit *k;
+
+	*why = "";
+	if (s_hcKitTest != NULL)
+	{
+		return s_hcKitTest;
+	}
+	if ((donor < 0) || (donor >= RLDKIT_DRIVERS))
+	{
+		*why = "the kart donor is not a retail driver with a kart (0..14)";
+		return NULL;
+	}
+	k = &s_hcKit[donor];
+	if (!k->tried)
+	{
+		// The bigfile the load stages read (game/MAIN/MainMain.c LOAD_TenStages).
+		struct BigHeader *big = (sdata->ptrBigfile1 != NULL) ? sdata->ptrBigfile1 : sdata->ptrBigfileCdPos_2;
+		u8 *bytes[RLDKIT_DRIVERS + 2];
+		RldKitSource src;
+		RldKitOptions opt;
+		int d;
+
+		k->tried = 1;
+		memset(bytes, 0, sizeof(bytes));
+		memset(&src, 0, sizeof(src));
+		snprintf(k->why, sizeof(k->why), "no game data");
+		k->ok = (big != NULL);
+		for (d = 0; k->ok && (d < RLDKIT_DRIVERS + 2); d++)
+		{
+			const u32 index = (d < RLDKIT_DRIVERS) ? (RLDKIT_BIG_MODEL_HI + (u32)d) : ((d == RLDKIT_DRIVERS) ? RLDKIT_BIG_SHARED_VRM : RLDKIT_BIG_SHARED_PACK);
+			u32 size = 0;
+
+			bytes[d] = EngHc_KitEntry(big, index, &size, k->why, sizeof(k->why));
+			k->ok = (bytes[d] != NULL);
+			if (d < RLDKIT_DRIVERS)
+			{
+				src.model[d] = bytes[d];
+				src.modelSize[d] = size;
+			}
+			else if (d == RLDKIT_DRIVERS)
+			{
+				src.vrm = bytes[d];
+				src.vrmSize = size;
+			}
+			else
+			{
+				src.pack = bytes[d];
+				src.packSize = size;
+			}
+		}
+		if (k->ok)
+		{
+			memset(&opt, 0, sizeof(opt));
+			opt.driver = donor;
+			opt.segments = 4; // kit-extract's defaults
+			opt.upscale = 4;
+			k->ok = RldKit_Build(&src, &opt, &k->r, k->why, sizeof(k->why));
+		}
+		for (d = 0; d < RLDKIT_DRIVERS + 2; d++)
+		{
+			free(bytes[d]);
+		}
+		if (k->ok)
+		{
+			// What the draw does not need.
+			RldKit_MeshFree(&k->r.flat);
+			free(k->r.atlasSource);
+			k->r.atlasSource = NULL;
+		}
+		else
+		{
+			RldKit_ResultFree(&k->r);
+		}
+	}
+	*why = k->why;
+	return k->ok ? &k->r : NULL;
 }
 
 // Everything of a character that needs no device, from an opened model
@@ -870,7 +1265,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	// The palette layout and the counts.
 	c->joints = (m->skin >= 0) ? m->joints : 0u;
 	c->rigidCount = 0;
-	c->rigidNode = (u32 *)malloc((size_t)(m->drawNodeCount + 1) * sizeof(u32));
+	c->rigidNode = (u32 *)malloc((size_t)(m->drawNodeCount + 3) * sizeof(u32));
 	if (c->rigidNode == NULL)
 	{
 		EngHc_Fail(rule, detail, detailSize, "HRG-7", "out of memory");
@@ -879,6 +1274,10 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	}
 	c->vcolMode = m->vcolMode;
 	EngHc_Materials(c, gltf);
+	if (c->gkKit != NULL)
+	{
+		EngHc_KitMaterials(c, gltf);
+	}
 	if (c->texOverflow)
 	{
 		snprintf(detail, (size_t)detailSize, "the materials need more than %u texture uploads - the engine makes at most 64 (one per image, colour space and wrap mode)",
@@ -911,15 +1310,44 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			matIndices[EngHc_MaterialOf(gltf, prim)] += ic - (ic % 3u);
 		}
 	}
+	// THE GAME'S KART: two rigid entries more - the kart on the figure's node
+	// "kart", the steering wheel on "kart_steer" (else "kart_steer_wheel",
+	// else the kart's) - and their vertices and triangles.
+	if (c->gkKit != NULL)
+	{
+		const RldKitResult *kit = c->gkKit;
+
+		c->gkAnchor[0] = m->kartNode;
+		c->gkAnchor[1] = EngHc_NodeNamed(gltf, "kart_steer");
+		if (c->gkAnchor[1] < 0)
+		{
+			c->gkAnchor[1] = EngHc_NodeNamed(gltf, "kart_steer_wheel");
+		}
+		if (c->gkAnchor[1] < 0)
+		{
+			c->gkAnchor[1] = c->gkAnchor[0];
+		}
+		c->gkFirst = c->joints + c->rigidCount;
+		for (k = 0; k < 2; k++)
+		{
+			c->rigidNode[c->rigidCount++] = (c->gkAnchor[k] >= 0) ? (u32)c->gkAnchor[k] : ENG_HC_NO_NODE;
+		}
+		vertices += kit->kart.vertices + kit->steer.vertices;
+		indices += kit->kart.indices + kit->steer.indices;
+		matIndices[gltf->materials_count + 2u] += kit->kart.indices;
+		matIndices[gltf->materials_count + 3u] += kit->steer.indices;
+	}
 	c->wheelFirst = c->joints + c->rigidCount;
 	c->paletteCount = c->wheelFirst + 4u;
 	c->ownWheels = (m->wheelNode[0] >= 0) && (m->wheelNode[1] >= 0) && (m->wheelNode[2] >= 0) && (m->wheelNode[3] >= 0);
+	c->kitWheels = (c->gkKit != NULL) && !c->ownWheels;
 	// THE KART PART: which palette entries are the kart (the joints and rigid
-	// nodes in the subtree of "kart", and always the four wheels).
+	// nodes in the subtree of "kart", and always the four wheels). The game's
+	// kart: its two entries and the four wheels.
 	c->kartPart = 0;
 	c->kartEntries = 0;
 	c->kartLogged = 0;
-	if (m->kartPart && (m->inKart != NULL) && (c->paletteCount <= ENG_HC_PALETTE_MAX))
+	if (((m->kartPart && (m->inKart != NULL)) || (c->gkKit != NULL)) && (c->paletteCount <= ENG_HC_PALETTE_MAX))
 	{
 		u32 e;
 
@@ -930,13 +1358,18 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			EngHc_FreeCpu(c);
 			return 0;
 		}
-		for (e = 0; e < c->joints; e++)
+		for (e = 0; (e < c->joints) && (m->inKart != NULL); e++)
 		{
 			c->kartEntry[e] = m->inKart[c->skel.jointNode[e]];
 		}
-		for (e = 0; e < c->rigidCount; e++)
+		for (e = 0; (e < c->rigidCount) && (m->inKart != NULL); e++)
 		{
-			c->kartEntry[c->joints + e] = m->inKart[c->rigidNode[e]];
+			c->kartEntry[c->joints + e] = (c->rigidNode[e] != ENG_HC_NO_NODE) ? m->inKart[c->rigidNode[e]] : (u8)0u;
+		}
+		if (c->gkKit != NULL)
+		{
+			c->kartEntry[c->gkFirst] = 1;
+			c->kartEntry[c->gkFirst + 1u] = 1;
 		}
 		for (e = c->wheelFirst; e < c->paletteCount; e++)
 		{
@@ -969,6 +1402,12 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 				indices += ic - (ic % 3u);
 				matIndices[EngHc_MaterialOf(gltf, prim)] += ic - (ic % 3u);
 			}
+		}
+		else if (c->kitWheels)
+		{
+			vertices += c->gkKit->wheel.vertices;
+			indices += c->gkKit->wheel.indices;
+			matIndices[gltf->materials_count + 3u] += c->gkKit->wheel.indices;
 		}
 		else
 		{
@@ -1044,6 +1483,15 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		cgltf_size p;
 		int skinned;
 
+		if ((wheel >= 0) && c->kitWheels)
+		{
+			const int mat = (int)gltf->materials_count + 3;
+
+			EngHc_KitWheel(c, wheel, &c->src[vfirst], &c->base[vfirst], &c->indices[matCursor[mat]], vfirst, c->wheelFirst + (u32)wheel);
+			matCursor[mat] += c->gkKit->wheel.indices;
+			vfirst += c->gkKit->wheel.vertices;
+			continue;
+		}
 		if ((wheel >= 0) && !c->ownWheels)
 		{
 			const int mat = (int)gltf->materials_count + 1;
@@ -1103,12 +1551,32 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	// The wheel nodes at rest: the radius in model units, the roll sign and the rest yaw.
 	RldAnim_PoseRest(&c->skel, pose);
 	RldAnim_NodeMatrices(&c->skel, pose, worlds);
+	// THE GAME'S KART: the kart and the steering wheel (about the ring's centre)
+	// into the rest space of their nodes.
+	if (c->gkKit != NULL)
+	{
+		const RldKitResult *kit = c->gkKit;
+		const double none[3] = {0.0, 0.0, 0.0};
+		int part;
+
+		for (part = 0; part < 2; part++)
+		{
+			const RldKitMesh *mesh = (part == 0) ? &kit->kart : &kit->steer;
+			const int mat = (int)gltf->materials_count + 2 + part;
+			const int node = c->gkAnchor[part];
+
+			EngHc_KitPart(c, mesh, (node >= 0) ? &worlds[(size_t)node * 16u] : NULL, (part == 0) ? none : kit->ringCenter, c->gkFirst + (u32)part,
+			              &c->src[vfirst], &c->base[vfirst], &c->indices[matCursor[mat]], vfirst);
+			matCursor[mat] += mesh->indices;
+			vfirst += mesh->vertices;
+		}
+	}
 	for (k = 0; k < 4; k++)
 	{
 		c->wheelNode[k] = c->ownWheels ? m->wheelNode[k] : -1;
 		c->wheelSign[k] = 1.0f;
 		c->wheelRestYaw[k] = 0.0f;
-		c->wheelRadius[k] = ENG_HC_STD_RADIUS;
+		c->wheelRadius[k] = c->kitWheels ? (float)(c->gkKit->wheelRadius * ENG_HC_UNITS) : ENG_HC_STD_RADIUS;
 		if (c->ownWheels)
 		{
 			const float *w = &worlds[(size_t)c->wheelNode[k] * 16u];
@@ -1250,9 +1718,23 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 		int w;
 		int h;
 
-		bytes = RldHires_ImageBytes(m, t->image, &size);
 		memset(&png, 0, sizeof(png));
-		if ((bytes == NULL) || (RldPng_Decode(bytes, size, &png, &pngWhy) != RLDPNG_OK))
+		if (t->image == ENG_HC_IMAGE_KIT)
+		{
+			// THE GAME'S KART: the kit's atlas (RGBA, not the file's); copied, so
+			// that RldPng_Free below frees the copy and the kit keeps its own.
+			bytes = NULL;
+			if ((c->gkKit == NULL) || (c->gkKit->atlas == NULL) ||
+			    ((png.rgba = (u8 *)malloc((size_t)c->gkKit->atlasW * c->gkKit->atlasH * 4u)) == NULL))
+			{
+				EngHc_Fail(rule, detail, detailSize, "HRG-16", "the atlas of the game's kart is missing (out of memory)");
+				return 0;
+			}
+			memcpy(png.rgba, c->gkKit->atlas, (size_t)c->gkKit->atlasW * c->gkKit->atlasH * 4u);
+			png.width = c->gkKit->atlasW;
+			png.height = c->gkKit->atlasH;
+		}
+		else if (((bytes = RldHires_ImageBytes(m, t->image, &size)) == NULL) || (RldPng_Decode(bytes, size, &png, &pngWhy) != RLDPNG_OK))
 		{
 			snprintf(detail, (size_t)detailSize, "image %d: %s", t->image, (pngWhy != NULL) ? pngWhy : "no bytes");
 			*rule = "HRG-16";
@@ -1559,6 +2041,14 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 	}
 	for (e = 0; e < c->rigidCount; e++)
 	{
+		if (c->rigidNode[e] == ENG_HC_NO_NODE)
+		{
+			float id[16];
+
+			EngHc_Identity16(id);
+			RldAnim_PaletteEntry(m64.m, id, &s_hc.palette[(c->joints + e) * 12u]);
+			continue;
+		}
 		RldAnim_PaletteEntry(m64.m, &s_hc.worlds[(size_t)c->rigidNode[e] * 16u], &s_hc.palette[(c->joints + e) * 12u]);
 	}
 	*yaw = 0.0f;
@@ -2078,7 +2568,7 @@ internal void EngHc_LogTick(const struct GameTracker *gGT, int seat, const struc
 	             (double)info->steer, (info->steerClip == -2) ? "none" : Engine_HiresClipName(info->steerClip), (int)d->wheelRotation, run->st.airTicks,
 	             (int)d->kartState, run->st.driftSide, (int)d->driverRank, (double)slot->yawDrawn, (double)((int)d->wheelRotation * 4) * ENG_HC_ANGLE,
 	             (double)slot->rollDrawn, (dt > 0.0) ? (run->step[0] / dt) : 0.0, run->radius[0], (dt > 0.0) ? (way / dt) : 0.0, (int)d->posCurr.x,
-	             (int)d->posCurr.y, (int)d->posCurr.z, c->ownWheels ? "own" : "standard", (double)box[0], (double)box[1], (double)box[2], (double)box[3],
+	             (int)d->posCurr.y, (int)d->posCurr.z, EngHc_WheelsName(c), (double)box[0], (double)box[1], (double)box[2], (double)box[3],
 	             (double)tint[0], (double)tint[1], (double)tint[2]);
 }
 
@@ -2590,10 +3080,15 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 	u32 peak = 0;
 	int ok = 0;
 	int i;
+	int gameKart = 0;
+	const char *gkWhy = "";
+	char anchor[2][48];
 
 	memset(c, 0, sizeof(*c));
+	anchor[0][0] = anchor[1][0] = '\0';
 	c->indexBuffer = 0xffffffffu;
 	c->entry = entry;
+	c->gkDonor = -1;
 	snprintf(c->file, sizeof(c->file), "%s", NativeChar_EntryFile(entry));
 	c->model = NativeChar_EntryModel(entry);
 	bytes = NativeChar_ReadChrg(entry, &size, &why);
@@ -2608,11 +3103,37 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 	{
 		ok = 0; // refused: rule and detail are set
 	}
-	else if (EngHc_BuildCpu(&model, c, rule, detail, detailSize))
+	else
 	{
-		peak += c->hostBytes + c->indexCount * 4u;
-		ok = EngHc_Upload(&model, c, rule, detail, detailSize, &peak);
-		peak += c->hostBytes;
+		// THE GAME'S KART: the donor's kit from the player's game data (made once).
+		if (model.gameKart)
+		{
+			gameKart = 1;
+			c->gkDonor = (model.kartDonor == (int)RLDHIRES_PART_DONOR_TEMPLATE) ? NativeChar_EntryTemplate(entry) : model.kartDonor;
+			c->gkKit = EngHc_Kit(c->gkDonor, &gkWhy);
+		}
+		if (EngHc_BuildCpu(&model, c, rule, detail, detailSize))
+		{
+			int k;
+
+			for (k = 0; (k < 2) && (c->gkKit != NULL); k++)
+			{
+				const int node = c->gkAnchor[k];
+				const char *name = (node >= 0) ? model.data->nodes[node].name : NULL;
+
+				if (node < 0)
+				{
+					snprintf(anchor[k], sizeof(anchor[k]), "the model's space");
+				}
+				else
+				{
+					snprintf(anchor[k], sizeof(anchor[k]), "node '%s'", (name != NULL) ? name : "?");
+				}
+			}
+			peak += c->hostBytes + c->indexCount * 4u;
+			ok = EngHc_Upload(&model, c, rule, detail, detailSize, &peak);
+			peak += c->hostBytes;
+		}
 	}
 	// The warnings and notes of the file, once per load of the character.
 	for (i = 0; ok && (i < rep.count); i++)
@@ -2635,8 +3156,21 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 		Platform_Log("[CTR Engine] hires char vertex colours: %s: %s\n", c->file,
 		             (c->vcolMode == RLDHIRES_VCOL_PSX) ? "PSX blend (grey 128 is neutral, texture x colour / 128)" : "off (COLOR_0 ignored)");
 	}
+	// The game's kart (CHRG parts bit 1): made, or why not.
+	if (c->gkKit != NULL)
+	{
+		Platform_Log("[CTR Engine] hires char game kart: %s: the kart of driver %d (%s) from the player's game data - kart %u triangles on %s, steering wheel %u "
+		             "on %s, wheels %s, atlas %ux%u, %u of %u palette entries; left out on the podium, in the menu scene and the driver select\n",
+		             c->file, c->gkDonor, c->gkKit->model, (unsigned)(c->gkKit->kart.indices / 3u), anchor[0], (unsigned)(c->gkKit->steer.indices / 3u), anchor[1],
+		             EngHc_WheelsName(c), (unsigned)c->gkKit->atlasW, (unsigned)c->gkKit->atlasH, (unsigned)c->kartEntries, (unsigned)c->paletteCount);
+	}
+	else if (gameKart)
+	{
+		Platform_Log("[CTR Engine] hires char game kart: %s: not made (driver %d: %s) - the figure is drawn without a kart, on standard wheels\n", c->file, c->gkDonor,
+		             gkWhy);
+	}
 	// The kart part, only when the file has one (a file of before logs as before).
-	if (c->kartPart)
+	if (c->kartPart && (c->gkKit == NULL))
 	{
 		Platform_Log("[CTR Engine] hires char kart part: %s: %u of %u palette entries (the 4 wheels included) - left out on the podium, in the menu scene and the driver select; a finished driver keeps the race clips\n",
 		             c->file, (unsigned)c->kartEntries, (unsigned)c->paletteCount);
@@ -2829,7 +3363,7 @@ void Engine_HiresCharsLoad(void)
 
 			Platform_Log("[CTR Engine] hires char ready: seat %d, %s, %u triangles, %u vertices, %u joints, clips %s, wheels %s, textures %d%s, %u bytes "
 			             "(host %u, textures %llu)\n",
-			             seat, c->file, c->triangles, c->vertexCount, c->joints, c->clipText, c->ownWheels ? "own" : "standard", c->texCount, c->texText,
+			             seat, c->file, c->triangles, c->vertexCount, c->joints, c->clipText, EngHc_WheelsName(c), c->texCount, c->texText,
 			             c->hostBytes + (u32)c->texBytes + c->indexCount * 4u, c->hostBytes, (unsigned long long)c->texBytes);
 		}
 	}
@@ -2867,7 +3401,7 @@ void Engine_HiresCharsLoad(void)
 				s_hc.loaded++;
 				Platform_Log("[CTR Engine] hires char ready: entry %d, %s, %u triangles, %u vertices, %u joints, clips %s, wheels %s, textures %d%s\n", entry,
 				             s_hc.chars[ch].file, s_hc.chars[ch].triangles, s_hc.chars[ch].vertexCount, s_hc.chars[ch].joints, s_hc.chars[ch].clipText,
-				             s_hc.chars[ch].ownWheels ? "own" : "standard", s_hc.chars[ch].texCount, s_hc.chars[ch].texText);
+				             EngHc_WheelsName(&s_hc.chars[ch]), s_hc.chars[ch].texCount, s_hc.chars[ch].texText);
 			}
 			needed[ch] = 1;
 			s_hc.chars[ch].lastLevel = s_hc.levelStamp;
@@ -3206,6 +3740,193 @@ internal int EngHc_SelfTestLoader(int *checks)
 	}
 	RldHires_Close(&model);
 	free(chunk);
+
+	// THE GAME'S KART (CHRG parts bit 1): A without wheel nodes, donor 3, and a
+	// kit made here (no game data): kart and steering wheel one triangle each,
+	// the wheel one triangle, a 4 x 4 atlas.
+	{
+		EngHiresTestGlbDesc d0;
+		RldKitVertex kartV[3];
+		RldKitVertex steerV[3];
+		RldKitVertex wheelV[3];
+		u32 tri[3] = {0, 1, 2};
+		u8 atlas[4 * 4 * 4];
+		static RldKitResult kit;
+		size_t glb0Size = 0;
+		u8 *glb0;
+		int v;
+
+		memset(&d0, 0, sizeof(d0));
+		d0.skinned = 1;
+		d0.wheels = 0;
+		d0.clipMask = 0xfffu;
+		memset(&kit, 0, sizeof(kit));
+		memset(kartV, 0, sizeof(kartV));
+		memset(steerV, 0, sizeof(steerV));
+		memset(wheelV, 0, sizeof(wheelV));
+		memset(atlas, 200, sizeof(atlas));
+		for (v = 0; v < 3; v++)
+		{
+			kartV[v].p[0] = (v == 1) ? 0.2f : 0.0f;
+			kartV[v].p[1] = (v == 2) ? 0.3f : 0.1f;
+			kartV[v].p[2] = 0.5f;
+			kartV[v].n[2] = 1.0f;
+			kartV[v].uv[0] = 0.25f * (float)v;
+			kartV[v].c[0] = kartV[v].c[1] = kartV[v].c[2] = 128;
+			steerV[v].p[0] = (v == 1) ? 0.1f : 0.0f;
+			steerV[v].p[1] = (v == 2) ? 0.1f : 0.0f;
+			steerV[v].n[2] = 1.0f;
+			steerV[v].c[0] = steerV[v].c[1] = steerV[v].c[2] = 60;
+			wheelV[v].p[0] = (v == 0) ? 0.05f : 0.0f;
+			wheelV[v].p[1] = (v == 1) ? 0.2f : 0.0f;
+			wheelV[v].p[2] = (v == 2) ? 0.2f : 0.0f;
+			wheelV[v].n[0] = 1.0f;
+		}
+		kit.kart.v = kartV;
+		kit.kart.vertices = 3;
+		kit.kart.index = tri;
+		kit.kart.indices = 3;
+		kit.kart.textured = 1;
+		kit.steer.v = steerV;
+		kit.steer.vertices = 3;
+		kit.steer.index = tri;
+		kit.steer.indices = 3;
+		kit.wheel.v = wheelV;
+		kit.wheel.vertices = 3;
+		kit.wheel.index = tri;
+		kit.wheel.indices = 3;
+		kit.atlas = atlas;
+		kit.atlasW = 4;
+		kit.atlasH = 4;
+		kit.ringCenter[1] = 0.6;
+		kit.ringCenter[2] = 0.4;
+		kit.wheelRadius = 0.25;
+		snprintf(kit.model, sizeof(kit.model), "test");
+
+		glb0 = EngHiresTest_Glb(&d0, &glb0Size);
+		chunk = (glb0 != NULL) ? RldHires_BuildChunkParts(glb0, (u32)glb0Size, 0u, RLDHIRES_PART_GAME_KART | (3u << RLDHIRES_PART_DONOR_SHIFT), &chunkSize) : NULL;
+		ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+		HL_CHECK(ok && model.gameKart && (model.kartDonor == 3) && RldHires_ReportHas(&rep, "HRG-42"),
+		         "game kart: A without wheels and with bit 1 opens, donor 3, HRG-42 a note");
+		memset(&c, 0, sizeof(c));
+		c.indexBuffer = 0xffffffffu;
+		c.gkKit = &kit;
+		c.gkDonor = 3;
+		ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+		HL_CHECK(ok, "game kart: the CPU side is made");
+		if (ok)
+		{
+			const u32 mc = (u32)model.data->materials_count;
+			const float ch = 0.25f * ENG_HC_UNITS;
+
+			// palette: joints 2, the kart 2, the steering wheel 3, the wheels 4..7
+			HL_CHECK((c.joints == 2u) && (c.rigidCount == 2u) && (c.gkFirst == 2u) && (c.wheelFirst == 4u) && (c.paletteCount == 8u) && c.kitWheels &&
+			             !c.ownWheels && (c.gkAnchor[0] == model.kartNode) && (c.gkAnchor[1] == model.kartNode) && (c.rigidNode[0] == (u32)model.kartNode),
+			         "game kart: palette layout, the kart and the steering wheel on node 'kart' (A has no 'kart_steer'), kit wheels");
+			HL_CHECK(c.kartPart && (c.kartEntries == 6u) && !c.kartEntry[0] && !c.kartEntry[1] && c.kartEntry[2] && c.kartEntry[3] && c.kartEntry[7],
+			         "game kart: its 2 entries and the 4 wheels are the kart (hidden on the podium), the figure's joints not");
+			HL_CHECK((c.vertexCount == 22u) && (c.indexCount == 24u) && (c.triangles == 8u), "game kart: 4 + 4 x 3 + 3 + 3 vertices, 8 triangles");
+			HL_CHECK((c.matCount == (int)mc + 4) && (c.mats[mc + 2u].baseTex >= 0) && (c.tex[c.mats[mc + 2u].baseTex].image == ENG_HC_IMAGE_KIT) &&
+			             (c.tex[c.mats[mc + 2u].baseTex].wrapU == NATIVE_GFX_WRAP_CLAMP) && (c.mats[mc + 3u].baseTex == -1) && !c.mats[mc + 2u].doubleSided &&
+			             !c.mats[mc + 2u].mask,
+			         "game kart: two materials more, the kart's on the kit's atlas (clamped), the plain one untextured");
+			{
+				u32 r;
+				int kartRange = 0;
+				int plainRange = 0;
+
+				for (r = 0; r < c.rangeCount; r++)
+				{
+					kartRange |= (c.ranges[r].material == (u16)(mc + 2u)) && (c.ranges[r].indexCount == 3u);
+					plainRange |= (c.ranges[r].material == (u16)(mc + 3u)) && (c.ranges[r].indexCount == 15u);
+				}
+				HL_CHECK(kartRange && plainRange, "game kart: a range of 3 indices for the kart, 15 for the steering wheel and the 4 wheels");
+			}
+			// vertices: body 0..3, wheels 4..15, kart 16..18, steering wheel 19..21
+			HL_CHECK((fabsf(c.src[17].p[0] - 0.2f) < 1e-6f) && (fabsf(c.src[17].p[1] - 0.1f) < 1e-6f) && (fabsf(c.src[17].p[2] - 0.5f) < 1e-6f) &&
+			             (c.src[16].j[0] == 2) && (c.src[16].w[0] == 1.0f) && (c.base[17].texcoord[0] == 0.25f) && (c.base[16].color[0] == 255),
+			         "game kart: the kart where the kit put it (node 'kart' at rest is the identity), entry 2, uv, grey 128 neutral (glTF file: 255)");
+			HL_CHECK((fabsf(c.src[20].p[0] - 0.1f) < 1e-6f) && (fabsf(c.src[21].p[1] - 0.7f) < 1e-6f) && (fabsf(c.src[19].p[2] - 0.4f) < 1e-6f) &&
+			             (c.src[19].j[0] == 3) && (c.base[19].color[0] == EngHc_KitColour(RLDHIRES_VCOL_GLTF, 0, 60)),
+			         "game kart: the steering wheel about the ring's centre (0, 0.6, 0.4), entry 3, its plain colour");
+			HL_CHECK((fabsf(c.src[4].p[0] - 3.2f) < 1e-5f) && (fabsf(c.src[7].p[0] + 3.2f) < 1e-5f) && (fabsf(c.src[8].p[1] - 12.8f) < 1e-5f) &&
+			             (fabsf(c.src[9].p[2] + 12.8f) < 1e-5f) && (c.src[4].j[0] == 4) && (c.src[7].j[0] == 5) && (c.src[15].j[0] == 7),
+			         "game kart: kit wheels in model units, wheel 1 turned half about y (x and z negated), on entries 4..7");
+			HL_CHECK((fabsf(c.wheelRadius[0] - ch) < 1e-5f) && (fabsf(c.wheelRadius[3] - ch) < 1e-5f), "game kart: wheel radius 0.25 m = 16 units");
+			s_hc.chars[0] = c;
+			s_hc.chars[0].used = 1;
+			if (EngHc_Scratch())
+			{
+				EngHcPlace pl;
+				float yaw = 0.0f;
+				float roll = 0.0f;
+				float before[8 * 12];
+				int zero = 1;
+				u32 e;
+
+				memset(&pl, 0, sizeof(pl));
+				Engine_Mat4Identity(&pl.world);
+				pl.rot[0][0] = pl.rot[1][1] = pl.rot[2][2] = 1.0;
+				RldAnim_PoseRest(&c.skel, s_hc.poseA);
+				EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+				{
+					const float *g = &s_hc.palette[2u * 12u];
+
+					HL_CHECK((fabsf(g[0] - 64.0f) < 1e-4f) && (fabsf(g[5] - 64.0f) < 1e-4f) && (fabsf(g[10] - 64.0f) < 1e-4f) && (fabsf(g[1]) < 1e-5f) &&
+					             (fabsf(g[3]) < 1e-5f) && (fabsf(g[7]) < 1e-5f),
+					         "game kart: the kart's entry at rest is 64 units per metre at the origin");
+				}
+				memcpy(before, s_hc.palette, sizeof(before));
+				pl.hideKart = 1;
+				EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+				for (e = 2; e < 8u; e++)
+				{
+					int k;
+
+					for (k = 0; k < 12; k++)
+					{
+						zero &= (s_hc.palette[e * 12u + (u32)k] == 0.0f);
+					}
+				}
+				HL_CHECK(zero && (memcmp(before, s_hc.palette, 2u * 12u * sizeof(float)) == 0), "game kart: hideKart leaves out the kart, the steering wheel and the wheels, the figure stays");
+			}
+			else
+			{
+				HL_CHECK(0, "game kart: scratch");
+			}
+			memset(&s_hc.chars[0], 0, sizeof(s_hc.chars[0]));
+			EngHc_FreeCpu(&c);
+		}
+		// Without the kit (no game data): the figure on standard wheels, no kart part.
+		memset(&c, 0, sizeof(c));
+		c.indexBuffer = 0xffffffffu;
+		ok = (chunk != NULL) && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+		HL_CHECK(ok && !c.kitWheels && !c.kartPart && (c.paletteCount == 6u) && (c.vertexCount == 4u + 4u * (u32)ENG_HC_STD_VERTICES),
+		         "game kart: without a kit the figure alone on standard wheels");
+		if (ok)
+		{
+			EngHc_FreeCpu(&c);
+		}
+		RldHires_Close(&model);
+		free(chunk);
+		free(glb0);
+		{
+			const char *why = "";
+			const float w[16] = {2.0f, 0.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 1.0f, 2.0f, 3.0f, 1.0f};
+			double inv[3][4];
+			const RldKitResult *none;
+
+			HL_CHECK(EngHc_AffineInverse(w, inv) && (fabs(inv[0][0] * 3.0 + inv[0][3] - 1.0) < 1e-9) && (fabs(inv[1][1] * 4.0 + inv[1][3] - 1.0) < 1e-9) &&
+			             (fabs(inv[2][2] * 5.0 + inv[2][3] - 1.0) < 1e-9),
+			         "game kart: the rest inverse of scale 2 at (1, 2, 3) takes (3, 4, 5) to (1, 1, 1)");
+			s_hcKitTest = NULL;
+			none = EngHc_Kit(15, &why);
+			HL_CHECK((none == NULL) && (strstr(why, "0..14") != NULL), "game kart: driver 15 (no kart) is refused with its reason");
+			s_hcKitTest = &kit;
+			HL_CHECK(EngHc_Kit(15, &why) == &kit, "game kart: the selftest's kit stands in for the game data");
+			s_hcKitTest = NULL;
+		}
+	}
 
 	// Version 2, an unknown flag bit, a broken GLB: refused with their rules.
 	chunk = (glb != NULL) ? RldHires_BuildChunk(glb, (u32)glbSize, &chunkSize) : NULL;

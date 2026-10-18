@@ -3,10 +3,11 @@
 //
 // AN INCLUDE, NOT A MODULE, header-only (static functions), like
 // include/rldhires.inc. rldpack (kit-extract, kit-standin, selftest-kit) runs it;
-// the game will run the same code for the in-game kart of a figure-only driver
-// (CHRG parts bit 1, a later package). u8, u16, u32 and u64 come from the
-// including file. Nothing here prints, reads or writes a file: the caller hands
-// over the bytes of the BIGFILE entries and gets meshes and an atlas back.
+// the game runs the same code for the in-game kart of a figure-only driver
+// (CHRG parts bit 1, platform/engine_hires_char.c THE GAME'S KART). u8, u16,
+// u32 and u64 come from the including file. Nothing here prints, reads or
+// writes a file: the caller hands over the bytes of the BIGFILE entries and
+// gets meshes and an atlas back.
 //
 // RIGHTS. Everything this file returns is made from the player's game data at
 // run time and belongs only on the player's computer, in a folder the player
@@ -573,14 +574,14 @@ static u32 RldKit_W(const RldKitRetail *m, u32 offset)
 }
 
 // One bit field of the delta stream (RB:513): MSB first inside little-endian words.
-static int RldKit_Bits(const RldKitRetail *m, u32 data, u32 *bit, int bits)
+static int RldKit_Bits(const RldKitRetail *m, u32 at, u32 *bit, int bits)
 {
 	u32 v = 0;
 	int i;
 
 	for (i = 0; i < bits; i++)
 	{
-		const u32 word = RldKit_W(m, data + (*bit >> 5) * 4u);
+		const u32 word = RldKit_W(m, at + (*bit >> 5) * 4u);
 
 		v = (v << 1) | ((word >> (31u - (*bit & 31u))) & 1u);
 		(*bit)++;
@@ -1432,23 +1433,23 @@ static int RldKit_PnBuild(RldKitPn *pn, u32 count, RldKitResult *r)
 		for (c = 0; c < 3; c++)
 		{
 			double sum[3] = {0.0, 0.0, 0.0};
-			u32 *stack = (u32 *)malloc((size_t)count * sizeof(u32));
+			u32 *work = (u32 *)malloc((size_t)count * sizeof(u32));
 			u8 *seen = (u8 *)calloc(count, 1);
 			u32 top = 0;
 			int k;
 
-			if ((stack == NULL) || (seen == NULL))
+			if ((work == NULL) || (seen == NULL))
 			{
-				free(stack);
+				free(work);
 				free(seen);
 				free(nbTri);
 				return 0;
 			}
-			stack[top++] = t;
+			work[top++] = t;
 			seen[t] = 1;
 			while (top > 0u)
 			{
-				const u32 f = stack[--top];
+				const u32 f = work[--top];
 				int cf = -1;
 				int k2;
 
@@ -1489,11 +1490,11 @@ static int RldKit_PnBuild(RldKitPn *pn, u32 count, RldKitResult *r)
 					if (touches && !pn[f].edgeHard[k2] && (nb >= 0) && !seen[nb])
 					{
 						seen[nb] = 1;
-						stack[top++] = (u32)nb;
+						work[top++] = (u32)nb;
 					}
 				}
 			}
-			free(stack);
+			free(work);
 			free(seen);
 			if (!RldKit_Normalize(sum))
 			{
@@ -1730,7 +1731,7 @@ static void RldKit_Scale2x(const u8 *src, u32 w, u32 h, u8 *dst)
 // Icon group 0 of the shared pack: icon k's layout words. 1 = found.
 static int RldKit_TireIcon(const u8 *pack, u32 packSize, int k, u32 layout[3])
 {
-	const u8 *data;
+	const u8 *body;
 	u32 size;
 	u32 ltl;
 	u32 groups;
@@ -1746,24 +1747,24 @@ static int RldKit_TireIcon(const u8 *pack, u32 packSize, int k, u32 layout[3])
 	{
 		size = packSize - 4u;
 	}
-	data = pack + 4;
-	ltl = RldKit_LE32(data);
+	body = pack + 4;
+	ltl = RldKit_LE32(body);
 	if ((u64)ltl + 16u > size)
 	{
 		return 0;
 	}
-	groups = RldKit_LE32(&data[ltl + 8u]);
-	first = RldKit_LE32(&data[ltl + 12u]);
+	groups = RldKit_LE32(&body[ltl + 8u]);
+	first = RldKit_LE32(&body[ltl + 12u]);
 	for (g = 0; (g < groups) && (g < 64u) && ((u64)first + 4u * g + 4u <= size); g++)
 	{
-		const u32 gp = RldKit_LE32(&data[first + 4u * g]);
+		const u32 gp = RldKit_LE32(&body[first + 4u * g]);
 		u32 ip;
 
 		if ((u64)gp + 0x14u > size)
 		{
 			continue;
 		}
-		if ((RldKit_S16(RldKit_LE16(&data[gp + 0x10u])) != 0) || (RldKit_S16(RldKit_LE16(&data[gp + 0x12u])) <= k))
+		if ((RldKit_S16(RldKit_LE16(&body[gp + 0x10u])) != 0) || (RldKit_S16(RldKit_LE16(&body[gp + 0x12u])) <= k))
 		{
 			continue;
 		}
@@ -1771,14 +1772,14 @@ static int RldKit_TireIcon(const u8 *pack, u32 packSize, int k, u32 layout[3])
 		{
 			return 0;
 		}
-		ip = RldKit_LE32(&data[gp + 0x14u + 4u * (u32)k]);
+		ip = RldKit_LE32(&body[gp + 0x14u + 4u * (u32)k]);
 		if ((u64)ip + 0x20u > size)
 		{
 			return 0;
 		}
-		layout[0] = RldKit_LE32(&data[ip + 0x14u]);
-		layout[1] = RldKit_LE32(&data[ip + 0x18u]);
-		layout[2] = RldKit_LE32(&data[ip + 0x1Cu]);
+		layout[0] = RldKit_LE32(&body[ip + 0x14u]);
+		layout[1] = RldKit_LE32(&body[ip + 0x18u]);
+		layout[2] = RldKit_LE32(&body[ip + 0x1Cu]);
 		return 1;
 	}
 	return 0;

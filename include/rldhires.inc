@@ -72,9 +72,11 @@
 //                              the kart is drawn everywhere, as without the bit.
 //   1 RLDHIRES_PART_GAME_KART  the file has no kart; the game puts in the
 //                              original kart from the player's own game data
-//                              (the in-game insertion is a later package; until
-//                              then the bit is read and reported only). With
-//                              bit 0 set too, bit 0 wins (HRG-40). Such a file
+//                              (the engine makes it at the load with
+//                              include/rldkit.inc: platform/engine_hires_char.c
+//                              THE GAME'S KART; the PS1 path draws the classic
+//                              model). With bit 0 set too, bit 0 wins (HRG-40).
+//                              Such a file
 //                              needs no wheel nodes (a note, HRG-42, instead of
 //                              the warning HRG-20), and a node "kart" WITHOUT a
 //                              mesh in its subtree (the joints kart and

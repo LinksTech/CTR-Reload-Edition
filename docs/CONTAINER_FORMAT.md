@@ -481,7 +481,7 @@ before):
 | Bit | Name | Meaning |
 |---|---|---|
 | 0 | kart part | the subtree of the first node named `kart` (in the drawn scene) is the kart. Where the kart is not wanted - the podium scene, the menu scene, the driver select - the engine leaves it out together with the four wheels; in a race it stays, and a finished driver keeps the seated race clips (idle, steer) instead of podium_1..3 / lose, which a file with a kart part makes standing |
-| 1 | game kart | the file has no kart; the game puts in the original kart from the player's own game data (the in-game insertion is a later package; until then the bit is read and reported only). With bit 0 set too, bit 0 wins (HRG-40). Such a file needs no wheel nodes (a note, HRG-42, instead of the warning HRG-20), and a node `kart` without a mesh below it (the joints a figure keeps for the inserted kart) says nothing (no HRG-39) |
+| 1 | game kart | the file has no kart; the game puts in the original kart from the player's own game data (the engine makes it at the load from the game data: kart, steering wheel on the node `kart_steer`, the kit's wheels; nothing of it is in the file). The classic model of such a file is the figure on a plain stand-in kart made by code (`rldpack make-char --figure-only`), so the file holds no game data. With bit 0 set too, bit 0 wins (HRG-40). Such a file needs no wheel nodes (a note, HRG-42, instead of the warning HRG-20), and a node `kart` without a mesh below it (the joints a figure keeps for the inserted kart) says nothing (no HRG-39) |
 | 8-15 | kart donor | with bit 1: the retail driver 0..14 whose kart (its colours) is taken; 0xFF = the template of CHRI |
 
 Every other bit is written 0 and ignored when read (HRG-40, a note): the whole
