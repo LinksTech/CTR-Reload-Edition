@@ -174,8 +174,8 @@ names = {c.name for c in bpy.data.collections}
 for n in ("CreatorKit", "Figure", "Kart", "Guides"):
     if n not in names:
         problems.append("collection %s missing" % n)
-if len(bpy.data.actions) != 12:
-    problems.append("actions: %d (want 12)" % len(bpy.data.actions))
+if len(bpy.data.actions) != 14:
+    problems.append("actions: %d (want 14)" % len(bpy.data.actions))
 # the two stored exporters: Figure (the figure alone) and CreatorKit (the local demo with the kit kart)
 for tag, cname in (("figure", "Figure"), ("local", "CreatorKit")):
     col = bpy.data.collections.get(cname)
@@ -245,12 +245,18 @@ def kit_findings(j, local):
     return probs
 
 
+def clips_ok(out):
+    # every clip found: the 12 clips ("clips 12/12") and the two optional finish clips ("finish clips 2/2")
+    return (re.search(r"\bclips 12/12\b", out) is not None
+            and re.search(r"\bfinish clips 2/2\b", out) is not None)
+
+
 def local_check_ok(out):
     # the local demo, checked as it is packed (--kart-part): 0 errors, exactly one warning - HRG-41, the kit
     # mark (by design: the file holds the kart of the player's game data) - and no note
     warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
     return ("0 errors, 1 warnings, 0 notes" in out and len(warns) == 1 and " HRG-41 " in warns[0] + " "
-            and "clips 12/12" in out and "wheels 4/4" in out)
+            and clips_ok(out) and "wheels 4/4" in out)
 
 
 # Writes the stand-in kit with an empty root node "kart" over the kart parts (as an earlier kit-extract did).
@@ -358,10 +364,16 @@ def info_size(text):
     return (float(m.group(1)), float(m.group(2))) if m else None
 
 
+def clips_seen(out):
+    m = re.search(r", clips (\d+/\d+)", out)
+    f = re.search(r"\bfinish clips (\d+/\d+)", out)
+    return "%s + finish %s" % (m.group(1) if m else "?", f.group(1) if f else "?")
+
+
 def figure_warnings_ok(out):
     # the figure alone has no wheel nodes: hires-check warns HRG-20 (the standard wheels); nothing else
     warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
-    return "0 errors" in out and all(" HRG-20 " in (w + " ") for w in warns) and "clips 12/12" in out
+    return "0 errors" in out and all(" HRG-20 " in (w + " ") for w in warns) and clips_ok(out)
 
 
 # ------------------------------------------------------------------ steps
@@ -450,7 +462,7 @@ def run_all(blender, packer, work):
         else:
             same = (os.path.isfile(fig1) and shas["figure"] == sha256(fig1) and
                     os.path.isfile(loc1) and shas["local"] == sha256(loc1))
-            rep.check(same, "3 reopen", "2 exporters x %d settings, 4 collections, 12 actions, re-exports same sha256"
+            rep.check(same, "3 reopen", "2 exporters x %d settings, 4 collections, 14 actions, re-exports same sha256"
                       % len(settings), "a re-export differs from the generated file")
     except Exception as e:
         rep.fail("3 reopen", repr(e))
@@ -458,13 +470,13 @@ def run_all(blender, packer, work):
     # 4 hires-check of the local demo (with the kit kart), as it is packed: --kart-part
     code, out = hires(loc1, "psx", "--kart-part")
     rep.check(code == 0 and local_check_ok(out),
-              "4 hires-check local", "--kart-part: 0 errors, only HRG-41 (the kit mark), 0 notes, clips 12/12, wheels 4/4",
+              "4 hires-check local", "--kart-part: 0 errors, only HRG-41 (the kit mark), 0 notes, clips %s, wheels 4/4" % clips_seen(out),
               "exit %s: %s" % (code, tail(out)))
 
     # 5 hires-check of the figure alone: no wheel nodes, so only HRG-20 (standard wheels) may warn
     code, out = hires(fig1, "psx")
     rep.check(code == 0 and figure_warnings_ok(out) and "wheels 0/4" in out,
-              "5 hires-check figure", "0 errors, clips 12/12, wheels 0/4, only HRG-20: %s" % tail(out, 1),
+              "5 hires-check figure", "0 errors, clips %s, wheels 0/4, only HRG-20: %s" % (clips_seen(out), tail(out, 1)),
               "exit %s: %s" % (code, tail(out)))
 
     # 6 the kit marker: everything from the kit folder marked in the local demo, nothing of it in the figure
@@ -661,6 +673,14 @@ def selftest():
         "path search utf-16")
     chk(find_paths_in_bytes(b"D" + b":/Home/Zed/x", needles) != [], "path search home")
     chk(find_paths_in_bytes(b"nothing here /tmp/blender", needles) == [], "path search clean")
+
+    # hires-check summaries: the 12 clips and the two optional finish clips
+    full = ("x.glb: 0 errors, 1 warnings, 0 notes, clips 12/12, wheels 4/4, skin 28 joints\n"
+            "x.glb: finish clips 2/2 (optional: finish_win yes, finish_lose yes; a missing one plays ...)\n")
+    chk(clips_ok(full) and clips_seen(full) == "12/12 + finish 2/2", "clips 12/12 + finish clips 2/2")
+    chk(not clips_ok(full.replace("finish clips 2/2", "finish clips 1/2")), "a finish clip missing")
+    chk(not clips_ok(full.replace("clips 12/12", "clips 11/12")), "a clip missing")
+    chk(not clips_ok("x.glb: 0 errors, 0 warnings, 0 notes, clips 12/12, wheels 4/4\n"), "no finish line")
 
     print("creator-kit-test selftest: %d checks, %d failures" % tuple(n))
     return 0 if n[1] == 0 else 1

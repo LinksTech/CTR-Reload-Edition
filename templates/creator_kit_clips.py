@@ -1,12 +1,14 @@
-# Creator Kit clips: the 12 animation clips of the Creator Kit puppet
+# Creator Kit clips: the 14 animation clips of the Creator Kit puppet
 # (idle, steer_left, steer_right, jump, drift_left, drift_right, hit,
-# podium_1, podium_2, podium_3, lose, menu). Everything here is made from
+# podium_1, podium_2, podium_3, lose, menu and the two optional clips
+# finish_win, finish_lose). Everything here is made from
 # code (pure maths, no random numbers, no clock, no game data) and released
 # under CC0 (templates/LICENSE).
 #
 # Used by templates/make_creator_kit.py:
 #
-#   CLIP_NAMES, CLIPS                        the 12 names and (seconds, play, standing)
+#   CLIP_NAMES, CLIPS                        the 14 names and (seconds, play, standing)
+#   OPTIONAL                                 the clips a file may leave out without a warning
 #   build_actions(rig, bones, info)          one Blender action per clip on the rig
 #
 # How a clip is made. For every frame 0..round(seconds * 30) a pose is
@@ -20,7 +22,9 @@
 #
 # The rig stays in its seated bind pose as the rest pose; standing clips
 # lift `pelvis` to standing height and straighten the legs (the Kart is
-# hidden by the game / by the author in Blender for these clips).
+# hidden by the game / by the author in Blender for these clips). The finish
+# clips (after the finish line, the kart drives on) are seated like the race
+# clips: the pelvis stays on the seat.
 #
 # Units and axes. Model units "u": 64 u = 1 m. glTF axes: x = kart LEFT,
 # y = up, z = kart FRONT. Blender: X = x / 64, Y = -z / 64, Z = y / 64.
@@ -36,7 +40,11 @@ UNIT = 64.0
 FPS = 30
 
 CLIP_NAMES = ["idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit",
-              "podium_1", "podium_2", "podium_3", "lose", "menu"]
+              "podium_1", "podium_2", "podium_3", "lose", "menu", "finish_win", "finish_lose"]
+
+# Optional (format 4.3): played after the finish line, finish_win for places 1..3,
+# finish_lose below. Without them the game plays what 4.2 played there.
+OPTIONAL = ["finish_win", "finish_lose"]
 
 # name: (duration in seconds, play mode of the game, standing without Kart)
 CLIPS = {
@@ -52,6 +60,8 @@ CLIPS = {
     "podium_3": (2.0, "LOOP", True),
     "lose": (2.0, "LOOP", True),
     "menu": (3.0, "LOOP", True),
+    "finish_win": (2.0, "LOOP", False),
+    "finish_lose": (2.0, "LOOP", False),
 }
 
 SIDES = (".L", ".R")
@@ -459,6 +469,40 @@ def _pose_hit(S, i, n):
     return sp
 
 
+# ------------------------------------------------------------------ finish clips (seated)
+
+
+def _pose_finish_win(S, i, n):
+    # after the finish line on places 1..3: both fists up, pumped twice per loop, a small bounce in the seat
+    ph = i / float(n)
+    sp = _base()
+    pump = _sin(2, ph)
+    bounce = 0.5 - 0.5 * _cos(2, ph + 0.15)
+    sp["pelvis"] = (0.0, 1.2 * bounce, 0.0)
+    _rot(sp, "spine", pitch=-4.0)
+    _rot(sp, "chest", pitch=-6.0 - 3.0 * bounce, roll=3.0 * _sin(1, ph))
+    _rot(sp, "head", pitch=-14.0 - 4.0 * bounce, yaw=10.0 * _sin(1, ph), roll=-4.0 * _sin(1, ph))
+    for s in SIDES:
+        sx = SIGN[s]
+        sp["arms"][s] = [(1.0, "dirs", _vdir(sx, 28.0 + 6.0 * pump, 0.12), _vdir(sx, 12.0 + 18.0 * pump, 0.1))]
+    _shoulders(sp, 8.0 + 3.0 * pump, 8.0 + 3.0 * pump)
+    return sp
+
+
+def _pose_finish_lose(S, i, n):
+    # after the finish line from place 4: slumped over the wheel, shoulders down, the head shakes slowly
+    ph = i / float(n)
+    sp = _base()
+    sigh = 0.5 - 0.5 * _cos(1, ph)
+    _rot(sp, "spine", pitch=4.0)
+    _rot(sp, "chest", pitch=10.0 + 4.0 * sigh)
+    _rot(sp, "head", pitch=22.0 + 4.0 * sigh, yaw=16.0 * _sin(2, ph), roll=3.0 * _sin(2, ph + 0.25))
+    _shoulders(sp, -9.0 - 3.0 * sigh, -9.0 - 3.0 * sigh)
+    sp["pelvis"] = (0.0, -0.4 * sigh, 0.0)
+    _grip_arms(sp)
+    return sp
+
+
 # ------------------------------------------------------------------ standing clips
 
 
@@ -571,6 +615,8 @@ _POSES = {
     "podium_3": _pose_podium_3,
     "lose": _pose_lose,
     "menu": _pose_menu,
+    "finish_win": _pose_finish_win,
+    "finish_lose": _pose_finish_lose,
 }
 
 

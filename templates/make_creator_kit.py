@@ -437,7 +437,8 @@ HOW_TO_EXPORT = [
     "Kart: the kart parts and the four wheels from YOUR game data. They are fixed to the bones kart and kart_steer.",
     "Guides: size box, seat point, stand spot and front arrow. They are never exported.",
     "Keep the rest pose of creator_rig as it is: the figure sits in the kart.",
-    "There are 12 actions: {clips}.",
+    "There are {count} actions: {clips}.",
+    "finish_win and finish_lose are optional (seated, after the finish line). Without them the game plays its other clips there.",
     "Every action has a fake user, so none is lost. Do not rename them.",
     "Standing actions (podium_1, podium_2, podium_3, lose, menu) have a marker: hide the collection Kart for them.",
     "",
@@ -737,7 +738,8 @@ def build(opt, started):
     make_empty("Front", guide_col, "SINGLE_ARROW", 0.3, Bv((0.0, 0.0, nose)), rotation=(math.pi / 2, 0.0, 0.0))
 
     text = bpy.data.texts.new("HOW_TO_EXPORT")
-    text.from_string("\n".join(HOW_TO_EXPORT).replace("{clips}", ", ".join(clip_names)) + "\n")
+    text.from_string("\n".join(HOW_TO_EXPORT).replace("{count}", str(len(clip_names)))
+                     .replace("{clips}", ", ".join(clip_names)) + "\n")
 
     figure_exporter = add_exporter(figure_col, "//" + FIGURE_GLB)
     local_exporter = add_exporter(kit_col, "//" + LOCAL_GLB)

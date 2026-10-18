@@ -48,9 +48,9 @@ driver template:
 
 - `creator_kit_puppet.py` - the puppet: a neutral articulated mannequin and
   its skeleton, seated in the kart in its bind pose
-- `creator_kit_clips.py` - the 12 clips (idle, steer_left, steer_right,
+- `creator_kit_clips.py` - the 14 clips (idle, steer_left, steer_right,
   jump, drift_left, drift_right, hit, podium_1, podium_2, podium_3, lose,
-  menu)
+  menu and the optional finish_win, finish_lose)
 - `creator_kit_standin.py` - a made-up stand-in for the kit files, so the
   kit can be built without game data (tests, the guide's pictures)
 - `creator_kit_classic.py` - an old character (the GLB of `rldpack
