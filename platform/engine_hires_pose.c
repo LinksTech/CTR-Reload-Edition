@@ -15,11 +15,16 @@
 // THE STATES (one per seat, stepped once per logic tick, gGT->timer moved):
 //   FORCED  a clip given by Engine_HiresSeatForceClip (podium, results) - first
 //   FINISHED ACTION_RACE_FINISHED (game/PlayLevel.c:240; the kart drives on
-//           under AI): podium_<driverRank + 1> for ranks 0..2, lose from rank 3,
-//           looped (the rank is frozen at the finish, PlayLevel.c:249). Not for
-//           a file with the kart part (CHRG parts bit 0): its podium and lose
-//           clips stand without the kart, so a finished driver of it stays in
-//           the states below (seated, the kart drives on).
+//           under AI), looped (the rank is frozen at the finish,
+//           PlayLevel.c:249): the file's own finish clip when it has it (4.3,
+//           optional) - finish_win for ranks 0..2, finish_lose from rank 3 -
+//           with or without the kart part. Without that clip what the game
+//           played before the clips existed: podium_<driverRank + 1> for ranks
+//           0..2, lose from rank 3; not for a file with the kart part (CHRG
+//           parts bit 0): its podium and lose clips stand without the kart, so
+//           a finished driver of it stays in the states below (seated, the
+//           kart drives on). A file without the finish clips decides every
+//           tick exactly as before.
 //   HIT     kartState KS_SPINNING, KS_BLASTED or KS_CRASHING: clip "hit", once
 //           from the tick the state is entered, held while it lasts
 //   JUMP    ACTION_TOUCH_GROUND clear for ENG_HC_AIR_DELAY ticks or more (a bump
@@ -46,6 +51,8 @@
 // idle; drift_left -> steer_left at full lock (then idle), drift_right ->
 // steer_right at full lock; podium_3 -> podium_2 -> podium_1 -> idle; idle ->
 // the rest pose. A drawn clip is never undefined, a driver never invisible.
+// finish_win and finish_lose are only ever asked for when the file has them
+// (EngHc_Decide; their chains, podium_1 and lose, are rldhires.inc's).
 
 #define ENG_HC_AIR_DELAY 3      // ticks off the ground before the jump clip (ENG_HIRES_AIR_DELAY of the prototype)
 #define ENG_HC_STEER_FULL 64    // wheelRotation of a full lock
@@ -78,6 +85,7 @@ typedef struct
 	int finished;      // ACTION_RACE_FINISHED set
 	int rank;          // driver->driverRank (0-based)
 	int kartPart;      // the file has the kart part (CHRG parts bit 0): finished keeps the seated race clips
+	u32 clips;         // bit c = clip c is in the file; only finish_win and finish_lose are read here
 } EngHcInput;
 
 typedef struct
@@ -107,7 +115,8 @@ CTR_STATIC_ASSERT((ENGINE_HIRES_CLIPS == RLDHIRES_CLIP_COUNT) && (ENGINE_HIRES_C
                   (ENGINE_HIRES_CLIP_DRIFT_RIGHT == RLDHIRES_CLIP_DRIFT_RIGHT) && (ENGINE_HIRES_CLIP_HIT == RLDHIRES_CLIP_HIT) &&
                   (ENGINE_HIRES_CLIP_PODIUM_1 == RLDHIRES_CLIP_PODIUM_1) && (ENGINE_HIRES_CLIP_PODIUM_2 == RLDHIRES_CLIP_PODIUM_2) &&
                   (ENGINE_HIRES_CLIP_PODIUM_3 == RLDHIRES_CLIP_PODIUM_3) && (ENGINE_HIRES_CLIP_LOSE == RLDHIRES_CLIP_LOSE) &&
-                  (ENGINE_HIRES_CLIP_MENU == RLDHIRES_CLIP_MENU) && (ENGINE_HIRES_CLIP_REST == -1));
+                  (ENGINE_HIRES_CLIP_MENU == RLDHIRES_CLIP_MENU) && (ENGINE_HIRES_CLIP_FINISH_WIN == RLDHIRES_CLIP_FINISH_WIN) &&
+                  (ENGINE_HIRES_CLIP_FINISH_LOSE == RLDHIRES_CLIP_FINISH_LOSE) && (ENGINE_HIRES_CLIP_REST == -1));
 
 const char *Engine_HiresClipName(int clip)
 {
@@ -217,6 +226,13 @@ internal int EngHc_FinishedClip(int rank)
 	return ((rank >= 0) && (rank <= 2)) ? (ENGINE_HIRES_CLIP_PODIUM_1 + rank) : ENGINE_HIRES_CLIP_LOSE;
 }
 
+// The optional finish clip of a finished driver (4.3): finish_win for ranks
+// 0..2, finish_lose below - the split of EngHc_FinishedClip.
+internal int EngHc_FinishClip(int rank)
+{
+	return ((rank >= 0) && (rank <= 2)) ? ENGINE_HIRES_CLIP_FINISH_WIN : ENGINE_HIRES_CLIP_FINISH_LOSE;
+}
+
 // A new driver or instance starts here.
 internal void EngHc_SeatReset(EngHcSeatState *s, int force)
 {
@@ -287,8 +303,16 @@ internal int EngHc_Decide(EngHcSeatState *s, const EngHcInput *in, int *forceCli
 		*forceClip = in->force;
 		return ENG_HC_STATE_FORCED;
 	}
-	// A file with the kart part stands in podium_1..3 / lose (made for the podium
-	// scene without the kart): in the race it keeps its seated clips below.
+	// The file's own finish clip first (4.3, optional; seated or standing is
+	// the author's), with or without the kart part.
+	if (in->finished && ((in->clips & (1u << (u32)EngHc_FinishClip(in->rank))) != 0u))
+	{
+		*forceClip = EngHc_FinishClip(in->rank);
+		return ENG_HC_STATE_FINISHED;
+	}
+	// Without it, as before: a file with the kart part stands in podium_1..3 /
+	// lose (made for the podium scene without the kart), so in the race it
+	// keeps its seated clips below.
 	if (in->finished && !in->kartPart)
 	{
 		*forceClip = EngHc_FinishedClip(in->rank);

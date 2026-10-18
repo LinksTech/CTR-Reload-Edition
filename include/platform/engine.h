@@ -1171,9 +1171,11 @@ extern int g_cfg_engineHiresCharsFilter;
 #define ENGINE_HIRES_CLIP_PODIUM_3 9
 #define ENGINE_HIRES_CLIP_LOSE 10
 #define ENGINE_HIRES_CLIP_MENU 11
-#define ENGINE_HIRES_CLIPS 12
+#define ENGINE_HIRES_CLIP_FINISH_WIN 12  // optional (4.3): after the finish line on place 1..3
+#define ENGINE_HIRES_CLIP_FINISH_LOSE 13 // optional (4.3): after the finish line from place 4
+#define ENGINE_HIRES_CLIPS 14
 #define ENGINE_HIRES_CLIP_REST (-1) // the rest pose: the end of every fallback chain
-const char *Engine_HiresClipName(int clip); // "idle" .. "menu", "rest" for ENGINE_HIRES_CLIP_REST, "?" else
+const char *Engine_HiresClipName(int clip); // "idle" .. "finish_lose", "rest" for ENGINE_HIRES_CLIP_REST, "?" else
 
 #define ENGINE_HIRES_CHARS_MAX 8  // characters loaded at once (one per distinct file)
 #define ENGINE_HIRES_SLOTS 12     // pose slots: one pose per slot and frame

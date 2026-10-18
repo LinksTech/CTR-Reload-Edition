@@ -451,8 +451,22 @@ and every chain ends at the rest pose (the node transforms of the file).
 | podium_2 | loop | podium_1 |
 | podium_3 | loop | podium_2 |
 | lose, menu | loop | idle |
+| finish_win (optional, 4.3) | loop: a driver after the finish line on place 1..3, the kart driving on | what the game played before the clip existed: with the kart part the seated race clips, without it podium_1..3 by place |
+| finish_lose (optional, 4.3) | loop: the same from place 4 on | the same: with the kart part the seated race clips, without it lose |
 
-A missing clip is a warning (HRG-19). An animation whose name is not a clip
+The finish clips are the one ignorable extension of the clip list (4.3). They
+are played in the race only, from the tick the driver crosses the finish line
+(ACTION_RACE_FINISHED): finish_win for places 1..3, finish_lose from place 4,
+with or without the kart part, seated or standing as the author made them. The
+podium scene, the menu scene and the driver select never play them. A file
+without them looks exactly as before, pose for pose. A game of 4.2 reads them
+as unknown names (HRG-21, a note) and plays what it always played there.
+
+A missing clip is a warning (HRG-19), except finish_win and finish_lose: a
+missing optional clip says nothing, so that no file of before gets a new
+warning. `rldpack hires-check` keeps counting the twelve clips every file is
+asked for ("clips n/12") and names the optional ones on a line of their own
+("finish clips n/2"). An animation whose name is not a clip
 name, or a clip name a second time, is a note (HRG-21) and is ignored: it is
 never a reason to refuse the model, and Reload Studio shows it as a note at
 the model's animations. CUBICSPLINE is read linear between the key values
@@ -480,7 +494,7 @@ before):
 
 | Bit | Name | Meaning |
 |---|---|---|
-| 0 | kart part | the subtree of the first node named `kart` (in the drawn scene) is the kart. Where the kart is not wanted - the podium scene, the menu scene, the driver select - the engine leaves it out together with the four wheels; in a race it stays, and a finished driver keeps the seated race clips (idle, steer) instead of podium_1..3 / lose, which a file with a kart part makes standing |
+| 0 | kart part | the subtree of the first node named `kart` (in the drawn scene) is the kart. Where the kart is not wanted - the podium scene, the menu scene, the driver select - the engine leaves it out together with the four wheels; in a race it stays, and a finished driver keeps the seated race clips (idle, steer) instead of podium_1..3 / lose, which a file with a kart part makes standing - or plays its own finish_win / finish_lose (4.3) |
 | 1 | game kart | the file has no kart; the game puts in the original kart from the player's own game data (the engine makes it at the load from the game data: kart, steering wheel on the node `kart_steer`, the kit's wheels; nothing of it is in the file). The classic model of such a file is the figure on a plain stand-in kart made by code (`rldpack make-char --figure-only`), so the file holds no game data. With bit 0 set too, bit 0 wins (HRG-40). Such a file needs no wheel nodes (a note, HRG-42, instead of the warning HRG-20), and a node `kart` without a mesh below it (the joints a figure keeps for the inserted kart) says nothing (no HRG-39) |
 | 8-15 | kart donor | with bit 1: the retail driver 0..14 whose kart (its colours) is taken; 0xFF = the template of CHRI |
 

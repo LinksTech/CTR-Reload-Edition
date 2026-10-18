@@ -55,7 +55,8 @@ typedef struct
 } EngHiresTestGlbDesc;
 
 // The clip names, index = bit of clipMask (the fixed list of the hi-res format).
-static const char *const s_engHiresTestClipNames[12] = {"idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit", "podium_1", "podium_2", "podium_3", "lose", "menu"};
+static const char *const s_engHiresTestClipNames[ENGINE_HIRES_CLIPS] = {"idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit",
+                                                                     "podium_1", "podium_2", "podium_3", "lose", "menu", "finish_win", "finish_lose"};
 
 // ---------------------------------------------------------------------------
 // Growable buffer (used for the JSON text and for every byte array).
@@ -651,7 +652,7 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 	}
 
 	// ----- animations -----
-	for (k = 0; k < 12; k++)
+	for (k = 0; k < ENGINE_HIRES_CLIPS; k++)
 	{
 		if ((d->clipMask & (1u << k)) != 0)
 		{

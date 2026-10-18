@@ -15,6 +15,7 @@
 struct HrTestSpec
 {
 	int clipsMissing;       // bit per RLDHIRES_CLIP_* that is NOT written
+	int finishClips;        // 1 = the optional finish_win and finish_lose are written too (4.3); 0 = the 12 of before
 	int wheelsMissing;      // bit per RLDHIRES_WHEEL_* that is NOT written
 	int skins;              // -1 = none, 0 = the default (1), 2 = two
 	int joints;             // 0 = the default (2)
@@ -697,7 +698,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 		{
 			const int cubic = sp->cubic && (i == RLDHIRES_CLIP_IDLE);
 
-			if ((sp->clipsMissing >> i) & 1)
+			if (((sp->clipsMissing >> i) & 1) || (RldHires_ClipOptional(i) && !sp->finishClips))
 			{
 				continue;
 			}
@@ -1920,10 +1921,12 @@ static int RldHires_SelfTest(void)
 	HrTest_Check(m.triangles == 5u && m.vertices == 15u && m.primitives == 5u, "base model: 5 triangles, 15 vertices (body + 4 wheels)");
 	HrTest_Check(m.wheelNode[0] == 3 && m.wheelNode[1] == 4 && m.wheelNode[2] == 5 && m.wheelNode[3] == 6, "base model: wheel nodes 3..6");
 	HrTest_Check(fabsf(m.wheelRadius[0] - 0.25f) < 1e-6f, "base model: wheel radius 0.25 m");
-	for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
+	for (i = 0; i < RLDHIRES_CLIP_BASE; i++)
 	{
 		HrTest_Check(m.clipAnim[i] == i && m.clipSeconds[i] == 1.0f, "base model: every clip present, 1 s");
 	}
+	HrTest_Check((m.clipAnim[RLDHIRES_CLIP_FINISH_WIN] < 0) && (m.clipAnim[RLDHIRES_CLIP_FINISH_LOSE] < 0) && (rep.warnings == 0) && (rep.notes == 0),
+	             "base model: without the optional finish clips - no warning, no note");
 	HrTest_Check(m.imageCount == 1 && m.images[0].isPng && m.images[0].fileWidth == 3u && m.images[0].fileHeight == 2u &&
 	                 m.images[0].colorType == 6u && m.images[0].width == 16u && m.images[0].height == 16u && m.images[0].mip0Bytes == 1024u,
 	             "base model: 3x2 RGBA PNG, held as 16x16 (1024 bytes)");
@@ -2281,10 +2284,35 @@ static int RldHires_SelfTest(void)
 	HrTest_Open(&sp, &rep, NULL, NULL);
 	HrTest_Check(rep.warnings == 11, "HRG-19: only idle: one warning per missing clip");
 
+	// The optional finish clips (4.3): read when there, silent when not.
+	{
+		RldHiresModel fm;
+		u8 *fglb = NULL;
+
+		memset(&sp, 0, sizeof(sp));
+		sp.finishClips = 1;
+		HrTest_Check((HrTest_Open(&sp, &rep, &fm, &fglb) == 1) && (rep.count == 0), "finish clips: a model with all 14 clips - no message");
+		HrTest_Check((fm.clipAnim[RLDHIRES_CLIP_FINISH_WIN] == RLDHIRES_CLIP_FINISH_WIN) && (fm.clipAnim[RLDHIRES_CLIP_FINISH_LOSE] == RLDHIRES_CLIP_FINISH_LOSE) &&
+		                 (fm.clipSeconds[RLDHIRES_CLIP_FINISH_WIN] == 1.0f) && (fm.clipsPresent == RLDHIRES_CLIP_COUNT),
+		             "finish clips: finish_win and finish_lose found by name, 1 s each");
+		RldHires_Close(&fm);
+		free(fglb);
+		memset(&sp, 0, sizeof(sp));
+		sp.finishClips = 1;
+		sp.clipsMissing = 1 << RLDHIRES_CLIP_FINISH_WIN;
+		HrTest_Open(&sp, &rep, NULL, NULL);
+		HrTest_Check(rep.count == 0, "finish clips: finish_lose alone - no message (a missing optional clip says nothing)");
+		memset(&sp, 0, sizeof(sp));
+		sp.finishClips = 1;
+		sp.clipsMissing = 0x0FFE; // idle and the two finish clips
+		HrTest_Open(&sp, &rep, NULL, NULL);
+		HrTest_Check(rep.warnings == 11, "finish clips: idle and the finish clips - the 11 missing base clips warn, as before");
+	}
+
 	// The chains themselves (section 4 of the format).
 	{
-		static const signed char want[RLDHIRES_CLIP_COUNT] = {-1, 0, 0, 0, 1, 2, 0, 0, 7, 8, 0, 0};
-		static const u8 play[RLDHIRES_CLIP_COUNT] = {0, 1, 1, 2, 0, 0, 2, 0, 0, 0, 0, 0};
+		static const signed char want[RLDHIRES_CLIP_COUNT] = {-1, 0, 0, 0, 1, 2, 0, 0, 7, 8, 0, 0, 7, 10};
+		static const u8 play[RLDHIRES_CLIP_COUNT] = {0, 1, 1, 2, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0};
 		RldHiresModel fake;
 		int via = 0;
 		int lock = 0;
@@ -2295,7 +2323,12 @@ static int RldHires_SelfTest(void)
 			HrTest_Check(RldHires_ClipPlay(i) == play[i], "ClipPlay: the table of the format");
 			HrTest_Check(RldHires_ClipByName(RldHires_ClipName(i)) == i, "ClipByName: every name");
 		}
-		HrTest_Check(RldHires_ClipFallback(-1) == -1 && RldHires_ClipFallback(12) == -1 && RldHires_ClipByName("Idle") == -1, "clips outside the list");
+		HrTest_Check(RldHires_ClipFallback(-1) == -1 && RldHires_ClipFallback(RLDHIRES_CLIP_COUNT) == -1 && RldHires_ClipByName("Idle") == -1 &&
+		                 (RLDHIRES_CLIP_COUNT == 14) && (RLDHIRES_CLIP_BASE == 12) && !RldHires_ClipOptional(RLDHIRES_CLIP_MENU) &&
+		                 RldHires_ClipOptional(RLDHIRES_CLIP_FINISH_WIN) && RldHires_ClipOptional(RLDHIRES_CLIP_FINISH_LOSE) &&
+		                 !RldHires_ClipOptional(RLDHIRES_CLIP_COUNT) && (strcmp(RldHires_ClipName(RLDHIRES_CLIP_FINISH_WIN), "finish_win") == 0) &&
+		                 (strcmp(RldHires_ClipName(RLDHIRES_CLIP_FINISH_LOSE), "finish_lose") == 0),
+		             "clips outside the list; 12 asked for, finish_win and finish_lose optional (4.3)");
 		memset(&fake, 0, sizeof(fake));
 		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
 		{
@@ -2369,7 +2402,7 @@ static int RldHires_SelfTest(void)
 		HrTest_Check(ok == 1 && rep.errors == 0 && rep.warnings == 0 && rep.notes == 1 && rep.count == 1 && strcmp(rep.msg[0].rule, "HRG-21") == 0 &&
 		                 strstr(rep.msg[0].text, "'Walk'") != NULL && strstr(rep.msg[0].text, "ignored") != NULL,
 		             "unknown clip name: 'Walk' and 12 clips - usable, 0 errors, 0 warnings, one note HRG-21 naming 'Walk'");
-		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
+		for (i = 0; i < RLDHIRES_CLIP_BASE; i++)
 		{
 			own &= (walk.clipAnim[i] == i);
 		}
