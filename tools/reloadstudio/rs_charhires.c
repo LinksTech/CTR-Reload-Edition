@@ -235,7 +235,7 @@ void RsCharHires_GameKartLine(int on, int suggested, wchar_t *out, int cap)
 void RsCharHires_GameKartStepLine(int on, int suggested, wchar_t *out, int cap)
 {
     if (on)
-        swprintf(out, cap, L"%ls", RS_TEXT_GAME_KART);
+        swprintf(out, cap, L"%ls", RS_TEXT_GAME_KART_CLASSIC);
     else if (suggested)
         swprintf(out, cap, L"The game will not add a kart - your model is drawn as it is.");
     else if (cap > 0)

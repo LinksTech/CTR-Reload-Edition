@@ -7380,6 +7380,11 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
             Char_ArgsAdd(a, L"--wheels");
             Char_ArgsAdd(a, L"off");
         }
+        // THE KART: a figure that gets the game's kart (the kit's joint, or the
+        // switch) - its classic model shows it in a plain grey stand-in kart
+        // made by code (make-char --figure-only, no game data in the file).
+        if (Char_KartParts() == RS_HIRES_PARTS_GAME_KART)
+            Char_ArgsAdd(a, L"--figure-only");
     }
     return 1;
 }
@@ -9259,7 +9264,8 @@ static void Char_ReportFlow(FILE *f)
                                                                                                              : L" (not shown on this view)");
         {
             const unsigned parts = Char_KartParts();
-            Char_Put(f, L"parts: %ls", (parts & RS_HIRES_PARTS_GAME_KART) == RS_HIRES_PARTS_GAME_KART ? L"game kart (donor template)"
+            Char_Put(f, L"parts: %ls", (parts & RS_HIRES_PARTS_GAME_KART) == RS_HIRES_PARTS_GAME_KART
+                                       ? L"game kart (donor template), classic model: the figure in a grey stand-in kart (--figure-only)"
                                        : (parts & RS_HIRES_PARTS_KART) ? L"kart part" : L"none");
         }
         // THE JPEG TEXTURES: the box (only ever the author's), what the check
