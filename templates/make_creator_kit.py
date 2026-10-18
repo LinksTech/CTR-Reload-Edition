@@ -20,7 +20,9 @@
 #   --vcol psx|gltf|off       vertex colour mode of the file (default psx)
 #   --no-blend                do not write creator-kit.blend
 #   --no-glb                  do not write the two .glb files
-#   --classic <glb>           not available yet
+#   --classic <glb>           an old character as a starting point: the GLB that
+#                             rldpack char-export wrote from its .rldchar goes into the
+#                             collection Classic (never exported)
 #   --test-fake-version X.Y.Z test switch: pretend this Blender version
 #
 # Output in <folder>: creator-kit.blend, creator-kit-figure.glb,
@@ -111,6 +113,7 @@ KIT_PROP = "ctr_kit"
 THREADS_NOTE = ("Blender ran with more than one thread: creator-kit.blend has the same content, but its bytes "
                 "may differ between runs. Start Blender with --threads 1 for byte-identical files.")
 KIT_MAT_PREFIX = "ctrkit_"
+CLASSIC_PREFIX = "classic_"   # the names of an imported old character (creator_kit_classic.py)
 BLEND_NAME = "creator-kit.blend"
 REPORT_NAME = "creator-kit-report.json"
 
@@ -167,9 +170,6 @@ def parse_args(argv):
             i += 1
         else:
             fail(2, "creator kit: unknown argument %s. %s" % (a, USAGE))
-    if opt["classic"] is not None:
-        print("--classic is not available yet")
-        sys.exit(2)
     if not opt["kit"]:
         fail(2, "creator kit: --kit <folder> is required. " + USAGE)
     return opt
@@ -645,6 +645,10 @@ def check_glb(path, clip_names, vcol, local):
         if kit_names or marks:
             fail(5, "creator kit: self check failed: %s must hold the figure alone, but holds %s."
                     % (what, sorted(set(kit_names)) + marks))
+    classic = [n for n in names if (n or "").startswith(CLASSIC_PREFIX)]
+    if classic:
+        fail(5, "creator kit: self check failed: %s holds the classic model (%s) - it must stay out of every "
+                "export." % (what, ", ".join(sorted(classic))))
     if len(j.get("skins", [])) != 1:
         fail(5, "creator kit: self check failed: %s has %d skins (expected 1)." % (what, len(j.get("skins", []))))
     tag = " [vcol %s]" % vcol
@@ -671,6 +675,18 @@ def build(opt, started):
     if opt["stand_in"]:
         creator_kit_standin.write_standin(out)
     info, kart_file, wheel_file = read_kit_info(out, vcol)
+    classic_path = None
+    if opt["classic"] is not None:
+        classic_path = os.path.abspath(opt["classic"])
+        try:
+            with open(classic_path, "rb") as f:
+                head = f.read(4)
+        except OSError:
+            fail(4, "creator kit: the classic model %s cannot be read. How to fix: export the old character "
+                    "again (rldpack char-export <file.rldchar> -o <file.glb>)." % classic_path)
+        if head != b"glTF":
+            fail(4, "creator kit: the classic model %s is no glTF binary (.glb). How to fix: export the old "
+                    "character with rldpack char-export <file.rldchar> -o <file.glb>." % classic_path)
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -697,9 +713,17 @@ def build(opt, started):
 
     kart_objs = import_kart(os.path.join(out, kart_file), kart_col, rig, vcol)
     wheel_objs = import_wheels(os.path.join(out, wheel_file), info, kart_col, rig, vcol)
-    drop_import_collections({"CreatorKit", "Figure", "Kart", "Guides"})
+    drop_import_collections({"CreatorKit", "Figure", "Kart", "Guides", "Classic"})
 
     creator_kit_clips.build_actions(rig, bones, info)
+
+    classic_objs = []
+    if classic_path is not None:
+        import creator_kit_classic
+        try:
+            _col, classic_objs = creator_kit_classic.import_classic(classic_path, vcol)
+        except RuntimeError as e:
+            fail(4, "creator kit: the classic model %s cannot be used: %s." % (os.path.basename(classic_path), e))
     clip_names = list(creator_kit_clips.CLIP_NAMES)
 
     # guides (not exported)
@@ -770,6 +794,8 @@ def build(opt, started):
                    LOCAL_GLB: sha256_file(local_path) if opt["glb"] else None},
         "seconds": round(time.time() - started, 1),
         "messages": [] if single_thread(sys.argv) else [THREADS_NOTE],
+        "classic": ({"file": os.path.basename(classic_path), "objects": len(classic_objs),
+                     "triangles": sum(tri_count(o.data) for o in classic_objs)} if classic_path else None),
     }
     with open(os.path.join(out, REPORT_NAME), "w", encoding="utf-8", newline="\n") as f:
         json.dump(report, f, indent=1, sort_keys=True)

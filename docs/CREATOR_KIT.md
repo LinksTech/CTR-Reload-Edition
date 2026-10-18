@@ -245,7 +245,17 @@ If something looks wrong, go back to Blender, fix it, export again and test agai
 
 ## 11. Start from an old character
 
-**This step is coming soon.** In a later version of the Studio you can load an old character into the template as a starting point. It will appear in the collection **Classic**, and you can build on it and bind it to the skeleton.
+You can start from a character you made before (a .rldchar file).
+
+1. On the page **Creator Kit**, choose the old character at **Start from an old character**.
+2. Press **Generate demo files**.
+3. Open `creator-kit.blend`. The old model is in the collection **Classic**. Click the eye of Classic in the Outliner to show it.
+
+The old model has the right size and sits where the puppet sits. When the file has a native model with textures, you get that one. Else you get the classic model with its vertex colours.
+
+- Use it as a guide, or move parts of it into **Figure** and bind them to the skeleton (section 4).
+- The collection **Classic** itself is never exported.
+- Its objects and materials are named `classic_...`.
 
 ## 12. Sharing
 

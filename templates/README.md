@@ -53,6 +53,9 @@ driver template:
   menu)
 - `creator_kit_standin.py` - a made-up stand-in for the kit files, so the
   kit can be built without game data (tests, the guide's pictures)
+- `creator_kit_classic.py` - an old character (the GLB of `rldpack
+  char-export`) as a starting point in the collection Classic, never
+  exported (`--classic <file.glb>`)
 - `make_creator_kit.py` - the generator
 
 Needs Blender 5.2. Without game data, from the folder that holds `templates`:

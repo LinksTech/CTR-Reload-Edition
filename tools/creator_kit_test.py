@@ -15,12 +15,14 @@ Steps: 1 generate, 2 byte-identical second run, 3 reopen + re-export through bot
 4 hires-check of creator-kit-demo-local.glb (--kart-part: only HRG-41), 5 hires-check of creator-kit-figure.glb (no wheel
 nodes: only HRG-20, the standard wheels), 6 the kit marker (ctr_kit extras, ctrkit_ materials) on every kit
 part of the local demo and on nothing of the figure, 7 make-char --check, 8 creator_kit_measure, 9 --vcol
-gltf, 10 wrong-version exit 3, 11 no path in the .blend, 12 a kit kart with an empty root node.
+gltf, 10 wrong-version exit 3, 11 no path in the .blend, 12 a kit kart with an empty root node, 13 an old
+character (classic and native model of a .rldchar made here from the old template, char-export, --classic):
+in the collection Classic, size and box as the export, same triangles, colours and images, in no export.
 The local demo is checked as it is packed (--kart-part): only HRG-41 (the kit mark) may warn.
 Last line: "creator-kit-test: <n> steps, <f> failed"; exit 0 when f = 0, else 1.
 
 Every child process gets the Blender user folders, TEMP and TMP below <work>. Only the driver's own
-subfolders of <work> (r1, r2, gltf, fake, root, temp) are emptied. Standard library only.
+subfolders of <work> (r1, r2, gltf, fake, root, classic, temp) are emptied. Standard library only.
 """
 import ast
 import hashlib
@@ -37,11 +39,12 @@ sys.dont_write_bytecode = True
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GENERATOR = os.path.join(REPO, "templates", "make_creator_kit.py")
+OLD_TEMPLATE = os.path.join(REPO, "templates", "make_driver_template.py")
 MEASURE = os.path.join(REPO, "tools", "creator_kit_measure.py")
 DEFAULT_BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
 TIMEOUT = 300
 SKIP_CODE = 77
-OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "temp")
+OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "classic", "temp")
 
 
 # ------------------------------------------------------------------ helpers
@@ -95,7 +98,8 @@ def prepare_work(work):
     os.makedirs(work, exist_ok=True)
     for d in OWN_DIRS:
         shutil.rmtree(os.path.join(work, d), ignore_errors=True)
-    for f in ("reopen.py", "standin_root.py", "reexport-figure.glb", "reexport-local.glb", "settings.json"):
+    for f in ("reopen.py", "standin_root.py", "classic_check.py", "reexport-figure.glb", "reexport-local.glb",
+              "settings.json"):
         p = os.path.join(work, f)
         if os.path.isfile(p):
             os.remove(p)
@@ -257,6 +261,99 @@ import creator_kit_standin
 creator_kit_standin.write_standin(out, empty_root=True)
 print("CHK standin root ok")
 '''
+
+
+# Reads a template with an imported old character: where the collection Classic hangs, its objects, their
+# box in game units (glTF axes), triangles, the distinct vertex colours as sRGB bytes and the packed images.
+CLASSIC_CHECK_SCRIPT = r'''
+import bpy, sys, json, hashlib
+i = sys.argv.index("--")
+blend, out = sys.argv[i + 1], sys.argv[i + 2]
+bpy.ops.wm.open_mainfile(filepath=blend)
+res = {"problems": []}
+col = bpy.data.collections.get("Classic")
+if col is None:
+    res["problems"].append("no collection Classic")
+else:
+    parents = [c.name for c in bpy.data.collections if col.name in c.children]
+    res["parents"] = parents
+    res["in_scene_root"] = col.name in bpy.context.scene.collection.children
+    lo, hi, tris, colours, images = [1e9] * 3, [-1e9] * 3, 0, set(), []
+    objs = sorted(col.objects, key=lambda o: o.name)
+    res["objects"] = [o.name for o in objs]
+    for o in objs:
+        me = o.data
+        for v in me.vertices:
+            w = o.matrix_world @ v.co
+            g = (w.x * 64.0, w.z * 64.0, -w.y * 64.0)
+            for k in range(3):
+                lo[k] = min(lo[k], g[k]); hi[k] = max(hi[k], g[k])
+        tris += sum(len(p.vertices) - 2 for p in me.polygons)
+        if len(me.color_attributes):
+            a = me.color_attributes[0]
+            for d in a.data:
+                c = d.color_srgb
+                colours.add(tuple(int(round(min(max(x, 0.0), 1.0) * 255)) for x in c[:3]))
+        for m in me.materials:
+            if m and m.node_tree:
+                for n in m.node_tree.nodes:
+                    if n.type == "TEX_IMAGE" and n.image and n.image.packed_file:
+                        images.append(hashlib.sha256(bytes(n.image.packed_file.data)).hexdigest())
+    res.update(box=[lo, hi], triangles=tris, colours=sorted(colours), images=sorted(set(images)),
+               materials=sorted({m.name for o in objs for m in o.data.materials if m}))
+json.dump(res, open(out, "w"))
+print("CHK classic ok")
+'''
+
+
+def glb_box_tris_colours_images(path):
+    # box (game units), triangles, distinct sRGB colour bytes, sha256 of the embedded images of a GLB
+    with open(path, "rb") as f:
+        data = f.read()
+    n = struct.unpack_from("<I", data, 12)[0]
+    j = json.loads(data[20:20 + n].decode("utf-8"))
+    binary = data[20 + n + 8:]
+    lo, hi, tris, colours, images = [1e9] * 3, [-1e9] * 3, 0, set(), []
+
+    def acc(i):
+        a = j["accessors"][i]
+        bv = j["bufferViews"][a["bufferView"]]
+        comps = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[a["type"]]
+        fmt = {5126: "f", 5121: "B", 5123: "H", 5125: "I"}[a["componentType"]]
+        size = struct.calcsize(fmt)
+        stride = bv.get("byteStride", size * comps)
+        off = bv.get("byteOffset", 0) + a.get("byteOffset", 0)
+        norm = {5121: 255.0, 5123: 65535.0}.get(a["componentType"]) if a.get("normalized") else None
+        out = []
+        for k in range(a["count"]):
+            v = struct.unpack_from("<" + fmt * comps, binary, off + k * stride)
+            out.append(tuple(x / norm for x in v) if norm else v)
+        return out
+
+    def srgb(c):
+        c = min(max(c, 0.0), 1.0)
+        return int(round(255.0 * (12.92 * c if c <= 0.0031308 else 1.055 * c ** (1 / 2.4) - 0.055)))
+
+    for m in j["meshes"]:
+        for prim in m["primitives"]:
+            for p in acc(prim["attributes"]["POSITION"]):
+                for k in range(3):
+                    lo[k] = min(lo[k], p[k] * 64.0); hi[k] = max(hi[k], p[k] * 64.0)
+            tris += (j["accessors"][prim["indices"]]["count"] if "indices" in prim
+                     else j["accessors"][prim["attributes"]["POSITION"]]["count"]) // 3
+            if "COLOR_0" in prim["attributes"]:
+                for c in acc(prim["attributes"]["COLOR_0"]):
+                    colours.add(tuple(srgb(x) for x in c[:3]))
+    for im in j.get("images", []):
+        bv = j["bufferViews"][im["bufferView"]]
+        images.append(hashlib.sha256(binary[bv.get("byteOffset", 0):bv.get("byteOffset", 0) + bv["byteLength"]]).hexdigest())
+    return (lo, hi), tris, sorted(colours), sorted(set(images))
+
+
+def info_size(text):
+    # "size  112.4 long, 78.2 tall" of rldpack info
+    m = re.search(r"size\s+([0-9.]+) long, ([0-9.]+) tall", text)
+    return (float(m.group(1)), float(m.group(2))) if m else None
 
 
 def figure_warnings_ok(out):
@@ -438,6 +535,73 @@ def run_all(blender, packer, work):
                       "exit %s: %s %s %s" % (code, tail(out, 3), "; ".join(probs)[:200], tail(out2, 2)))
     except Exception as e:
         rep.fail("12 empty root", repr(e))
+
+    # 13 an old character as a starting point (classic and native model): a .rldchar made here from the
+    # old template (code-made, CC0) by make-char, exported by char-export, imported by --classic
+    try:
+        ck = os.path.join(work, "classic")
+        os.makedirs(ck, exist_ok=True)
+        old_glb = os.path.join(ck, "old.glb")
+        code, out = run([blender, "--threads", "1", "--background", "--factory-startup", "--python-exit-code", "1",
+                         "--python", OLD_TEMPLATE, "--", "--blend", os.path.join(ck, "old.blend"), "--glb", old_glb], env)
+        if code != 0 or not os.path.isfile(old_glb):
+            raise RuntimeError("old template exit %s: %s" % (code, tail(out, 2)))
+        cs = os.path.join(work, "classic_check.py")
+        with open(cs, "w", encoding="utf-8") as f:
+            f.write(CLASSIC_CHECK_SCRIPT)
+        for kind, extra in (("classic", []), ("native", ["--native-model", "on", "--wheels", "off"])):
+            rc = os.path.join(ck, "old-%s.rldchar" % kind)
+            code, out = run(packer + ["make-char", "--model", old_glb, "--name", "TEST", "--template", "0",
+                                      "--out", rc] + extra, env)
+            if code != 0 or not os.path.isfile(rc):
+                raise RuntimeError("make-char %s exit %s: %s" % (kind, code, tail(out, 2)))
+            exp = os.path.join(ck, "old-%s.glb" % kind)
+            code, out = run(packer + ["char-export", rc, "-o", exp, "--source", kind], env)
+            if code != 0 or not os.path.isfile(exp):
+                raise RuntimeError("char-export %s exit %s: %s" % (kind, code, tail(out, 2)))
+            code, out = run(packer + ["info", rc], env)
+            size = info_size(out)
+            kit = os.path.join(ck, "kit-" + kind)
+            code, out = gen(kit, "--stand-in", "--classic", exp)
+            if code != 0:
+                raise RuntimeError("generate --classic (%s) exit %s: %s" % (kind, code, tail(out, 3)))
+            res_path = os.path.join(ck, "check-%s.json" % kind)
+            code, out = run([blender, "--background", "--factory-startup", "--python-exit-code", "1",
+                             "--python", cs, "--", os.path.join(kit, "creator-kit.blend"), res_path], env)
+            if code != 0 or not os.path.isfile(res_path):
+                raise RuntimeError("check script (%s) exit %s: %s" % (kind, code, tail(out, 3)))
+            got = json.load(open(res_path, encoding="utf-8"))
+            (glo, ghi), gtris, gcols, gimgs = glb_box_tris_colours_images(exp)
+            blo, bhi = got["box"]
+            box_dev = max(abs(a - b) for a, b in zip(list(blo) + list(bhi), list(glo) + list(ghi)))
+            length, tall = ghi[2] - glo[2], ghi[1] - glo[1]
+            probs = list(got["problems"])
+            if not got.get("in_scene_root") or got.get("parents"):
+                probs.append("Classic not at the top of the scene (parents %s)" % got.get("parents"))
+            if not got["objects"] or not all(o.startswith("classic_") for o in got["objects"]):
+                probs.append("objects %s" % got["objects"])
+            if box_dev > 0.5:
+                probs.append("box differs from the GLB by %.3f u" % box_dev)
+            if size is None or abs(length - size[0]) > max(0.5, 0.01 * size[0]) or abs(tall - size[1]) > max(0.5, 0.01 * size[1]):
+                probs.append("size %.2f long %.2f tall, rldpack info says %s" % (length, tall, size))
+            if not (ghi[2] > -glo[2] and abs(ghi[2] - 58.3) < 1.5):
+                probs.append("the nose is not at +z (z %.2f..%.2f)" % (glo[2], ghi[2]))
+            if got["triangles"] != gtris:
+                probs.append("triangles %d, the GLB %d" % (got["triangles"], gtris))
+            if [tuple(c) for c in got["colours"]] != [tuple(c) for c in gcols]:
+                probs.append("vertex colours differ (%d against %d distinct)" % (len(got["colours"]), len(gcols)))
+            if got["images"] != gimgs or (kind == "native" and not gimgs):
+                probs.append("images differ or missing (%d against %d)" % (len(got["images"]), len(gimgs)))
+            if not all(m.startswith("classic_") and m.endswith(" [vcol psx]") for m in got["materials"]):
+                probs.append("materials %s" % got["materials"])
+            same = all(sha256(os.path.join(kit, f)) == sha256(os.path.join(r1, f)) for f in (FIGURE_GLB, LOCAL_GLB))
+            if not same:
+                probs.append("an export differs from the run without --classic")
+            rep.check(not probs, "13 classic %s" % kind,
+                      "%d triangles, %d colours, %d images, size %.1f x %.1f (info %s), box = GLB, not exported"
+                      % (gtris, len(gcols), len(gimgs), length, tall, size), "; ".join(probs)[:400])
+    except Exception as e:
+        rep.fail("13 classic", repr(e)[:400])
 
     print("creator-kit-test: runtime %.0f s" % (time.time() - t0))
     print("creator-kit-test: %d steps, %d failed" % (rep.steps, rep.failed))
