@@ -29,7 +29,7 @@
 //   0x08 u32 glbOffset    = headerBytes, from the start of the chunk.
 //   0x0C u32 glbSize      glbOffset + glbSize = the chunk's size.
 //   0x10 u32 parts        only when headerBytes >= 20 (an ignorable extension of
-//                         version 1, proposed for 4.3, see THE PARTS below);
+//                         version 1, accepted in 4.3, see THE PARTS below);
 //                         0 with a 16-byte header.
 //
 // Stored uncompressed, SHA-256 like every chunk, at most RLDHIRES_CHUNK_LIMIT.
@@ -58,8 +58,8 @@
 // include/rldhires_color.inc. Vertex colours that look like PS1 shading in a
 // glTF-mode file get a warning (HRG-36: the kart will look too dark).
 //
-// THE PARTS (field 0x10, proposed for 4.3, not yet accepted; Creator
-// Kit round 2026-10-18). Ignorable: an older reader skips the longer header and
+// THE PARTS (field 0x10, accepted in container format 4.3; Creator Kit
+// round 2026-10-18). Ignorable: an older reader skips the longer header and
 // draws the whole model everywhere. Bits:
 //   0 RLDHIRES_PART_KART       the subtree of the first node named "kart" is the
 //                              kart. Where the kart is not wanted (the podium
@@ -105,9 +105,11 @@
 //
 // NOTHING HERE PRINTS. Findings go into an RldHiresReport.
 //
-// FORMAT VERSION 1, FROZEN (accepted 2026-10-17, container format 4.2).
-// docs/CONTAINER_FORMAT.md ("CHRG") describes it; this file is the code of it.
-// A later extension (e.g. emissive, planned for 4.3) takes one of two ways:
+// FORMAT VERSION 1, FROZEN (accepted 2026-10-17, container format 4.2), EXTENDED
+// IGNORABLY in 4.3 (2026-10-18: the parts field, the optional clips finish_win
+// and finish_lose). docs/CONTAINER_FORMAT.md ("CHRG") describes it; this file is
+// the code of it. A later extension (e.g. emissive, planned, not built) takes
+// one of two ways:
 //   - what an older reader may ignore: more header bytes (headerBytes > 16,
 //     version stays 1). An older reader skips them and draws the model.
 //   - what an older reader must not ignore: a new flag bit (HRG-3) or version

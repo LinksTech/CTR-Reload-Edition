@@ -4,7 +4,7 @@ CTR Reload Edition has two container types. Both share one envelope:
 
 | Extension | Content | Written by | Read by |
 |---|---|---|---|
-| `.rldtrack` | a custom track, format 4.2 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
+| `.rldtrack` | a custom track, format 4.3 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
 | `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` (also through Reload Studio's Character page) | the game (`characters` folder), `rldpack info`, `rldpack verify` |
 
 The game reads every `.rldchar` of its `characters` folder at start; see
@@ -141,12 +141,15 @@ instead of refusing the file.
 3. The directory, in the same order, at the end of the file:
    file_size = dir_offset + chunk_count x 64.
 
-## 2. `.rldtrack` 4.2
+## 2. `.rldtrack` 4.3
 
-Magic `RLDTRACK`, major 4, minor 2. A reader takes 4.0, 4.1 and 4.2 alike.
-4.2 (2026-10-17) changes no byte of a track but the minor: it marks the
-hi-res driver chunk CHRG version 1 as frozen (section 3). 4.1 (2026-09-28)
-froze the track format.
+Magic `RLDTRACK`, major 4, minor 3. A reader takes 4.0, 4.1, 4.2 and 4.3
+alike. 4.3 (2026-10-18) changes no byte of a track but the minor: it extends
+the hi-res driver chunk CHRG version 1 ignorably - the parts field is
+accepted and the clip list has the optional finish_win and finish_lose
+(section 3); a reader of 4.2 reads past both. 4.2 (2026-10-17) marked CHRG
+version 1 as frozen, again with no byte of a track but the minor. 4.1
+(2026-09-28) froze the track format.
 
 | Chunk | Required | Limit | Content |
 |---|---|---|---|
@@ -362,7 +365,7 @@ is frozen. Source: `include/rldchar.inc`.
 | CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
 | CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) (see "Preview, planned: CNET and CTXT") |
 | CTXT | optional, PREVIEW, written with CNET | 32 MiB, as CNET | the textures of CNET as PNG, decoded to RGBA8 (see the same section) |
-| CHRG | optional, version 1 frozen (4.2), written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, drawn by the engine (see "CHRG (version 1, frozen)") |
+| CHRG | optional, version 1 frozen (4.2), extended ignorably (4.3), written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, drawn by the engine (see "CHRG (version 1, frozen)") |
 | CTEX | reserved name, not assigned | none (unknown, skipped) | once planned for texture data; the textures of the native model are CTXT, so the name stays unused |
 | CWHL | reserved name, not assigned | none (unknown, skipped) | own wheels; the wheels of the native model are a part of CNET, so CWHL stays reserved and unassigned (its old plan below) |
 
@@ -383,8 +386,10 @@ for any unknown chunk; everything else about them costs only the native part
 ### CHRG (version 1, frozen)
 
 The hi-res driver. Version 1 is frozen since 2026-10-17 (container format
-4.2): the header, the flags, the clip and wheel names, the fallbacks and the
-rules below do not change within version 1. `include/rldhires.inc` is the code
+4.2) and extended ignorably in 4.3 (2026-10-18: the parts field at 0x10, the
+optional clips finish_win and finish_lose): the header, the flags, the clip
+and wheel names, the fallbacks and the rules below do not change within
+version 1, except by such additions, which a reader of 4.2 reads past. `include/rldhires.inc` is the code
 of it; the game, `rldpack` (hires-check, hires-add) and Reload Studio run the
 same rules from it. CHRG is not a known type of the envelope: it is skipped
 like any unknown chunk, and a CHRG that breaks a rule drops only the hi-res
@@ -398,7 +403,7 @@ uncompressed, SHA-256 like every chunk, at most 64 MiB with the header.
 | 0x04 | u32 | flags | bits 0-1: the vertex colour mode (below); bits 2-31 are 0. A set bit 2-31, or mode 3, drops the hi-res part (HRG-3) |
 | 0x08 | u32 | glbOffset | = headerBytes (HRG-4) |
 | 0x0C | u32 | glbSize | glbOffset + glbSize = the chunk's size (HRG-4) |
-| 0x10 | u32 | parts | only when headerBytes >= 20; proposed for 4.3, not yet accepted (see "The parts"). An older reader reads past it |
+| 0x10 | u32 | parts | only when headerBytes >= 20; accepted in 4.3 (see "The parts"). An older reader reads past it |
 
 The GLB follows byte for byte as the author exported it; the packer checks it
 and never changes it.
@@ -487,8 +492,8 @@ engine's hard limits: 62 materials, 1048576 vertices, 255 skinning entries
 (joints + body nodes with a mesh but no skin + 4 wheels), 64 texture uploads
 (HRG-32..35).
 
-**The parts** (field 0x10, an ignorable extension of version 1, proposed for
-4.3 and not yet accepted; written by `rldpack hires-add --kart-part` or
+**The parts** (field 0x10, an ignorable extension of version 1, accepted in
+4.3; written by `rldpack hires-add --kart-part` or
 `--game-kart`, else the header stays 16 bytes and the bytes are those of
 before):
 
@@ -530,7 +535,7 @@ flag bit (HRG-3) or as version 2 (HRG-1): an older reader drops the hi-res
 part and draws the classic model. Both ways are covered by the self-tests
 (`rldpack selftest-hires`, ctest `rldhires_selftest` and `rldhires_files`).
 
-Planned for 4.3: emissive (not built).
+Planned: emissive (not built).
 
 ### CHRI (`RldChar_ParseInfo`)
 

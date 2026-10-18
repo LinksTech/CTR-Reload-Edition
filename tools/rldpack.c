@@ -5160,6 +5160,10 @@ static int Rld_Check(const char *what, const u8 *got, const u8 *want, size_t siz
 // test pass. Changed once on purpose, with format 4.2 (2026-10-17): only the
 // minor field (header byte 0x0a, 1 -> 2) differs; with it set back to 1 the
 // containers hash to the 4.1 values 489b8b3a... and 5d8c5b47...
+// Since format 4.3 (2026-10-18) the hashes are those of the 4.2 containers
+// and are compared with the minor field set back to 2 (Rld_CheckGolden42):
+// the minor written is the only byte a new minor may change, and the check
+// "format" below holds the minor itself. So these values stay as they are.
 #define RLD_GOLDEN_3_CHUNKS "ae46cb853167f872e01f3f9a7d7a67f1ffd20831c0c2c48fb657828606469baf"
 #define RLD_GOLDEN_5_CHUNKS "c906908ad222d938ea7d9171b956840f1cb45660fdcedb489e4496e70644d33a"
 
@@ -5185,6 +5189,52 @@ static int Rld_CheckGolden(const char *name, const u8 *data, size_t size, const 
 
 	printf("  ok   golden hash %s, %llu bytes\n", name, (unsigned long long)size);
 	return 0;
+}
+
+static int RldGltf_TempCopy(const char *name, const char *type, const u8 *bytes, size_t size, char *out, size_t outSize); // rldpack_gltf.inc
+
+// The golden hash of a container as format 4.2 wrote it: the same bytes with
+// the minor field set back to 2. Then that 4.2 container goes through the
+// reader of this build from a file of this run (TEMP, removed at exit): it
+// opens and the reader names minor 2 - a reader takes any minor.
+static int Rld_CheckGolden42(const char *name, const u8 *data, size_t size, const char *wantHex)
+{
+	u8 *old = (data != NULL) ? (u8 *)malloc(size) : NULL;
+	struct RldReader reader;
+	char path[RLD_PATH_MAX];
+	const char *error;
+	int failed;
+
+	if (old == NULL)
+	{
+		printf("  FAIL golden hash %s: no container\n", name);
+		return 1;
+	}
+	memcpy(old, data, size);
+	Rld_WriteLE16(&old[0x0a], 2u);
+	failed = Rld_CheckGolden(name, old, size, wantHex);
+	if (!RldGltf_TempCopy(name, ".rldtrack", old, size, path, sizeof(path)))
+	{
+		printf("  FAIL format 4.2 %s: no file of this run could be written to TEMP\n", name);
+		free(old);
+		return 1;
+	}
+	error = Rld_Open(&reader, path);
+	if ((error != NULL) || (reader.major != (u32)RLD_VERSION_MAJOR) || (reader.minor != 2u))
+	{
+		printf("  FAIL format 4.2 %s: %s (format %u.%u)\n", name, (error != NULL) ? error : "opened", reader.major, reader.minor);
+		failed = 1;
+	}
+	else
+	{
+		printf("  ok   format 4.2 %s: a container written by 4.2 opens unchanged (format 4.2)\n", name);
+	}
+	if (error == NULL)
+	{
+		Rld_Close(&reader);
+	}
+	free(old);
+	return failed;
 }
 
 // --- Self-test for make -------------------------------------------------------------
@@ -5726,7 +5776,7 @@ static int Cmd_Selftest(void)
 		}
 
 		// GOLDEN HASH, three chunks: META LEVD VRMD from the inputs above.
-		failed |= Rld_CheckGolden("3 chunks", a, sizeA, RLD_GOLDEN_3_CHUNKS);
+		failed |= Rld_CheckGolden42("3 chunks", a, sizeA, RLD_GOLDEN_3_CHUNKS);
 
 		// META THERE AND BACK.
 		//
@@ -5808,7 +5858,7 @@ static int Cmd_Selftest(void)
 				printf("  ok   chunk set: META LEVD VRMD, no SIGN\n");
 			}
 
-			// The header carries the format written (4.2) and no required features, META the 1.
+			// The header carries the format written (4.3) and no required features, META the 1.
 			if ((Rld_ReadLE16(&a[0x08]) != (u32)RLD_VERSION_MAJOR) || (Rld_ReadLE16(&a[0x0a]) != (u32)RLD_VERSION_MINOR) || (Rld_ReadLE32(&a[0x0c]) != 0u) ||
 			    (back.metaVersion != 1u))
 			{
@@ -5926,7 +5976,7 @@ static int Cmd_Selftest(void)
 			in.parmSize = sizeof(values);
 
 			five = Rld_Build(&in, &fiveSize, &error);
-			failed |= Rld_CheckGolden("5 chunks", five, fiveSize, RLD_GOLDEN_5_CHUNKS);
+			failed |= Rld_CheckGolden42("5 chunks", five, fiveSize, RLD_GOLDEN_5_CHUNKS);
 
 			free(five);
 			in.sndb = NULL;
