@@ -308,7 +308,8 @@ set(CTR_KIT_RESOURCES
     templates/creator_kit_puppet.py
     templates/creator_kit_clips.py
     templates/creator_kit_standin.py
-    docs/CREATOR_KIT.html)
+    docs/CREATOR_KIT.html
+    templates/creator_kit_classic.py)
 set(ctr_kit_rc "// Made by CMakeLists.txt: the files of the Creator Kit (rs_kit.c).
 ")
 set(ctr_kit_id 201)

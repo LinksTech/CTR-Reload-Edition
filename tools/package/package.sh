@@ -127,7 +127,9 @@ cp "$R/ctr_native.exe" "$R/ctr_native.pdb" "$R/ReloadStudio.exe" "$OUT/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$OUT/"
 mkdir -p "$OUT/docs" "$OUT/templates"
 cp docs/ANIMATIONS.md docs/CREATOR_KIT.html "$OUT/docs/"
-cp templates/LICENSE templates/README.md templates/make_driver_template.py templates/make_creator_kit.py 	templates/creator_kit_puppet.py templates/creator_kit_clips.py templates/creator_kit_standin.py "$OUT/templates/"
+cp templates/LICENSE templates/README.md templates/make_driver_template.py templates/make_creator_kit.py \
+	templates/creator_kit_puppet.py templates/creator_kit_clips.py templates/creator_kit_standin.py \
+	templates/creator_kit_classic.py "$OUT/templates/"
 for t in README RELEASE-NOTES; do
 	sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$ID/g" -e "s/@NAME@/$NAME/g" \
 		"tools/package/$t.txt" > "$OUT/$t.txt"
@@ -138,7 +140,10 @@ git archive --format=zip --prefix="$NAME-source/" -o "$OUT/$NAME-source.zip" HEA
 	CMakeLists.txt CMakePresets.json build-msvc.bat main.c LICENSE THIRD_PARTY_NOTICES.md README.md BUILDING.md \
 	.gitignore .clang-format .clang-tidy .clangd \
 	cmake game include platform tools metadata externals/SDL externals/cgltf \
-	docs/ANIMATIONS.md docs/CREATOR_KIT.md docs/CREATOR_KIT.html docs/assets/creator-kit 	templates/LICENSE templates/README.md templates/make_driver_template.py templates/make_creator_kit.py 	templates/creator_kit_puppet.py templates/creator_kit_clips.py templates/creator_kit_standin.py
+	docs/ANIMATIONS.md docs/CREATOR_KIT.md docs/CREATOR_KIT.html 'docs/assets/kit-guide-*.svg' \
+	templates/LICENSE templates/README.md templates/make_driver_template.py templates/make_creator_kit.py \
+	templates/creator_kit_puppet.py templates/creator_kit_clips.py templates/creator_kit_standin.py \
+	templates/creator_kit_classic.py
 
 echo "== Check for forbidden content"
 python tools/content_guard.py --package "$OUT" || { echo "ABORT: forbidden content, no package"; exit 5; }

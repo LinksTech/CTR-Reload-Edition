@@ -155,6 +155,15 @@ static int Blender(int argc, wchar_t **argv)
     wchar_t demo[1024], dst[1200];
     char u[2048], line[2300];
     DWORD attr;
+    // An optional "--classic <glb>" at the end: the file must be there.
+    if (argc >= 16 && wcscmp(argv[argc - 2], L"--classic") == 0) {
+        attr = GetFileAttributesW(argv[argc - 1]);
+        if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            Say("creator kit: --classic file missing (stand-in)");
+            return 4;
+        }
+        argc -= 2;
+    }
     if (argc != 12 && argc != 14) goto wrong;
     for (i = 0; i < 10; i++) {
         if (fixed[i] && wcscmp(argv[i + 1], fixed[i]) != 0) goto wrong;

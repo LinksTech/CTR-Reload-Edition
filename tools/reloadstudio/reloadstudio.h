@@ -808,6 +808,7 @@ enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_
 #define RS_RES_KIT_CLIPS   203
 #define RS_RES_KIT_STANDIN 204
 #define RS_RES_KIT_GUIDE   205
+#define RS_RES_KIT_CLASSIC 206
 
 // The registry of the modules (rs_module.c). Rs_ModulesInit once, before the
 // pages are made: the built-in modules, then (loadDlls = 1) the module DLLs

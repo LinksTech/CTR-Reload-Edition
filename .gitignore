@@ -221,6 +221,7 @@ creator-kit*.blend*
 creator-kit*.glb
 creator-kit-report.json
 kit-extract.txt
+classic.glb
 demo-puppet*
 START-DEMO-PUPPE.bat
 kit.part/

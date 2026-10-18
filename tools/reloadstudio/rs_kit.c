@@ -34,6 +34,12 @@
 //                         creator-kit-figure.glb (the figure alone, no kart: the
 //                         file to share) and creator-kit-demo-local.glb (with
 //                         the kit's kart: for this PC only)
+//                         START FROM AN OLD CHARACTER (step 2, optional, the
+//                         setting kit.classic): before Blender rldpack
+//                         char-export <old.rldchar> -o <work>\classic.glb (its
+//                         model, --source auto), and the generator gets
+//                         --classic <work>\classic.glb (a hidden collection
+//                         Classic in the template, templates/creator_kit_classic.py)
 //   3 the demo driver     (on request) the build of the page Character, route
 //                         Hi-Res, from creator-kit-demo-local.glb: [hires-upscale]
 //                         make-char -> hires-add, with the same switches and
@@ -87,7 +93,7 @@
 static const wchar_t *const g_kitFiles[] = {
     L"kit-kart.glb", L"kit-wheel.glb", L"kit-kart-gltf.glb", L"kit-wheel-gltf.glb", L"kit-info.json",
     L"kit-extract.txt", L"creator-kit.blend", L"creator-kit-figure.glb", L"creator-kit-demo-local.glb",
-    L"creator-kit-report.json", L"demo-puppet.rldchar", L"START-DEMO-PUPPE.bat",
+    L"creator-kit-report.json", L"demo-puppet.rldchar", L"START-DEMO-PUPPE.bat", L"classic.glb",
 };
 // KIT-OUTPUT-NAMES END
 #define KIT_WORK      L"kit.part"
@@ -96,6 +102,7 @@ static const wchar_t *const g_kitFiles[] = {
 #define KIT_DEMO      L"demo-puppet.rldchar"
 #define KIT_BAT       L"START-DEMO-PUPPE.bat"
 #define KIT_GUIDE     L"CREATOR_KIT.html"
+#define KIT_CLASSIC   L"classic.glb"
 
 // The scripts and the guide built into this exe (reloadstudio_kit.rc, made by
 // CMakeLists.txt from templates/ and docs/).
@@ -104,6 +111,7 @@ static const struct { int id; const wchar_t *name; } g_kitScripts[] = {
     { RS_RES_KIT_PUPPET, L"creator_kit_puppet.py" },
     { RS_RES_KIT_CLIPS, L"creator_kit_clips.py" },
     { RS_RES_KIT_STANDIN, L"creator_kit_standin.py" },
+    { RS_RES_KIT_CLASSIC, L"creator_kit_classic.py" },
 };
 #define KIT_SCRIPT_COUNT ((int)(sizeof(g_kitScripts) / sizeof(g_kitScripts[0])))
 
@@ -113,6 +121,7 @@ enum {
     KIT_ID_GAME_HEAD, KIT_ID_GAME_STATE, KIT_ID_GAME_FIX, KIT_ID_GAME_BTN,
     KIT_ID_BL_HEAD, KIT_ID_BL_STATE, KIT_ID_BL_FIX, KIT_ID_BL_BTN,
     KIT_ID_OUT_HEAD, KIT_ID_OUT_EDIT, KIT_ID_OUT_BTN, KIT_ID_OUT_STATE, KIT_ID_OUT_FIX, KIT_ID_DEMO,
+    KIT_ID_CLASSIC_HEAD, KIT_ID_CLASSIC_EDIT, KIT_ID_CLASSIC_BTN, KIT_ID_CLASSIC_NOTE,
     KIT_ID_PHASE,               // .. +2
     KIT_ID_PROGRESS = 140, KIT_ID_MSGS, KIT_ID_DETAILS_BOX, KIT_ID_DETAILS,
     KIT_ID_FILES, KIT_ID_NEXT_TEXT,
@@ -120,7 +129,7 @@ enum {
 };
 
 // What a job of the page is.
-enum { KIT_JOB_NONE = 0, KIT_JOB_VERSION, KIT_JOB_EXTRACT, KIT_JOB_BLENDER, KIT_JOB_UPSCALE, KIT_JOB_CLASSIC,
+enum { KIT_JOB_NONE = 0, KIT_JOB_VERSION, KIT_JOB_EXTRACT, KIT_JOB_EXPORT, KIT_JOB_BLENDER, KIT_JOB_UPSCALE, KIT_JOB_CLASSIC,
        KIT_JOB_PACK };
 enum { KIT_PH_EXTRACT = 0, KIT_PH_BLENDER, KIT_PH_DEMO, KIT_PHASES };
 enum { KIT_ST_TODO = 0, KIT_ST_RUNNING, KIT_ST_OK, KIT_ST_FAILED, KIT_ST_CANCELLED, KIT_ST_SKIPPED };
@@ -153,6 +162,7 @@ static struct {
     HWND gameHead, gameState, gameFix, gameBtn;
     HWND blHead, blState, blFix, blBtn;
     HWND outHead, outEdit, outBtn, outState, outFix, demoBox;
+    HWND classicHead, classicEdit, classicBtn, classicNote;
     HWND phaseLbl[KIT_PHASES], progress, msgs, detailsBox, details;
     HWND files, nextText;
     HWND back, main, cancel, guide, folder, testDemo, toChar;
@@ -175,6 +185,8 @@ static struct {
     wchar_t outPath[KIT_PATH];
     wchar_t outText[KIT_TEXT], outFixText[KIT_TEXT];
     int demo;
+    wchar_t classic[KIT_PATH];       // "Start from an old character": the .rldchar, "" = none
+    int classicUsed;                 // this run exported it (classic.glb in the kit)
 
     // The run.
     int job, jobKind;
@@ -632,6 +644,12 @@ static int Kit_StartBlender(HWND page)
     Rs_AppendArg(cmd, KIT_PATH * 3, g_kit.work);
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--vcol");
     Rs_AppendArg(cmd, KIT_PATH * 3, L"psx");
+    if (g_kit.classicUsed) {
+        wchar_t glb[KIT_PATH];
+        Rs_PathJoin(glb, KIT_PATH, g_kit.work, KIT_CLASSIC);
+        Rs_AppendArg(cmd, KIT_PATH * 3, L"--classic");
+        Rs_AppendArg(cmd, KIT_PATH * 3, glb);
+    }
     g_kit.jobKind = KIT_JOB_BLENDER;
     g_kit.lastCreator[0] = 0;
     g_kit.job = Rs_RunTool(page, g_kit.blenderPath, cmd, g_kit.work);
@@ -831,6 +849,24 @@ static int Kit_Next(HWND page)
     switch (g_kit.jobKind) {
     case KIT_JOB_EXTRACT:
         Kit_SetPhase(KIT_PH_EXTRACT, KIT_ST_OK);
+        if (g_kit.classicUsed) {
+            // The old character's model first (rldpack char-export), then Blender.
+            const wchar_t *args[] = { L"char-export", g_kit.classic, L"-o", probe, L"--machine" };
+            Rs_PathJoin(probe, KIT_PATH, g_kit.work, KIT_CLASSIC);
+            Kit_SetPhase(KIT_PH_BLENDER, KIT_ST_RUNNING);
+            Kit_Copy(g_kit.progressText, KIT_TEXT, L"Reading your old character...");
+            if (!Kit_StartRldpack(page, KIT_JOB_EXPORT, args, 5)) {
+                Kit_Msg(RS_SEV_ERROR, L"Reading the old character could not be started.", L"Generate again.");
+                return -1;
+            }
+            return 1;
+        }
+        if (!Kit_StartBlender(page)) {
+            Kit_Msg(RS_SEV_ERROR, L"Blender could not be started.", L"Choose blender.exe again on the step What the kit needs.");
+            return -1;
+        }
+        return 1;
+    case KIT_JOB_EXPORT:
         if (!Kit_StartBlender(page)) {
             Kit_Msg(RS_SEV_ERROR, L"Blender could not be started.", L"Choose blender.exe again on the step What the kit needs.");
             return -1;
@@ -936,8 +972,8 @@ static void Kit_JobDone(HWND page, int job, int exitCode)
         return;
     }
     if (exitCode != 0) {
-        int ph = g_kit.jobKind == KIT_JOB_EXTRACT ? KIT_PH_EXTRACT : g_kit.jobKind == KIT_JOB_BLENDER ? KIT_PH_BLENDER
-                                                                                                    : KIT_PH_DEMO;
+        int ph = g_kit.jobKind == KIT_JOB_EXTRACT ? KIT_PH_EXTRACT
+                 : (g_kit.jobKind == KIT_JOB_BLENDER || g_kit.jobKind == KIT_JOB_EXPORT) ? KIT_PH_BLENDER : KIT_PH_DEMO;
         if (g_kit.jobKind == KIT_JOB_BLENDER && g_kit.lastCreator[0])
             Kit_MsgSplit(RS_SEV_ERROR, g_kit.lastCreator);
         else if (g_kit.msgCount == 0 || g_kit.msg[g_kit.msgCount - 1].severity != RS_SEV_ERROR) {
@@ -984,13 +1020,50 @@ static void Kit_JobLine(int job, wchar_t *line)
             fix = L"Start the game once so that it has its data, or choose the folder of your game with Choose game.";
         else if (wcscmp(f[2], L"kit-bad-model") == 0)
             fix = L"Use the game data of the disc CTR Reload plays (NTSC-U); start the game once with it.";
-        else if (wcscmp(f[2], L"kit-write") == 0)
+        else if (wcscmp(f[2], L"export-file") == 0 || wcscmp(f[2], L"export-model") == 0)
+            fix = L"Choose another character file under Start from an old character, or clear the field.";
+        else if (wcscmp(f[2], L"kit-write") == 0 || wcscmp(f[2], L"export-write") == 0)
             fix = L"Choose a folder you can write to, for example in Documents.";
         if (sev == RS_SEV_ERROR || (sev == RS_SEV_WARNING && g_kit.jobKind == KIT_JOB_EXTRACT))
             Kit_Msg(sev, f[3], fix);
     } else if (n >= 2 && wcscmp(f[0], L"result") == 0) {
         Kit_Copy(g_kit.resultState, 16, f[1]);
     }
+}
+
+// "Start from an old character": the field as a full path ("" = none).
+static void Kit_ClassicRead(void)
+{
+    wchar_t *raw = g_kit.classicEdit ? Rs_GetText(g_kit.classicEdit) : Rs_Dup(L"");
+    if (raw[0])
+        Kit_Full(raw, g_kit.classic, KIT_PATH);
+    else
+        g_kit.classic[0] = 0;
+    Rs_Free(raw);
+}
+
+static void Kit_SetClassic(const wchar_t *path)
+{
+    g_kit.quiet = 1;
+    Rs_SetText(g_kit.classicEdit, path);
+    g_kit.quiet = 0;
+    Kit_Copy(g_kit.classic, KIT_PATH, path);
+    Rs_ConfigSet(L"kit.classic", path);
+}
+
+// 1 if the file begins as a character container does (RLDCHAR); rldpack
+// char-export checks the rest.
+static int Kit_IsCharacter(const wchar_t *path)
+{
+    static const char magic[8] = { 'R', 'L', 'D', 'C', 'H', 'A', 'R', 0 };
+    char head[8];
+    FILE *f = _wfopen(path, L"rb");
+    int ok;
+    if (!f)
+        return 0;
+    ok = fread(head, 1, 8, f) == 8 && memcmp(head, magic, 8) == 0;
+    fclose(f);
+    return ok;
 }
 
 // Generate: the checks once more, kit.part made, the scripts written, step 1.
@@ -1022,6 +1095,16 @@ static int Kit_Generate(HWND page)
     if (g_kit.out != KIT_OUT_OK) {
         Kit_Msg(RS_SEV_ERROR, g_kit.outText, g_kit.outFixText);
         return 0;
+    }
+    Kit_ClassicRead();
+    g_kit.classicUsed = 0;
+    if (g_kit.classic[0]) {
+        if (!Kit_IsCharacter(g_kit.classic)) {
+            Kit_Msg(RS_SEV_ERROR, L"The old character cannot be read: it is no .rldchar file.",
+                    L"Choose a character file (.rldchar) under Start from an old character, or clear the field.");
+            return 0;
+        }
+        g_kit.classicUsed = 1;
     }
     if (Kit_HasKit(g_kit.outPath)) {
         swprintf(why, KIT_TEXT, L"Replace the kit in %ls?", g_kit.outPath);
@@ -1192,10 +1275,13 @@ static void Kit_Update(void)
                  L"  creator-kit-figure.glb - your figure without a kart: safe to share, the game adds its own kart\r\n"
                  L"  creator-kit-demo-local.glb - your figure with the kart from your game: keep it to yourself\r\n"
                  L"  kit-kart.glb, kit-wheel.glb, kit-info.json, kit-extract.txt - the kart and its wheels from your game\r\n"
-                 L"%ls  CREATOR_KIT.html - the guide; scripts - how the template was made",
+                 L"%ls%ls  CREATOR_KIT.html - the guide; scripts - how the template was made",
                  g_kit.outPath, g_kit.phase[KIT_PH_DEMO] == KIT_ST_OK
                                     ? L"  demo-puppet.rldchar, START-DEMO-PUPPE.bat - the demo driver and its start\r\n"
-                                    : L"");
+                                    : L"",
+                 g_kit.classicUsed && g_kit.result == KIT_RES_OK
+                     ? L"  classic.glb - your old character, in the template's hidden collection Classic\r\n"
+                     : L"");
         Rs_SetText(g_kit.files, list);
     }
     // The bar.
@@ -1224,6 +1310,10 @@ static void Kit_Update(void)
     Kit_Show(g_kit.outState, s == 2);
     Kit_Show(g_kit.outFix, s == 2 && g_kit.outFixText[0]);
     Kit_Show(g_kit.demoBox, s == 2);
+    Kit_Show(g_kit.classicHead, s == 2);
+    Kit_Show(g_kit.classicEdit, s == 2);
+    Kit_Show(g_kit.classicBtn, s == 2);
+    Kit_Show(g_kit.classicNote, s == 2);
     for (i = 0; i < KIT_PHASES; i++)
         Kit_Show(g_kit.phaseLbl[i], s == 3);
     Kit_Show(g_kit.progress, s == 3);
@@ -1286,6 +1376,17 @@ static void Kit_Create(HWND page)
     g_kit.outFix = Rs_Label(page, KIT_ID_OUT_FIX, L"", RS_FONT_SMALL);
     g_kit.demoBox = Rs_Check(page, KIT_ID_DEMO, L"Also build a demo driver to try in the game");
     SendMessageW(g_kit.demoBox, BM_SETCHECK, BST_CHECKED, 0);
+    // "Start from an old character" (C's guide, section 11): optional.
+    g_kit.classicHead = Rs_Label(page, KIT_ID_CLASSIC_HEAD, L"Start from an old character", RS_FONT_BOLD);
+    cfg[0] = 0;
+    Rs_ConfigGet(L"kit.classic", cfg, KIT_PATH);
+    g_kit.classicEdit = Rs_Edit(page, KIT_ID_CLASSIC_EDIT, cfg, ES_AUTOHSCROLL);
+    g_kit.classicBtn = Rs_Button(page, KIT_ID_CLASSIC_BTN, L"Browse...");
+    g_kit.classicNote = Rs_Label(page, KIT_ID_CLASSIC_NOTE,
+        L"Optional: a character file (.rldchar) of yours. Its model goes into the template as a starting point "
+        L"(the hidden collection Classic). Leave it empty to start from the puppet.",
+        RS_FONT_SMALL);
+    Rs_SetTextColor(g_kit.classicNote, RS_COL_MUTED);
     for (i = 0; i < KIT_PHASES; i++)
         g_kit.phaseLbl[i] = Rs_Label(page, KIT_ID_PHASE + i, g_phaseTitles[i], RS_FONT_BODY);
     g_kit.progress = Rs_Label(page, KIT_ID_PROGRESS, L"", RS_FONT_SMALL);
@@ -1359,11 +1460,18 @@ static void Kit_Layout(HWND page, int w, int h)
         MoveWindow(g_kit.outEdit, in.left, y, iw - Rs_Px(128), Rs_Px(28), TRUE);
         MoveWindow(g_kit.outBtn, in.right - Rs_Px(116), y - Rs_Px(2), Rs_Px(116), bh, TRUE);
         y += Rs_Px(40);
-        MoveWindow(g_kit.outState, in.left, y, iw, Rs_Px(44), TRUE);
-        y += Rs_Px(46);
-        MoveWindow(g_kit.outFix, in.left, y, iw, Rs_Px(24), TRUE);
-        y += Rs_Px(40);
+        MoveWindow(g_kit.outState, in.left, y, iw, Rs_Px(22), TRUE);
+        y += Rs_Px(24);
+        MoveWindow(g_kit.outFix, in.left, y, iw, Rs_Px(20), TRUE);
+        y += Rs_Px(g_kit.outFixText[0] ? 26 : 4);
         MoveWindow(g_kit.demoBox, in.left, y, iw, Rs_Px(24), TRUE);
+        y += Rs_Px(36);
+        MoveWindow(g_kit.classicHead, in.left, y, iw, lh, TRUE);
+        y += lh + Rs_Px(4);
+        MoveWindow(g_kit.classicEdit, in.left, y, iw - Rs_Px(128), Rs_Px(28), TRUE);
+        MoveWindow(g_kit.classicBtn, in.right - Rs_Px(116), y - Rs_Px(2), Rs_Px(116), bh, TRUE);
+        y += Rs_Px(34);
+        MoveWindow(g_kit.classicNote, in.left, y, iw, Rs_Px(36), TRUE);
         break;
     case 3:
         for (i = 0; i < KIT_PHASES; i++) {
@@ -1440,6 +1548,11 @@ static LRESULT Kit_Command(HWND page, WPARAM wParam, LPARAM lParam)
     int id = LOWORD(wParam), code = HIWORD(wParam);
     wchar_t path[KIT_PATH];
     (void)lParam;
+    if (id == KIT_ID_CLASSIC_EDIT && code == EN_CHANGE && !g_kit.quiet) {
+        Kit_ClassicRead();
+        Rs_ConfigSet(L"kit.classic", g_kit.classic);
+        return 0;
+    }
     if (id == KIT_ID_OUT_EDIT && code == EN_CHANGE && !g_kit.quiet) {
         wchar_t *t = Rs_GetText(g_kit.outEdit);
         Rs_ConfigSet(L"kit.out", t);
@@ -1494,6 +1607,13 @@ static LRESULT Kit_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case KIT_ID_DEMO:
         g_kit.demo = Kit_Checked(g_kit.demoBox);
+        break;
+    case KIT_ID_CLASSIC_BTN:
+        if (Rs_BrowseOpenFile(Rs_MainWindow(), L"An old character", L"Characters (*.rldchar)\0*.rldchar\0\0",
+                              g_kit.classic, path, KIT_PATH)) {
+            Kit_SetClassic(path);
+            Kit_Update();
+        }
         break;
     case KIT_ID_DETAILS_BOX:
         Kit_Update();
@@ -1641,6 +1761,8 @@ static int Kit_Report(const wchar_t *path)
     Kit_ReportLine(f, L"out\t%ls\t%ls", outs[g_kit.out], g_kit.outPath);
     Kit_ReportLine(f, L"out-text\t%ls\t%ls", g_kit.outText, g_kit.outFixText);
     Kit_ReportLine(f, L"demo\t%ls", g_kit.demo ? L"on" : L"off");
+    Kit_ClassicRead();
+    Kit_ReportLine(f, L"classic\t%ls", g_kit.classic);
     for (i = 0; i < KIT_PHASES; i++)
         Kit_ReportLine(f, L"phase\t%ls\t%ls", g_phaseWords[i], g_stateWords[g_kit.phase[i]]);
     Kit_ReportLine(f, L"result\t%ls", results[g_kit.result]);
@@ -1690,6 +1812,21 @@ static int Kit_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Kit_SetOut(path);
         Kit_Update();
         Rs_AutoLog(L"  out: %ls", g_kit.outText);
+        return RS_AUTO_DONE;
+    }
+    // "classic <file.rldchar>" or "classic none": Start from an old character.
+    if (wcscmp(verb, L"classic") == 0) {
+        if (!arg[0]) {
+            Rs_AutoLog(L"  classic wants a .rldchar or none");
+            return RS_AUTO_FAIL;
+        }
+        if (wcscmp(arg, L"none") == 0)
+            path[0] = 0;
+        else
+            Kit_Full(arg, path, KIT_PATH);
+        Kit_SetClassic(path);
+        Kit_Update();
+        Rs_AutoLog(L"  classic: %ls", path[0] ? path : L"none");
         return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"demo") == 0) {

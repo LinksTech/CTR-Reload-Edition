@@ -287,7 +287,7 @@ ALLOWED_RENDER_PREFIX = 'docs/kit-guide/'
 # names such as kit-kartei.md: intended. Repository files of the kit must not
 # use these stems (use an underscore: make_creator_kit.py). No ALLOWED entry
 # lifts this rule. The self-test has second copies: TEST_KIT_*.
-KIT_STEMS = ('kit-kart', 'kit-wheel', 'kit-info', 'kit-extract', 'creator-kit', 'creator-kit-demo',
+KIT_STEMS = ('kit-kart', 'kit-wheel', 'kit-info', 'kit-extract', 'classic', 'creator-kit', 'creator-kit-demo',
              'creator-kit-report', 'demo-puppet', 'start-demo-puppe')
 KIT_PREFIXES = ('kit-kart', 'kit-wheel', 'creator-kit')
 KIT_FOLDER = 'kit.part'
@@ -747,7 +747,7 @@ TEST_SDL = (
 # Second copies of the Creator Kit names, the render allowlist prefix and the
 # content signatures: change both together.
 TEST_HEAD = 16
-TEST_KIT_STEMS = ('kit-kart', 'kit-wheel', 'kit-info', 'kit-extract', 'creator-kit', 'creator-kit-demo',
+TEST_KIT_STEMS = ('kit-kart', 'kit-wheel', 'kit-info', 'kit-extract', 'classic', 'creator-kit', 'creator-kit-demo',
                   'creator-kit-report', 'demo-puppet', 'start-demo-puppe')
 TEST_KIT_PREFIXES = ('kit-kart', 'kit-wheel', 'creator-kit')
 TEST_KIT_FOLDER = 'kit.part'

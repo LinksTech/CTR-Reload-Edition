@@ -385,6 +385,42 @@ set(rep "${base}/k98game/report.txt")
 expect_lit("${rep}" "out\tgame\t")
 expect_lit("${rep}" "out-text\tThis folder is inside the game's folder.\tChoose a folder outside the game, for example in Documents.")
 check_no_kit("${base}/game/kit")
+
+# --- K7: Start from an old character ---------------------------------------------------
+# An old character made here (the test model through make-char, template 14):
+# the page exports its model with rldpack char-export (classic.glb in the kit,
+# byte for byte rldpack's) and the generator gets --classic with it.
+execute_process(COMMAND "${PACKER}" make-char --model "${base}/models/route-bare.glb" --name "OLD DRIVER" --template 14
+                        --rig bind-pose --out "${base}/old.rldchar"
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
+if(NOT rc EQUAL 0 OR NOT EXISTS "${base}/old.rldchar")
+    message(FATAL_ERROR "FAILED: make-char made no old character (exit ${rc})\n${out}")
+endif()
+execute_process(COMMAND "${PACKER}" char-export "${base}/old.rldchar" -o "${base}/old-ref.glb"
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
+if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "FAILED: rldpack char-export of the old character (exit ${rc})\n${out}")
+endif()
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-k7")
+studio(k7 0 "${ini}" --do "page kit" --do "demo off" --do "classic ${base}/old.rldchar" --do "generate"
+       --do "report ${base}/k7/report.txt" --do "quit")
+expect_lit("${base}/k7/report.txt" "result\tok")
+expect_lit("${base}/k7/report.txt" "file\tclassic.glb\t")
+expect("${base}/k7/report.txt" "(^|\n)classic\t[^\n]*old\\.rldchar")
+expect("${base}/k7/auto.log" "rldpack char-export [^\n]*old\\.rldchar")
+expect("${base}/k7/standin.log" "--classic \\| [^\n]*classic\\.glb")
+file(SHA256 "${base}/out-k7/classic.glb" hashPage)
+file(SHA256 "${base}/old-ref.glb" hashRef)
+if(NOT hashPage STREQUAL hashRef)
+    message(FATAL_ERROR "FAILED: classic.glb of the kit (${hashPage}) is not rldpack char-export's (${hashRef})")
+endif()
+# Not a character file: refused before anything runs, the folder stays empty.
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-k7bad")
+studio(k7bad 1 "${ini}" --do "page kit" --do "demo off" --do "classic ${base}/models/route-bare.glb" --do "generate"
+       --do "report ${base}/k7bad/report.txt" --do "quit")
+expect_lit("${base}/k7bad/report.txt" "msg\terror\tThe old character cannot be read: it is no .rldchar file.\t")
+check_no_kit("${base}/out-k7bad")
+message("kit passed: K7 start from an old character (classic.glb = rldpack char-export, --classic to the generator, a wrong file refused)")
 message("kit passed: K9.8 output inside a git work tree and inside the game refused")
 
 # --- L.9: the content guard knows every name of the kit --------------------------------------------------------------
