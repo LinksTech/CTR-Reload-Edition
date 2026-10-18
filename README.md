@@ -31,6 +31,7 @@
   <a href="#controls">Controls</a> &middot;
   <a href="#custom-tracks">Custom tracks</a> &middot;
   <a href="#custom-characters">Custom characters</a> &middot;
+  <a href="#mods">Mods</a> &middot;
   <a href="#whats-next">What's next</a> &middot;
   <a href="#building-from-source">Building</a> &middot;
   <a href="#reporting-bugs">Bugs</a> &middot;
@@ -42,6 +43,11 @@
 CTR Reload Edition runs *Crash Team Racing* (PS1, 1999) natively on Windows,
 without an emulator, and plays custom tracks and custom characters next to
 the original ones.
+
+The current release is **0.7.5 Beta** (Reload Studio 0.9.0). This README
+describes `main`: what is marked *new since 0.7.5* is in the
+[nightly build](https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/nightly-builds)
+until the next release.
 
 > [!IMPORTANT]
 > You need **your own disc image** of the game, NTSC-U (SCUS-94426), as
@@ -62,13 +68,13 @@ the original ones.
 - Real widescreen: 4:3, 16:9 and 21:9 — the view gets wider, nothing
   is stretched
 - Menus stay nicely centered on ultrawide screens
-- OPTIONS → GRAPHICS: display mode, aspect ratio, resolution and
-  anti-aliasing, saved for the next start
+- OPTIONS → GRAPHICS: display mode, aspect ratio, resolution,
+  anti-aliasing and NATIVE DRIVERS, saved for the next start
 
 ### 🏁 Custom tracks — our main focus
 - Drop a .rldtrack file into the tracks folder and it shows up in game
 - New NITRO-PIT mode under Arcade with everything for custom tracks:
-  - **Race**, with bots on tracks that have nav paths
+  - **Race**, with CPU drivers
   - **Time Trial** with your best times per track and lap count
   - **Custom cups** of four tracks each
   - **Crystal Challenge**: collect every crystal before the time runs out
@@ -77,25 +83,41 @@ the original ones.
 - A preview video of each track plays in the track selection
 - Tracks bring their own music and their own minimap, scaled
   automatically for the track screen
+- *New since 0.7.5:* a track without a start grid gets one, and a track
+  without CPU paths gets them generated from its checkpoints
 - Fixes for crashes found in community tracks, and broken track data
   gets caught before you race, not mid-race
 
 ### 🧑‍🚀 Custom characters
-- Build your own driver from a glTF (.glb, recommended), OBJ or PLY model
-  (with its textures), exported at any scale
-- Animations of your own: shape keys in Blender for steering, reverse,
-  crash, jump, and a win or lose pose after the finish line
-- The model is fitted to Crash's size, repaired and, above the triangle
-  limit, reduced automatically - the shape and the colours stay
+- Reload Studio asks *What do you want to build?* and guides you through
+  one of three routes to a finished .rldchar and a test race:
+  - **Vanilla**: a classic PS1-style driver from a glTF (.glb), OBJ or PLY
+  - **Low-Poly** and **Hi-Res** *(new since 0.7.5)*: a textured driver
+    from one .glb, animated with up to 12 clips on a skeleton - drawn by
+    the game's new engine, with a classic model made from the same file as
+    fallback
+- **Creator Kit** *(new since 0.7.5)*: a ready Blender template made from
+  your own game data - kart, skeleton, a placeholder figure and all 12
+  clips. Swap in your figure, export, test
+- Any model, exported at any scale, is fitted to Crash's size, repaired
+  and, above the triangle limit, reduced automatically - the shape and the
+  colours stay
 - Your own icon in the driver select and the race HUD, mask (Aku Aku or
-  Uka Uka), minimap colour and voice clips
+  Uka Uka), minimap colour, voice clips, shadow and exhaust
 - The driving style (Balanced, Acceleration, Speed, Turning) decides how
   the kart drives and sounds
-- Kart wheels drawn or hidden, for models that bring their own vehicle -
-  or wheels of your own, with an extra rear wheel and the axles where you
-  want them
+- Kart wheels drawn or hidden, or wheels of your own, with an extra rear
+  wheel and the axles where you want them
 - Drop a .rldchar file into the characters folder and it gets its own tile
-  in the driver select - up to 32 of them
+  in the driver select - up to 32 of them - and can race as a CPU driver
+
+### 🎛️ Mods (feature preview)
+- A MODS page for one-player Arcade races and NITRO-PIT: choose your CPU
+  drivers (random, or only the ones you tick - custom drivers too)
+- *New since 0.7.5:* difficulty up to EXTREME, a one-on-one Boss Challenge
+  against Ripper Roo, Papu Papu, Komodo Joe, Pinstripe or Nitros Oxide on
+  any track, item chaos or your own item weights, gravity, grip, night and
+  the Retro Fueled rules
 
 ### 🛠️ Reload Studio
 - One window for tracks, cups and characters — no command line, no
@@ -103,11 +125,14 @@ the original ones.
 - Checks while you work and says in plain words what is wrong and how to
   fix it
 - "Build container" also records the track's preview in the background
-- Character preview next to Crash, the way the game will draw it - it
-  plays the steering, jump, crash, reverse, win and lose animations
+- 3D character preview next to Crash, the way the game will draw it, with
+  its animations
+- "Test in game" starts a race with your track or your character straight
+  away
 - Notices a new export by itself and checks again; long builds show their
   progress and can be cancelled
-- "Test in game" starts a race on your track straight away
+- *New since 0.7.5:* the Creator Kit page, and modules - extra pages as
+  DLLs in a `modules` folder next to the Studio
 - Dark and light mode, follows the Windows display scale
 
 ### ⚙️ Under the hood
@@ -115,8 +140,9 @@ the original ones.
   and buffers are sized per track. Original tracks keep their original
   tables, with larger draw and clip buffers
 - New VRAM handling: palette textures go through a GPU atlas instead of
-  being decoded from emulated PS1 VRAM for every pixel — groundwork for
-  higher-res textures later
+  being decoded from emulated PS1 VRAM for every pixel
+- A native engine draws high-detail and hi-res drivers with skinning,
+  real textures and mipmaps next to the original PS1 drawing
 - Less emulation where it doesn't matter: several PS1 rendering steps
   now run natively, like transparency in a single pass
 - Runs out of room gracefully: an effect is left out and logged instead
@@ -125,6 +151,8 @@ the original ones.
 ### ✨ Quality of life
 - First-start window: just drag in your disc image
 - Settings are remembered, faster boot
+- *New since 0.7.5:* every key can be changed in OPTIONS → CONTROLS, and
+  the mouse works in menus
 - Race pauses when you alt-tab or minimize
 - New main menu with Options (cheats, scrapbook) and Exit
 - All characters unlocked from the start — your save stays untouched
@@ -143,8 +171,7 @@ the original ones.
    once (about 520 MB).
 3. Set up the picture in OPTIONS → GRAPHICS.
 4. Create a folder `tracks` next to the game and put `.rldtrack` files into it.
-5. Race them: ARCADE → NITRO-PIT → RACE, CUP, CRYSTAL or CTR. Under RACE, the
-   MODE box below the laps offers TIME TRIAL.
+5. Race them: ARCADE → NITRO-PIT → RACE, CUP, TIME TRIAL, CRYSTAL or CTR.
 6. For custom characters, create a folder `characters` next to the game and
    put `.rldchar` files into it. They show up in the one-player ARCADE driver
    select, after the original drivers.
@@ -193,10 +220,10 @@ starts a race on your track straight away. Keep it next to `ctr_native.exe`.
 
 | Mode | Needs |
 | --- | --- |
-| Race | restart points (the checkpoints that count the laps); bots also need nav paths |
+| Race | restart points (the checkpoints that count the laps); CPU paths are generated from them when the track has none (new since 0.7.5) |
 | Crystal Challenge | at least one crystal |
 | CTR Challenge | each of the letters C, T and R exactly once |
-| Time Trial | the same as Race; chosen in the MODE box below the laps |
+| Time Trial | the same as Race; its own row in NITRO-PIT |
 | Battle | not available yet |
 
 At most 110 placed objects (crates, fruit, letters and every other placed
@@ -206,57 +233,55 @@ model); above 90 Reload Studio warns.
 
 ## Custom characters
 
-On its Character page, Reload Studio builds a `.rldchar` driver from one
-model of driver, steering wheel and kart - a glTF (.glb, recommended: it
-brings its textures and its animations in one file), an OBJ or a PLY - in
-five steps: model, driver, in-game look, voices and extras. The model can be
-exported at any scale - it is fitted to Crash with his kart, repaired (split
-corners, holes, faces turned inward) and, if it has more triangles than a
-driver may draw, reduced until it fits. The preview shows it next to Crash
-and in its animations, the way the game will draw it.
+On its Character page, Reload Studio first asks *What do you want to
+build?* and then shows only the steps of that route - model, driver, in-game
+look, voices and build - with the preview beside them. The shortest way is
+four clicks: card, model, Build, Test in game.
 
-You choose the driving style (Balanced, Acceleration, Speed, Turning), the
-mask, an icon for the driver select and the race HUD, a minimap colour and a
-folder of voice clips. Switch off "Show kart wheels" for a model that brings
-its own wheels or vehicle.
+| Route | Model | What the game draws |
+| --- | --- | --- |
+| **Vanilla** | glTF (.glb, recommended), OBJ or PLY | the classic PS1-style driver; animations from shape keys |
+| **Low-Poly** *(new since 0.7.5)* | one .glb, its clips on a skeleton | a textured driver on a smaller budget (8000 triangles), and the classic fallback |
+| **Hi-Res** *(new since 0.7.5)* | one .glb, its clips on a skeleton | a textured driver on the game's full hi-res budget, and the classic fallback |
 
-Animations come from shape keys on the driver in Blender, named
-steer_left, steer_right, reverse, crash, jump, win and lose, exported as
-glTF. The Animations card lists each pose - from your file, mirrored,
-automatic or with an error - and plays them in the preview. Steering,
-reverse, crash and jump work in every build of the game; win and lose show
-on the native model. The how-to is
-[docs/ANIMATIONS.md](docs/ANIMATIONS.md); a Blender template to start from is
-built by a script in [templates](templates/README.md) - both come with the
-release package:
+Every model can be exported at any scale - it is fitted to Crash with his
+kart, repaired (split corners, holes, faces turned inward) and, if it has
+more triangles than a driver may draw, reduced until it fits. You choose the
+driving style, the mask, an icon for the driver select and the race HUD, a
+minimap colour, voice clips, shadow and exhaust, and the kart wheels: the
+game's, none, or your own.
 
-    blender --background --factory-startup --python templates/make_driver_template.py
+**Animations.** A Low-Poly or Hi-Res driver brings 12 clips as Blender
+actions on its skeleton: `idle`, `steer_left`, `steer_right`, `jump`,
+`drift_left`, `drift_right`, `hit`, `podium_1` to `podium_3`, `lose` and
+`menu`. A missing clip falls back to another one, so you can start with a
+few. A Vanilla driver takes shape keys instead (steer_left, steer_right,
+reverse, crash, jump, win and lose) - see [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
 
-Rigs (armatures) are not supported yet - use shape keys.
-
-A glTF or OBJ can also keep its own mesh and textures ("Native model" on the
-Extras tab, a preview feature): the game draws it with NATIVE DRIVERS set to
-Preview, on wheels of your own if you give it a wheel model (card Wheels) -
-with a different rear wheel if you like and each axle moved forward, up or
-wider. Your wheels are drawn at every distance.
+**Creator Kit** *(new since 0.7.5)*. The page Creator Kit builds a Blender
+5.2 template from your own copy of the game: the kart, a skeleton, a
+placeholder puppet and all 12 clips, with the export settings stored. You
+replace the puppet with your figure, export it and test it - or start from
+one of your old characters. Files with the kit's kart contain your game data
+and stay on your computer; the figure alone is the file to share. The
+step-by-step guide is [docs/CREATOR_KIT.md](docs/CREATOR_KIT.md).
 
 In the preview, drag to turn the model, drag with the right mouse button to
 move it, use the mouse wheel to zoom and double-click to go back to the start
-view. The bar and the View menu in the preview (also on a right click) hold
-the fixed views (front, side, back, top, 3/4, race), a light or dark
-background, the Crash size reference, shadow and exhaust, and Native or
-Classic when the character has both. The line below the preview says which
-look you see, why, and which textures were not found.
+view. The View menu (also on a right click) holds the fixed views, a light or
+dark background, the Crash size reference, shadow and exhaust.
 
 <details>
 <summary>Current limits</summary>
 
-- Only in the one-player ARCADE driver select and the NITRO-PIT time trial;
-  not in NITRO-PIT CRYSTAL or CTR, Adventure, Battle or with two players
+- In the one-player ARCADE driver select, the NITRO-PIT race, cup and time
+  trial, and as CPU drivers through MODS; not in NITRO-PIT CRYSTAL or CTR,
+  Adventure, Battle or with two players
 - At most 32 characters get a tile; their own icon shows for the first 20
 - The size is visual only - physics and collision follow the driving style
-- The cup podium, high score lists and profiles still show Fake Crash
+- High score lists and profiles still show Fake Crash
 - A driver without voice clips is silent
+- The hi-res format is a preview and may still change
 
 </details>
 
@@ -264,16 +289,31 @@ Every page and message of Reload Studio is explained in section 4 of the
 [Reload Studio guide](tools/package/README.txt); what is new in each version
 is in the [release notes](tools/package/RELEASE-NOTES.txt).
 
+## Mods
+
+MODS is a feature preview for one-player ARCADE races and cups, on the disc
+tracks and in NITRO-PIT race and cup. In the track select press DOWN below
+the last LAPS row (in the cup select, from a lower cup onto the MODS line),
+then CROSS. Everything is off at first; with every value at normal the game
+is exactly as before.
+
+| Group | What you can set |
+| --- | --- |
+| Drivers | CPU drivers: default, all random or only the ones you tick (custom drivers too); difficulty EASY to EXTREME *(new since 0.7.5)*; Boss Challenge, one against one with a boss on any race track *(new since 0.7.5)* |
+| Rules | items: default, chaos or your own weights; the Retro Fueled rules by TheRedhotbr, each on its own *(new since 0.7.5)* |
+| World | gravity 20 % to 200 %, grip 0 % (ice) to 100 %, night 0 % to 90 % *(new since 0.7.5)* |
+
+Not in CRYSTAL, CTR and TIME TRIAL of NITRO-PIT, Adventure, Battle or with
+two players.
+
 ## What's next
 
 Planned, in no particular order and without a date:
 
 - Battle on custom tracks
-- Boss races and race modifiers in NITRO-PIT
 - Custom characters in more modes: two players, Adventure and the NITRO-PIT
   challenges
-- Rigs (armatures) for custom characters - animations are shape keys
-  for now
+- More mods
 - Skin support for the drivers
 - ...and more
 
