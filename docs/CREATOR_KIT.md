@@ -216,19 +216,19 @@ To export:
 Older versions of the game and the PS1 path cannot show a skeleton. The Studio builds a **classic model** for them from your file, automatically.
 
 - The Studio reads your model as it stands in its **bind pose**. It ignores the skeleton and the clips.
-- The classic model needs a kart in the file, so it is built from `creator-kit-demo-local.glb`.
+- A game without hi-res drivers shows your figure in a simple grey kart, because the figure file has no kart of its own.
 - This is why you bind your figure **seated in the kart**. A standing figure gives a bad classic model.
 - The game makes the classic steering and jump poses itself.
 
 For advanced users, this is the same step on the command line:
 
-`ReloadStudio.exe --rldpack make-char --model my-figure.glb --reduce auto --rig bind-pose --wheels off`
+`ReloadStudio.exe --rldpack make-char --model creator-kit-figure.glb --reduce auto --rig bind-pose --figure-only`
 
 You do not need this for normal work.
 
 ## 10. Test in game
 
-The figure alone holds no game data, but this version of the game does not add the original kart to it yet. So for a test on your own computer use `creator-kit-demo-local.glb`, the figure with the kart from your game data. Never share that file.
+The figure alone holds no game data. The game adds the original kart to it from the player's own game. So you can test `creator-kit-figure.glb` as it is, and share it as it is.
 
 1. On the page **Character**, choose the file named above. Then press the button **Test in game**.
 2. Start a race with your character.
@@ -259,7 +259,7 @@ The old model has the right size and sits where the puppet sits. When the file h
 
 ## 12. Sharing
 
-The kart and the wheels in the kit are made from your own copy of the game. Keep files that contain them for yourself - do not share them.
+Share only files without the kit kart. The game puts the kart in on the player's side.
 
 ## 13. If something is wrong
 

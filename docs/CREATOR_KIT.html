@@ -863,15 +863,15 @@ nav.toc ol { margin: 0; }
 <p>Older versions of the game and the PS1 path cannot show a skeleton. The Studio builds a <strong>classic model</strong> for them from your file, automatically.</p>
 <ul>
 <li>The Studio reads your model as it stands in its <strong>bind pose</strong>. It ignores the skeleton and the clips.</li>
-<li>The classic model needs a kart in the file, so it is built from <code>creator-kit-demo-local.glb</code>.</li>
+<li>A game without hi-res drivers shows your figure in a simple grey kart, because the figure file has no kart of its own.</li>
 <li>This is why you bind your figure <strong>seated in the kart</strong>. A standing figure gives a bad classic model.</li>
 <li>The game makes the classic steering and jump poses itself.</li>
 </ul>
 <p>For advanced users, this is the same step on the command line:</p>
-<p><code>ReloadStudio.exe --rldpack make-char --model my-figure.glb --reduce auto --rig bind-pose --wheels off</code></p>
+<p><code>ReloadStudio.exe --rldpack make-char --model creator-kit-figure.glb --reduce auto --rig bind-pose --figure-only</code></p>
 <p>You do not need this for normal work.</p>
 <h2 id="10-test-in-game">10. Test in game</h2>
-<p>The figure alone holds no game data, but this version of the game does not add the original kart to it yet. So for a test on your own computer use <code>creator-kit-demo-local.glb</code>, the figure with the kart from your game data. Never share that file.</p>
+<p>The figure alone holds no game data. The game adds the original kart to it from the player&#x27;s own game. So you can test <code>creator-kit-figure.glb</code> as it is, and share it as it is.</p>
 <ol>
 <li>On the page <strong>Character</strong>, choose the file named above. Then press the button <strong>Test in game</strong>.</li>
 <li>Start a race with your character.</li>
@@ -902,7 +902,7 @@ nav.toc ol { margin: 0; }
 <li>Its objects and materials are named <code>classic_...</code>.</li>
 </ul>
 <h2 id="12-sharing">12. Sharing</h2>
-<p>The kart and the wheels in the kit are made from your own copy of the game. Keep files that contain them for yourself - do not share them.</p>
+<p>Share only files without the kit kart. The game puts the kart in on the player&#x27;s side.</p>
 <h2 id="13-if-something-is-wrong">13. If something is wrong</h2>
 <ul>
 <li><strong>A clip is missing or not found.</strong> The name is misspelled or the action is missing. Open the Action Editor and compare the name with the table in section 5. The names are exact and in lower case.</li>
