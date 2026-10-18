@@ -718,9 +718,11 @@ static int RldKit_Replay(RldKitRetail *m)
 	return 1;
 }
 
-// Header 0 and animation 0 of a racer model file (the whole BIGFILE entry).
+// Header 0 and animation 0 of a racer model file (the whole BIGFILE entry, or
+// a CMDL: the same layout). fullHeight 1 keeps bit 0 of the height (a CMDL
+// whose CHRI has RLDCHAR_FLAG_FULL_HEIGHT; the retail models: 0, RB:425).
 // 1 = decoded; 0 with why.
-static int RldKit_RetailDecode(const u8 *file, u32 fileSize, RldKitRetail *m, char *why, size_t whySize)
+static int RldKit_RetailDecodeAs(const u8 *file, u32 fileSize, int fullHeight, RldKitRetail *m, char *why, size_t whySize)
 {
 	u32 hdr;
 	u32 cmdl;
@@ -912,7 +914,7 @@ static int RldKit_RetailDecode(const u8 *file, u32 fileSize, RldKitRetail *m, ch
 				b2 = acc[1] & 0xff;
 			}
 			X = (int)((u32)((b0 + (pos[0] & 0x7fff)) << 2) & 0xffffu);
-			Y = (int)((u32)(((b2 + pos[1]) & ~1) << 2) & 0xffffu);
+			Y = (int)((u32)(((b2 + pos[1]) & (fullHeight ? ~0 : ~1)) << 2) & 0xffffu);
 			Z = (int)((u32)((b1 + pos[2]) << 2) & 0xffffu);
 			g[0] = (X & 0x8000) ? (X - 0x10000) : X;
 			g[1] = (Y & 0x8000) ? (Y - 0x10000) : Y;
@@ -941,6 +943,12 @@ static int RldKit_RetailDecode(const u8 *file, u32 fileSize, RldKitRetail *m, ch
 		return RldKit_Fail(why, whySize, "the command list does not replay (records out of order)");
 	}
 	return 1;
+}
+
+// RldKit_RetailDecodeAs with the retail height rule.
+static int RldKit_RetailDecode(const u8 *file, u32 fileSize, RldKitRetail *m, char *why, size_t whySize)
+{
+	return RldKit_RetailDecodeAs(file, fileSize, 0, m, why, whySize);
 }
 
 // The model-unit position of a record in a stored frame.

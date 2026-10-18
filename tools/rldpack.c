@@ -701,6 +701,8 @@ static void RldWheel_Usage(FILE *out);
 static void RldHires_Usage(FILE *out);
 // The Creator Kit (tools/rldpack_kit.inc, included next to it).
 static void RldKit_Usage(FILE *out);
+// char-export (tools/rldpack_export.inc).
+static void RldExp_Usage(FILE *out);
 
 
 //========================================================================================
@@ -6507,6 +6509,7 @@ static void Rld_Usage(void)
 	RldWheel_Usage(stdout);
 	RldHires_Usage(stdout);
 	RldKit_Usage(stdout);
+	RldExp_Usage(stdout);
 
 	printf("BUILD - REQUIRED\n");
 	printf("  --lev <file>                track geometry (.lev), 16 MB at most\n");
@@ -6680,6 +6683,8 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 #include "rldpack_hires_png.inc"
 // The Creator Kit (include/rldkit.inc): kit-extract, kit-standin, selftest-kit.
 #include "rldpack_kit.inc"
+// char-export: the model of a .rldchar as a GLB (tools/rldpack_export.inc).
+#include "rldpack_export.inc"
 
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
@@ -6817,6 +6822,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "hires-png") == 0)
 	{
 		return RldHires_PngCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "char-export") == 0)
+	{
+		return RldExp_Command(argc - 2, &argv[2]);
 	}
 	if (strcmp(argv[1], "kit-extract") == 0)
 	{
