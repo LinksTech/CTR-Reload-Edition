@@ -146,6 +146,9 @@
 // The hi-res chunk CHRG (its envelope checks, RldHires_FindChunk / ReadChunk);
 // the engine uses the rest of it (platform/engine_hires_char.c).
 #include <rldhires.inc>
+// The retail kart of a donor from the player's game data, for CHRI bit 5
+// (THE GAME KART below); the engine uses the rest of it.
+#include <rldkit.inc>
 
 #define NATIVE_CHAR_PATH_MAX 1024
 #define NATIVE_CHAR_SEATS 8
@@ -245,7 +248,20 @@ struct NativeCharFile
 	struct RldCharNative *native; // CNET/CTXT, READY, held only while a seat is bound and only with --native-preview; else NULL
 	struct RldCharLook look;    // the shadow and exhaust of CHRI (RldChar_ParseLook); all retail for a file without the field
 	int hasChrg;                // the envelope lists a CHRG chunk (hi-res model); looked up only while the hi-res drivers are on, else 0
+	int gameKart;               // NATIVE_CHAR_KART_*: CHRI bit 5, the donor's kart in place of the stand-in (THE GAME KART)
+	const char *gameKartWhy;    // NATIVE_CHAR_KART_FAILED: a fixed text, or gameKartText
+	char gameKartText[200];
+	int gameKartSaid;           // its line is in the log
+	struct RldCharGameKart kart; // the CHRI field, with NATIVE_CHAR_KART_PENDING and later
+	u8 *cmdlFile;               // NATIVE_CHAR_KART_PENDING: the CMDL as stored (before the relocation), for the splice; then NULL
+	size_t cmdlFileSize;
+	u8 *cmdlKart;               // NATIVE_CHAR_KART_MADE: the spliced CMDL, relocated; model points into it, cmdl stays the file's
 };
+
+#define NATIVE_CHAR_KART_NONE 0     // no bit 5: the file's CMDL, as always
+#define NATIVE_CHAR_KART_PENDING 1  // bit 5 and its field: spliced at the first load stage 5
+#define NATIVE_CHAR_KART_MADE 2     // the model is the figure in the donor's kart
+#define NATIVE_CHAR_KART_FAILED 3   // the stand-in stays (gameKartWhy), one line
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
 // s_charFiles[e], with runtime id NATIVE_CHAR_RUNTIME_ID_FIRST + e.
@@ -884,6 +900,12 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	{
 		// The look has no rule: whatever it holds, the file stays (RldChar_ParseLook).
 		RldChar_ParseLook(&info, infoBytes, infoSize, &out->look);
+		// Nor the game kart: a field that does not hold keeps the stand-in (THE GAME KART).
+		if ((info.flags & RLDCHAR_FLAG_GAME_KART) != 0u)
+		{
+			out->gameKartWhy = RldChar_ParseGameKart(&info, infoBytes, infoSize, &out->kart);
+			out->gameKart = (out->gameKartWhy == NULL) ? NATIVE_CHAR_KART_PENDING : NATIVE_CHAR_KART_FAILED;
+		}
 	}
 	free(infoBytes);
 	if (why != NULL)
@@ -912,6 +934,22 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 		return 0;
 	}
 
+	// CHRI bit 5: the CMDL as stored, which the splice reads at load stage 5.
+	if (out->gameKart == NATIVE_CHAR_KART_PENDING)
+	{
+		out->cmdlFile = (u8 *)malloc(cmdlSize);
+		if (out->cmdlFile == NULL)
+		{
+			out->gameKart = NATIVE_CHAR_KART_FAILED;
+			out->gameKartWhy = "out of memory";
+		}
+		else
+		{
+			memcpy(out->cmdlFile, cmdl, cmdlSize);
+			out->cmdlFileSize = cmdlSize;
+		}
+	}
+
 	// ONCE, on the host copy, through the loader's own relocation: origin is the
 	// body, 4 bytes into the chunk; the map follows the body and its u32 length
 	// (model-bounds has held all of it to the chunk and to 4-byte alignment).
@@ -924,6 +962,8 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 		if (LOAD_RunPtrMap(body, (int)bodyBytes, map, (int)(mapBytes / 4u)) == 0)
 		{
 			free(cmdl);
+			free(out->cmdlFile);
+			out->cmdlFile = NULL;
 			NativeChar_DropMask(out);
 			NativeChar_Refuse(file, "PTRMAP", "ptrmap", "%s", "LOAD_RunPtrMap refused the pointer map - nothing patched");
 			return 0;
@@ -1061,6 +1101,7 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file, const c
 		Platform_LogWarn("[CTR Char] NO ID %s: all %d custom character ids are taken - the file is valid but not in the driver select\n", file,
 		                 NATIVE_CHAR_ROSTER_MAX);
 		free(loaded->cmdl);
+		free(loaded->cmdlFile);
 		NativeChar_DropMask(loaded);
 		return 0;
 	}
@@ -3599,6 +3640,282 @@ internal int NativeChar_ArmModsSeats(struct GameTracker *gGT)
 
 internal void NativeChar_HiresOffLog(void); // the hi-res chunk section below
 
+// ---------------------------------------------------------------------------
+// THE GAME KART (CHRI bit 5, include/rldchar.inc THE GAME KART; format 4.3).
+//
+// A figure-only file (rldpack make-char --figure-only) holds no game data: its
+// CMDL is the figure on a grey stand-in kart made by code, the stand-in's kart
+// body a fixed range at the end of the command list that CHRI describes. At the
+// first load stage 5 of the session (the main menu, before any driver select
+// or race; the bigfile is open from then on) every such file of the roster
+// gets ONE new model: the file's figure and steering ring, byte for byte, with
+// the retail kart of its donor in place of the stand-in body - the kart taken
+// from the PLAYER'S OWN game data: the 15 racer models HI (BIGFILE 242..256,
+// read through the disc layer like the engine's kit, NativeCD_ReadSectorsAt),
+// told from the figure by include/rldkit.inc (RldKit_ClassicKarts: still in
+// the turn, found in the other drivers), its triangles with their own texture
+// layouts and colour lookups, which point into shared.vrm (in VRAM from the
+// boot on). RldChar_SpliceKart builds it; the model the game takes through
+// RldChar_CheckModel as it always does is the same splice without the
+// textures (the shadow), and the real one differs only by its texture table
+// and the texture indices. Then LOAD_RunPtrMap, and the entry's model is the
+// new one - for the PS1 path and the engine's CMDL route alike (both draw the
+// file's struct Model; the engine imports it with Engine_ModelImport, which
+// draws textured retail models anyway). Name, template, class, the CMDL hash
+// and the draw reserve stay the file's: the new model may cost at most the
+// draw memory the file's did (normal and ghost), else the stand-in stays.
+// ANYTHING THAT FAILS keeps the file's model (the grey stand-in) with one
+// line; never a refusal, never a crash. Nothing is written to a file. The
+// game logic does not read a model's triangles: only drawing changes.
+
+#define NATIVE_CHAR_KART_SECTOR 0x800u
+
+internal RldKitClassic s_ncKarts[RLDKIT_DRIVERS]; // per donor, made once per session
+internal int s_ncKartsTried = 0;
+internal const RldKitClassic *s_ncKartTest = NULL; // the selftest's karts instead of the game data
+
+// One BIGFILE entry, whole (u32 size first), malloc'ed; NULL with *why.
+internal u8 *NativeChar_BigEntry(struct BigHeader *big, u32 index, u32 *size, char *why, size_t whySize)
+{
+	const struct BigEntry *entries = BIG_GETENTRY(big);
+	u32 bytes;
+	s32 sectors;
+	u8 *buf;
+
+	*size = 0;
+	if (index >= (u32)big->numEntry)
+	{
+		snprintf(why, whySize, "the game data has no entry %u", (unsigned)index);
+		return NULL;
+	}
+	bytes = (u32)entries[index].size;
+	sectors = (s32)((bytes + NATIVE_CHAR_KART_SECTOR - 1u) / NATIVE_CHAR_KART_SECTOR);
+	buf = (bytes > 0u) ? (u8 *)malloc((size_t)sectors * NATIVE_CHAR_KART_SECTOR) : NULL;
+	if (buf == NULL)
+	{
+		snprintf(why, whySize, "entry %u: %s", (unsigned)index, (bytes > 0u) ? "out of memory" : "empty");
+		return NULL;
+	}
+	if (!NativeCD_ReadSectorsAt(big->cdpos + entries[index].offset, sectors, buf))
+	{
+		free(buf);
+		snprintf(why, whySize, "entry %u: the disc read failed", (unsigned)index);
+		return NULL;
+	}
+	*size = bytes;
+	return buf;
+}
+
+// The classic karts of the donors in `donors` (bit d), once: from the game data.
+internal void NativeChar_MakeKarts(u32 donors)
+{
+	struct BigHeader *big;
+	RldKitSource src;
+	u8 *bytes[RLDKIT_DRIVERS];
+	char why[200];
+	int ok;
+	int d;
+
+	if (s_ncKartsTried || (donors == 0u) || (s_ncKartTest != NULL))
+	{
+		return;
+	}
+	s_ncKartsTried = 1;
+	big = (sdata->ptrBigfile1 != NULL) ? sdata->ptrBigfile1 : sdata->ptrBigfileCdPos_2;
+	memset(bytes, 0, sizeof(bytes));
+	memset(&src, 0, sizeof(src));
+	snprintf(why, sizeof(why), "no game data");
+	ok = (big != NULL);
+	for (d = 0; ok && (d < RLDKIT_DRIVERS); d++)
+	{
+		bytes[d] = NativeChar_BigEntry(big, RLDKIT_BIG_MODEL_HI + (u32)d, &src.modelSize[d], why, sizeof(why));
+		src.model[d] = bytes[d];
+		ok = (bytes[d] != NULL);
+	}
+	if (ok)
+	{
+		RldKit_ClassicKarts(&src, donors, s_ncKarts, why, sizeof(why));
+	}
+	else
+	{
+		for (d = 0; d < RLDKIT_DRIVERS; d++)
+		{
+			if ((donors >> (u32)d) & 1u)
+			{
+				snprintf(s_ncKarts[d].why, sizeof(s_ncKarts[d].why), "%s", why);
+			}
+		}
+	}
+	for (d = 0; d < RLDKIT_DRIVERS; d++)
+	{
+		free(bytes[d]);
+	}
+}
+
+// The ghost writer's bytes of a model of g3 + gt3 triangles (NativeChar_FileGhostBytes).
+internal u32 NativeChar_GhostBytesOf(u32 g3, u32 gt3)
+{
+	return (g3 * NATIVE_CHAR_GHOST_BYTES_G3) + (gt3 * NATIVE_CHAR_GHOST_BYTES_GT3);
+}
+
+internal u32 NativeChar_FileGhostBytes(const struct NativeCharFile *f); // the draw reserve, below
+
+// The splice of one file with the donor's kart k. 1 = f->model is the new
+// model; 0 with f->gameKartWhy.
+internal int NativeChar_SpliceFile(struct NativeCharFile *f, const RldKitClassic *k)
+{
+	struct RldCharKartTri *tri;
+	struct RldCharSpliceFacts facts;
+	struct RldCharSpliceFacts shadowFacts;
+	struct RldCharModelFacts check;
+	struct RldCharFinding finding;
+	const int fullHeight = (f->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0u;
+	u8 *shadow = NULL;
+	u8 *cmdl = NULL;
+	size_t shadowSize = 0;
+	size_t size = 0;
+	const char *why;
+	u32 textured = 0;
+	u32 g3;
+	u32 gt3;
+	u32 i;
+
+	memset(&check, 0, sizeof(check));
+	memset(&facts, 0, sizeof(facts));
+	memset(&shadowFacts, 0, sizeof(shadowFacts));
+	if ((k == NULL) || !k->ok)
+	{
+		snprintf(f->gameKartText, sizeof(f->gameKartText), "%s", (k != NULL) ? k->why : "no kart");
+		f->gameKartWhy = f->gameKartText;
+		return 0;
+	}
+	tri = (struct RldCharKartTri *)malloc((size_t)k->count * sizeof(*tri));
+	if (tri == NULL)
+	{
+		f->gameKartWhy = "out of memory";
+		return 0;
+	}
+	for (i = 0; i < k->count; i++)
+	{
+		memcpy(tri[i].p, k->tri[i].p, sizeof(tri[i].p));
+		memcpy(tri[i].rgb, k->tri[i].rgb, sizeof(tri[i].rgb));
+		memcpy(tri[i].layout, k->tri[i].layout, sizeof(tri[i].layout));
+		tri[i].cull = k->tri[i].cull;
+		tri[i].textured = k->tri[i].textured;
+		textured += tri[i].textured ? 1u : 0u;
+	}
+
+	// The shadow (no textures) through the game's own model check.
+	why = RldChar_SpliceKart(f->cmdlFile, f->cmdlFileSize, &f->kart, tri, k->count, fullHeight, 0, &shadow, &shadowSize, &shadowFacts);
+	if ((why == NULL) && (RldChar_CheckModel(shadow, shadowSize, &finding, NULL, NULL, &check) != RLDCHAR_VERDICT_OK))
+	{
+		snprintf(f->gameKartText, sizeof(f->gameKartText), "the model with the donor's kart breaks %s (%s)", (finding.rule != NULL) ? finding.rule : "a rule",
+		         finding.detail);
+		why = f->gameKartText;
+	}
+	free(shadow);
+	// What the real one draws: the shadow's triangles, the textured ones as GT3.
+	g3 = (check.triangles > textured) ? (check.triangles - textured) : 0u;
+	gt3 = textured;
+	if ((why == NULL) && ((g3 * RLDCHAR_DRAW_BYTES_G3 + gt3 * RLDCHAR_DRAW_BYTES_GT3) > f->drawBytes))
+	{
+		snprintf(f->gameKartText, sizeof(f->gameKartText), "the donor's kart needs more draw memory than the file announced (%u bytes, the file %u)",
+		         (unsigned)(g3 * RLDCHAR_DRAW_BYTES_G3 + gt3 * RLDCHAR_DRAW_BYTES_GT3), (unsigned)f->drawBytes);
+		why = f->gameKartText;
+	}
+	if ((why == NULL) && (NativeChar_GhostBytesOf(g3, gt3) > NativeChar_FileGhostBytes(f)))
+	{
+		why = "the donor's kart needs more draw memory than the file announced (ghost)";
+	}
+	if (why == NULL)
+	{
+		why = RldChar_SpliceKart(f->cmdlFile, f->cmdlFileSize, &f->kart, tri, k->count, fullHeight, 1, &cmdl, &size, &facts);
+	}
+	free(tri);
+	if (why == NULL)
+	{
+		const u32 bodyBytes = Rld_ReadLE32(&cmdl[0]);
+		const u32 mapBytes = Rld_ReadLE32(&cmdl[4u + bodyBytes]);
+
+		if (LOAD_RunPtrMap((char *)&cmdl[4], (int)bodyBytes, (int *)&cmdl[8u + bodyBytes], (int)(mapBytes / 4u)) == 0)
+		{
+			why = "LOAD_RunPtrMap refused the pointer map of the new model";
+		}
+	}
+	if (why != NULL)
+	{
+		free(cmdl);
+		if (why != f->gameKartText)
+		{
+			snprintf(f->gameKartText, sizeof(f->gameKartText), "%s", why);
+		}
+		f->gameKartWhy = f->gameKartText;
+		return 0;
+	}
+	f->cmdlKart = cmdl;
+	f->model = (struct Model *)&cmdl[4];
+	snprintf(f->gameKartText, sizeof(f->gameKartText), "%u kart triangles in place of the stand-in's %u (colours +%u, nearest %u, clamped %u)",
+	         (unsigned)facts.kartTriangles, (unsigned)facts.standIn, (unsigned)facts.colorsAdded, (unsigned)facts.colorsNear, (unsigned)facts.clamped);
+	return 1;
+}
+
+// Load stage 5, before the funnel: every file with CHRI bit 5 not yet tried
+// gets its donor's kart (or keeps the stand-in), one line each, once.
+internal void NativeChar_GameKarts(void)
+{
+	u32 donors = 0;
+	int e;
+
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		const struct NativeCharFile *f = &s_charFiles[e];
+		const u32 donor = RldChar_GameKartDonor(&f->kart, f->info.templateId);
+
+		if ((f->gameKart == NATIVE_CHAR_KART_PENDING) && (donor < (u32)RLDKIT_DRIVERS))
+		{
+			donors |= 1u << donor;
+		}
+	}
+	NativeChar_MakeKarts(donors);
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		struct NativeCharFile *f = &s_charFiles[e];
+		const u32 donor = RldChar_GameKartDonor(&f->kart, f->info.templateId);
+		const RldKitClassic *karts = (s_ncKartTest != NULL) ? s_ncKartTest : s_ncKarts;
+
+		if (f->gameKart == NATIVE_CHAR_KART_PENDING)
+		{
+			if (donor >= (u32)RLDKIT_DRIVERS)
+			{
+				f->gameKartWhy = "the donor is not a retail driver with a kart (0..14)";
+				f->gameKart = NATIVE_CHAR_KART_FAILED;
+			}
+			else
+			{
+				f->gameKart = NativeChar_SpliceFile(f, &karts[donor]) ? NATIVE_CHAR_KART_MADE : NATIVE_CHAR_KART_FAILED;
+			}
+			free(f->cmdlFile);
+			f->cmdlFile = NULL;
+			f->cmdlFileSize = 0;
+			if (f->gameKart == NATIVE_CHAR_KART_MADE)
+			{
+				Platform_Log("[CTR Char] classic kart from game data, donor %u: %s - %s\n", (unsigned)donor, f->file, f->gameKartText);
+			}
+			else
+			{
+				Platform_Log("[CTR Char] classic kart: %s: not made (donor %u: %s) - the grey stand-in kart stays\n", f->file, (unsigned)donor, f->gameKartWhy);
+			}
+		}
+		else if ((f->gameKart == NATIVE_CHAR_KART_FAILED) && !f->gameKartSaid)
+		{
+			// A field that did not hold at the start: said once, here.
+			Platform_Log("[CTR Char] classic kart: %s: not made (%s) - the grey stand-in kart stays\n", f->file,
+			             (f->gameKartWhy != NULL) ? f->gameKartWhy : "the CHRI field");
+		}
+		f->gameKartSaid = f->gameKartSaid || (f->gameKart != NATIVE_CHAR_KART_NONE);
+	}
+}
+
 internal void NativeChar_ArmSeatsOnce(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -3609,6 +3926,9 @@ internal void NativeChar_ArmSeatsOnce(void)
 	// --dev-char-seats names what it dropped first.
 	NativeChar_FlushDevLoad();
 	NativeChar_ClearSeats();
+
+	// CHRI bit 5: the donors' karts, once per session, before anything binds.
+	NativeChar_GameKarts();
 
 	// 1. A menu load, silently. characterIDs[0] keeps the template on the way
 	//    back into the menu, and the menu births drivers too
@@ -3731,6 +4051,7 @@ int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldChar
 	ready = (out->state == RLDCHAR_NATIVE_READY);
 
 	free(f.cmdl);
+	free(f.cmdlFile);
 	NativeChar_DropMask(&f);
 	return ready;
 }
@@ -5101,6 +5422,224 @@ internal void NativeChar_LookUnitSelfTest(int *checks, int *failures)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// THE GAME KART, tested without the game data: a code-made figure-only CMDL
+// (one head triangle, then the stand-in range of one triangle; 47 raw frames,
+// as make-char writes them) and code-made donor karts (s_ncKartTest) through
+// the stage-5 driver NativeChar_GameKarts on a one-file roster.
+
+internal void NativeChar_KartTestPut(u8 *at, u32 v)
+{
+	at[0] = (u8)v;
+	at[1] = (u8)(v >> 8);
+	at[2] = (u8)(v >> 16);
+	at[3] = (u8)(v >> 24);
+}
+
+// The CMDL chunk (u32 G, body, u32 mapBytes, map), malloc'ed: Model 0x00,
+// header 0x18, animation table 0x58, command list 0x68 (count 1, 6 commands,
+// the end), the one colour, the 4 animations with their frames.
+internal u8 *NativeChar_KartTestCmdl(size_t *sizeOut)
+{
+	static const u32 frames[RLDCHAR_ANIM_COUNT] = {21u, 7u, 15u, 4u};
+	const u32 list = 0x68u;
+	const u32 colors = list + 4u * 8u;
+	const u32 frameSize = (RLDCHAR_FRAME_BYTES + 3u * 6u + 3u) & ~3u;
+	u32 anims = colors + 4u;
+	u32 body = anims;
+	u32 map[8];
+	u8 *o;
+	u32 a;
+	u32 i;
+
+	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	{
+		body += RLDCHAR_ANIM_BYTES + frames[a] * frameSize;
+	}
+	*sizeOut = 8u + body + sizeof(map);
+	o = (u8 *)calloc(1, *sizeOut);
+	if (o == NULL)
+	{
+		return NULL;
+	}
+	NativeChar_KartTestPut(&o[0], body);
+	memcpy(&o[4], "KARTTEST", 8);
+	o[4u + RLDCHAR_MODEL_ID] = 0xff;
+	o[4u + RLDCHAR_MODEL_ID + 1u] = 0xff;
+	o[4u + RLDCHAR_MODEL_NUM_HEADERS] = 1;
+	NativeChar_KartTestPut(&o[4u + RLDCHAR_MODEL_HEADERS], 0x18u);
+	o[4u + 0x18u + RLDCHAR_HEADER_LOD] = 0x00;
+	o[4u + 0x18u + RLDCHAR_HEADER_LOD + 1u] = 0x20; // 8192
+	for (i = 0; i < 3u; i++)
+	{
+		o[4u + 0x18u + RLDCHAR_HEADER_SCALE + 2u * i + 1u] = 0x10; // 4096: a record step is one model unit
+	}
+	NativeChar_KartTestPut(&o[4u + 0x18u + RLDCHAR_HEADER_COMMANDS], list);
+	NativeChar_KartTestPut(&o[4u + 0x18u + RLDCHAR_HEADER_COLORS], colors);
+	NativeChar_KartTestPut(&o[4u + 0x18u + RLDCHAR_HEADER_NUM_ANIMS], RLDCHAR_ANIM_COUNT);
+	NativeChar_KartTestPut(&o[4u + 0x18u + RLDCHAR_HEADER_ANIMS], 0x58u);
+	// The list: the head triangle (slots 1..3), the stand-in triangle (slots 4..6).
+	NativeChar_KartTestPut(&o[4u + list], 1u);
+	for (i = 0; i < 6u; i++)
+	{
+		NativeChar_KartTestPut(&o[4u + list + 4u + 4u * i], (((i % 3u) == 0u) ? RLDCHAR_CMD_NEW_STRIP : 0u) | ((i + 1u) << 16));
+	}
+	NativeChar_KartTestPut(&o[4u + list + 4u * 7u], RLDCHAR_CMD_END);
+	NativeChar_KartTestPut(&o[4u + colors], 0x00808080u);
+	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	{
+		u32 f;
+
+		NativeChar_KartTestPut(&o[4u + 0x58u + 4u * a], anims);
+		memcpy(&o[4u + anims], "anim", 4);
+		o[4u + anims + RLDCHAR_ANIM_NUM_FRAMES] = (u8)frames[a];
+		o[4u + anims + RLDCHAR_ANIM_FRAME_SIZE] = (u8)frameSize;
+		for (f = 0; f < frames[a]; f++)
+		{
+			u8 *fr = &o[4u + anims + RLDCHAR_ANIM_BYTES + f * frameSize];
+
+			fr[0] = 0x80;
+			fr[1] = 0xff; // pos x -128
+			fr[4] = 0x80;
+			fr[5] = 0xff; // pos z -128
+			fr[RLDCHAR_FRAME_VERTEX_OFF] = RLDCHAR_FRAME_BYTES;
+			for (i = 0; i < 18u; i++)
+			{
+				fr[RLDCHAR_FRAME_BYTES + i] = (u8)(100u + 10u * (i / 3u) + ((i % 3u == 2u) ? 0u : (i % 3u)));
+			}
+		}
+		anims += RLDCHAR_ANIM_BYTES + frames[a] * frameSize;
+	}
+	map[0] = RLDCHAR_MODEL_HEADERS;
+	map[1] = 0x18u + RLDCHAR_HEADER_COMMANDS;
+	map[2] = 0x18u + RLDCHAR_HEADER_COLORS;
+	map[3] = 0x18u + RLDCHAR_HEADER_ANIMS;
+	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	{
+		map[4u + a] = 0x58u + 4u * a;
+	}
+	NativeChar_KartTestPut(&o[4u + body], (u32)sizeof(map));
+	for (i = 0; i < 8u; i++)
+	{
+		NativeChar_KartTestPut(&o[8u + body + 4u * i], map[i]);
+	}
+	return o;
+}
+
+internal void NativeChar_GameKartSelfTest(int *checks, int *failures)
+{
+	static RldKitClassic karts[RLDKIT_DRIVERS];
+	static RldKitClassicTri tri[2];
+	const struct NativeCharFile keepFile = s_charFiles[0];
+	const int keepFiles = s_charRosterFiles;
+	struct NativeCharFile *f = &s_charFiles[0];
+	struct RldCharModelFacts facts;
+	size_t size = 0;
+	u8 *cmdl = NativeChar_KartTestCmdl(&size);
+	int round;
+
+	memset(&facts, 0, sizeof(facts));
+	NativeChar_LookExpect(checks, failures, (cmdl != NULL) && (RldChar_CheckModel(cmdl, size, NULL, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK) &&
+	                                            (facts.triangles == 2u),
+	                      "game kart: the code-made figure-only CMDL passes the model check (2 triangles)");
+	memset(karts, 0, sizeof(karts));
+	memset(tri, 0, sizeof(tri));
+	tri[0].p[0][0] = -10.0;
+	tri[0].p[1][0] = 10.0;
+	tri[0].p[2][2] = 20.0;
+	tri[0].rgb[0][0] = 200;
+	tri[0].cull = 0x30000000u;
+	tri[1] = tri[0];
+	tri[1].textured = 1;
+	tri[1].layout[0] = 0x7a401020u;
+	tri[1].layout[1] = 0x00121030u;
+	tri[1].layout[2] = 0x20202010u;
+	s_ncKartTest = karts;
+
+	// 0: an untextured donor kart within the draw memory - made;
+	// 1: a textured one over it (GT3 40 against G3 28) - the stand-in stays;
+	// 2: no kart for the donor (no game data) - the stand-in stays;
+	// 3: the textured one with room - made, with its texture table.
+	for (round = 0; (cmdl != NULL) && (round < 4); round++)
+	{
+		struct RldCharGameKart gk;
+		const struct Model *before;
+
+		memset(f, 0, sizeof(*f));
+		s_charRosterFiles = 1;
+		f->file = (char *)"kart-test.rldchar";
+		f->cmdlFile = (u8 *)malloc(size);
+		f->cmdlFileSize = size;
+		f->cmdl = (u8 *)malloc(size);
+		if ((f->cmdlFile == NULL) || (f->cmdl == NULL))
+		{
+			free(f->cmdlFile);
+			free(f->cmdl);
+			NativeChar_LookExpect(checks, failures, 0, "game kart: memory");
+			break;
+		}
+		memcpy(f->cmdlFile, cmdl, size);
+		memcpy(f->cmdl, cmdl, size);
+		f->model = (struct Model *)&f->cmdl[4];
+		f->drawBytes = (round == 3) ? 1000u : facts.drawBytes;
+		f->triangles = facts.triangles;
+		f->info.templateId = 3u;
+		memset(&gk, 0, sizeof(gk));
+		gk.donor = RLDCHAR_GAME_KART_TEMPLATE;
+		gk.triangles = 1u;
+		gk.commandFirst = 4u;
+		gk.commandEnd = 7u;
+		gk.recordFirst = 3u;
+		gk.recordEnd = 6u;
+		gk.scale = 4096u;
+		f->kart = gk;
+		f->gameKart = NATIVE_CHAR_KART_PENDING;
+		karts[3].ok = (round != 2);
+		karts[3].count = 1u;
+		karts[3].tri = ((round == 1) || (round == 3)) ? &tri[1] : &tri[0];
+		snprintf(karts[3].why, sizeof(karts[3].why), "no game data");
+		before = f->model;
+		NativeChar_GameKarts();
+		if ((round == 0) || (round == 3))
+		{
+			const struct ModelHeader *mh = (f->model != NULL) ? f->model->headers : NULL;
+
+			NativeChar_LookExpect(checks, failures, (f->gameKart == NATIVE_CHAR_KART_MADE) && (f->model != before) && (f->cmdlKart != NULL) &&
+			                                            (f->model == (const struct Model *)&f->cmdlKart[4]) && (f->cmdlFile == NULL) && (mh != NULL) &&
+			                                            (mh->numAnimations == RLDCHAR_ANIM_COUNT) &&
+			                                            ((round == 0) ? (mh->ptrTexLayout == NULL) : (mh->ptrTexLayout != NULL)),
+			                      (round == 0) ? "game kart: the template's donor kart (3) spliced in, relocated, the entry's model is the new one"
+			                                   : "game kart: a textured donor kart with room: spliced in with its texture table");
+			if ((round == 3) && (mh != NULL) && (mh->ptrTexLayout != NULL))
+			{
+				const u8 *layout = (const u8 *)mh->ptrTexLayout[0];
+
+				NativeChar_LookExpect(checks, failures, (layout[0] == 0x20) && (layout[3] == 0x7a) && (layout[11] == 0x20),
+				                      "game kart: the layout is the donor's, byte for byte");
+			}
+		}
+		else
+		{
+			NativeChar_LookExpect(checks, failures, (f->gameKart == NATIVE_CHAR_KART_FAILED) && (f->model == before) && (f->cmdlKart == NULL) &&
+			                                            (f->gameKartWhy != NULL) &&
+			                                            (strstr(f->gameKartWhy, (round == 1) ? "draw memory" : "no game data") != NULL),
+			                      (round == 1) ? "game kart: more draw memory than the file announced - the stand-in stays, the reason said"
+			                                   : "game kart: no kart for the donor - the stand-in stays, 'no game data'");
+		}
+		// Once per session: a second stage 5 changes nothing.
+		before = f->model;
+		NativeChar_GameKarts();
+		NativeChar_LookExpect(checks, failures, f->model == before, "game kart: a second load stage 5 keeps the model");
+		free(f->cmdlKart);
+		free(f->cmdl);
+		free(f->cmdlFile);
+	}
+	s_ncKartTest = NULL;
+	s_charFiles[0] = keepFile;
+	s_charRosterFiles = keepFiles;
+	free(cmdl);
+}
+
 void NativeChar_LookSelfTest(int *checks, int *failures)
 {
 	const struct NativeCharFile keepFile = s_charFiles[0];
@@ -5112,6 +5651,7 @@ void NativeChar_LookSelfTest(int *checks, int *failures)
 
 	NativeChar_LookParseSelfTest(checks, failures);
 	NativeChar_LookUnitSelfTest(checks, failures);
+	NativeChar_GameKartSelfTest(checks, failures);
 
 	// No look in the run: retail at once, nothing moved.
 	s_charLookAny = 0;
@@ -5306,6 +5846,7 @@ int NativeChar_NativeSelfTest(const char *dir)
 			if (loaded)
 			{
 				free(f.cmdl);
+				free(f.cmdlFile);
 				NativeChar_DropMask(&f);
 			}
 			continue;
@@ -5486,12 +6027,14 @@ int NativeChar_NativeSelfTest(const char *dir)
 
 		RldChar_FreeNative(&n);
 		free(f.cmdl);
+		free(f.cmdlFile);
 		NativeChar_DropMask(&f);
 	}
 
 	if (haveReference)
 	{
 		free(reference.cmdl);
+		free(reference.cmdlFile);
 		NativeChar_DropMask(&reference);
 	}
 	// A folder of named cases needs its old_ file; a folder of other files

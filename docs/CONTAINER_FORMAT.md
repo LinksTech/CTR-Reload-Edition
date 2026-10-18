@@ -626,7 +626,9 @@ The game kart (CHRI bit 5, container format 4.3; `RldChar_ParseGameKart`,
   with the vertex cache emptied, the stand-in's - and describes that range
   in 0x3C..0x4F. Which triangles are the stand-in is known by their origin
   (the faces make-char added), never told by shape or colour. The frame
-  holds 2 game units of room around the stand-in kart.
+  holds 2 game units of room around the stand-in kart, and a quarter of the
+  colour table stays free for the donor kart's colours (`--colors 128`: the
+  figure gets 96).
   `--kart-donor <0..14|template>` (default template) names the donor.
   Without `--figure-only` nothing of this runs: the bytes are those of before.
 - The game (`platform/native_chars.c`, THE GAME KART), at the first load

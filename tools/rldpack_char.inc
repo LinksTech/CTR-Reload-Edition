@@ -7213,6 +7213,7 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 	u32 palette[RLDCHAR_COLORS_MAX];
 	u32 unique = 0;
 	u32 count = 0;
+	u32 target;
 	u32 i;
 	double sum = 0.0;
 	double weights = 0.0;
@@ -7261,7 +7262,12 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 	}
 	b->colorsIn = unique;
 
-	count = RldMk_Palette(colors, unique, opt->colorTarget, palette);
+	// --figure-only (CHRI bit 5): a quarter of the table stays free for the
+	// colours of the retail kart the game puts in place of the stand-in
+	// (RldChar_SpliceKart appends them; with no room left it can only take the
+	// nearest of the figure's, which tints the kart).
+	target = opt->figureOnly ? (opt->colorTarget - opt->colorTarget / 4u) : opt->colorTarget;
+	count = RldMk_Palette(colors, unique, target, palette);
 
 	b->colorCount = count;
 	b->colorMax = 0.0;
@@ -7314,7 +7320,7 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 		RldMk_Say("warning", "ply-no-colors", NULL,
 		          "The model has no vertex colors, so it is drawn in one grey. Paint it in Blender (Vertex Paint) and export with colors.");
 	}
-	else if (b->colorsIn > opt->colorTarget)
+	else if (b->colorsIn > target)
 	{
 		RldMk_Say("warning", "ply-colors", NULL,
 		          "The model uses %u colors; the game keeps %u. Similar colors were merged (average change %.1f, largest %.1f of 255) - check the portrait.",
@@ -15647,8 +15653,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			chriSize = withSize;
 			RldMk_DonorText(gk.donor, donor, sizeof(donor));
 			RldMk_Say("info", "game-kart", NULL,
-			          "CHRI bit 5: in the game the classic model gets the kart of retail driver %s from the player's game data in place of the stand-in (%u triangles); a game before 4.3 shows the stand-in.",
-			          (gk.donor == RLDCHAR_GAME_KART_TEMPLATE) ? "the template" : donor, gk.triangles);
+			          "CHRI bit 5: in the game the classic model gets the kart of retail driver %u%s from the player's game data in place of the stand-in (%u triangles); a game before 4.3 shows the stand-in.",
+			          (unsigned)RldChar_GameKartDonor(&gk, templateId), (gk.donor == RLDCHAR_GAME_KART_TEMPLATE) ? " (the template)" : "", gk.triangles);
 			Rld_Emit("value", "game-kart", donor, "container", (const char *)NULL);
 		}
 	}
