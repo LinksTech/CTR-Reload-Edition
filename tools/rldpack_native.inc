@@ -2423,6 +2423,7 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 			in.cornerColor = NULL;
 			in.weldDistance = RldRep_DefaultWeld(chainCount, chainPosition);
 			in.holeMaxEdges = RLDREP_HOLE_MAX_EDGES_DEFAULT;
+			in.positionGroup = NULL;
 			why[0] = '\0';
 			if (!RldRep_Repair(&in, &r, why, sizeof(why)))
 			{

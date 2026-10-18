@@ -811,6 +811,7 @@ struct RldObjModel
 	u32 *faceCorners;
 	u32 *faceName;     // into names, RLDMK_NONE = no usemtl
 	u32 *faceSource;   // after the split (RldObj_Detail): per face the first piece of its triangle; NULL = none
+	u32 *faceMesh;     // per face: the mesh it comes from (the glTF reader: its node); NULL = one mesh (OBJ)
 	u32 faceCount;
 	u32 faceCapacity;
 	struct RldObjNames names;          // usemtl, in the order of first use
@@ -864,6 +865,7 @@ static void RldObj_FreeModel(struct RldObjModel *m)
 	free(m->faceCorners);
 	free(m->faceName);
 	free(m->faceSource);
+	free(m->faceMesh);
 	free(m->nameMaterial);
 	RldObj_FreeNames(&m->names);
 	for (i = 0; i < m->groupCount; i++)
@@ -4219,6 +4221,7 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 	u32 *faceFirst = NULL;
 	u32 *faceCorners = NULL;
 	u32 *faceName = NULL;
+	u32 *faceMesh = NULL;
 	u32 *faceSource = NULL;
 	u32 *first = NULL;
 	u32 alive = 0;
@@ -4259,9 +4262,10 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 	faceFirst = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
 	faceCorners = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
 	faceName = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
+	faceMesh = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
 	faceSource = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
 	first = (u32 *)malloc((size_t)d->sources * sizeof(u32) + 4u);
-	if ((cornerV == NULL) || (cornerT == NULL) || (faceFirst == NULL) || (faceCorners == NULL) || (faceName == NULL) || (faceSource == NULL) ||
+	if ((cornerV == NULL) || (cornerT == NULL) || (faceFirst == NULL) || (faceCorners == NULL) || (faceName == NULL) || (faceMesh == NULL) || (faceSource == NULL) ||
 	    (first == NULL))
 	{
 		free(order);
@@ -4270,6 +4274,7 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 		free(faceFirst);
 		free(faceCorners);
 		free(faceName);
+		free(faceMesh);
 		free(faceSource);
 		free(first);
 		return 0;
@@ -4287,6 +4292,7 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 			faceFirst[faces] = corners;
 			faceCorners[faces] = m->faceCorners[f];
 			faceName[faces] = m->faceName[f];
+			faceMesh[faces] = (m->faceMesh != NULL) ? m->faceMesh[f] : 0u;
 			faceSource[faces] = faces;
 			corners += m->faceCorners[f];
 			faces++;
@@ -4299,6 +4305,7 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 			faceFirst[faces] = corners;
 			faceCorners[faces] = 3u;
 			faceName[faces] = m->faceName[f];
+			faceMesh[faces] = (m->faceMesh != NULL) ? m->faceMesh[f] : 0u;
 			// The pieces of one triangle: the number of the first of them.
 			if (first[d->tri[order[at]].source] == RLDMK_NONE)
 			{
@@ -4319,6 +4326,15 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 	free(m->faceFirst);
 	free(m->faceCorners);
 	free(m->faceName);
+	if (m->faceMesh != NULL)
+	{
+		free(m->faceMesh);
+		m->faceMesh = faceMesh;
+	}
+	else
+	{
+		free(faceMesh);
+	}
 	m->cornerV = cornerV;
 	m->cornerT = cornerT;
 	m->faceFirst = faceFirst;
@@ -4661,6 +4677,20 @@ static int RldObj_Points(const struct RldObjModel *m, const u8 *cornerRgb, struc
 		{
 			RldObj_Memory();
 			ok = 0;
+		}
+	}
+	// The mesh of each face (glTF): make-char's repair welds within one mesh only.
+	if (ok && (m->faceMesh != NULL))
+	{
+		ply->faceMesh = (u32 *)malloc((size_t)m->faceCount * sizeof(u32) + 4u);
+		if (ply->faceMesh == NULL)
+		{
+			RldObj_Memory();
+			ok = 0;
+		}
+		else
+		{
+			memcpy(ply->faceMesh, m->faceMesh, (size_t)m->faceCount * sizeof(u32));
 		}
 	}
 	// Split triangles: their pieces count once when step 4 picks the

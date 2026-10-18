@@ -30,6 +30,7 @@ struct RldGltfTestModel
 	int skin;             // a skin on the node
 	const char *bufferUri; // NULL = GLB with its binary chunk; else a .gltf whose buffer is this file
 	int weights;          // JOINTS_0 (joint 0) and WEIGHTS_0 (1, 0, 0, 0) on every vertex
+	const char *second;   // a second node of the same mesh (its members, e.g. "\"translation\":[2,0,0],"); NULL = none (not with skin)
 };
 
 static void RldGltf_TestPad(struct RldMkBuffer *b, u8 with)
@@ -167,9 +168,16 @@ static void RldGltf_TestParts(const struct RldGltfTestModel *t, struct RldMkBuff
 #undef RLDGLTF_TEST_VIEW
 
 	RldMk_BufferText(json, "{\"asset\":{\"version\":\"2.0\",\"generator\":\"rldpack self-test\"},\"scene\":0,\"scenes\":[{\"nodes\":[0%s]}],",
-	                 t->skin ? ",1" : "");
-	RldMk_BufferText(json, "\"nodes\":[{\"name\":\"body\",%s\"mesh\":0%s}%s],", (t->node != NULL) ? t->node : "", t->skin ? ",\"skin\":0" : "",
-	                 t->skin ? ",{\"name\":\"bone\"}" : "");
+	                 t->skin ? ",1" : ((t->second != NULL) ? ",1" : ""));
+	if (t->second != NULL)
+	{
+		RldMk_BufferText(json, "\"nodes\":[{\"name\":\"body\",%s\"mesh\":0},{\"name\":\"second\",%s\"mesh\":0}],", (t->node != NULL) ? t->node : "", t->second);
+	}
+	else
+	{
+		RldMk_BufferText(json, "\"nodes\":[{\"name\":\"body\",%s\"mesh\":0%s}%s],", (t->node != NULL) ? t->node : "", t->skin ? ",\"skin\":0" : "",
+		                 t->skin ? ",{\"name\":\"bone\"}" : "");
+	}
 	if (t->skin)
 	{
 		RldMk_BufferText(json, "\"skins\":[{\"joints\":[1]}],");
@@ -997,6 +1005,65 @@ static void RldGltf_SelfTestRig(void)
 	RldGltf_FreeFiles();
 }
 
+// ONE MESH, ONE WELD (make-char step 3r, RldMk_StepRepair): two nodes of one
+// closed tent whose corners lie 0.0005 apart (well inside the weld distance)
+// stay two parts - not one position of the second mesh is welded onto the
+// first; the same split corner inside ONE mesh is welded as before.
+static void RldGltf_SelfTestWeldMeshes(void)
+{
+	static const float xyz6[6][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5f, 0.5f, -1}, {1.0005f, 0, 0}};
+	static const u16 index6[6][3] = {{0, 1, 2}, {0, 2, 3}, {5, 0, 4}, {2, 1, 4}, {3, 2, 4}, {0, 3, 4}};
+	struct RldGltfTestModel t;
+	struct RldMkOptions opt;
+	struct RldMkPly two;
+	struct RldMkPly one;
+	struct RldMkBuild b;
+	struct RldMkModelInfo info;
+	int ok;
+
+	memset(&t, 0, sizeof(t));
+	memset(&two, 0, sizeof(two));
+	memset(&one, 0, sizeof(one));
+	RldMk_TestOptions(&opt);
+	opt.repair = 1;
+	t.xyz = &s_rldGltfTestXyz[0][0];
+	t.count = 5u;
+	t.index = &s_rldGltfTestIndex[0][0];
+	t.triangles = 6u;
+	t.mode = 4;
+	t.second = "\"translation\":[1.0005,0,0],";
+	ok = RldGltf_TestRead("selftest/two-meshes.glb", &t, &two, &info);
+	RldMk_Test(ok && (two.faceMesh != NULL) && (two.faceCount == 12u) && (two.faceMesh[0] == 0u) && (two.faceMesh[11] == 1u),
+	           "glTF: every face knows its mesh (the node: 0 for the first six, 1 for the second)", "read %d, %u faces", ok, two.faceCount);
+	memset(&b, 0, sizeof(b));
+	if (ok)
+	{
+		(void)RldMk_BuildModel(&two, &opt, &b); // the parts may refuse a model without a kart; the repair ran before
+	}
+	RldMk_Test(ok && b.repaired && (b.repair[0] == 0u),
+	           "repair: corners of two meshes 0.0005 apart are not welded (two meshes stay two parts)", "repaired %d, welded %u", b.repaired,
+	           b.repair[0]);
+	RldMk_FreeBuild(&b);
+
+	// One mesh with the same split corner: welded as before.
+	t.xyz = &xyz6[0][0];
+	t.count = 6u;
+	t.index = &index6[0][0];
+	t.second = NULL;
+	ok = RldGltf_TestRead("selftest/one-mesh.glb", &t, &one, &info);
+	memset(&b, 0, sizeof(b));
+	if (ok)
+	{
+		(void)RldMk_BuildModel(&one, &opt, &b);
+	}
+	RldMk_Test(ok && b.repaired && (b.repair[0] == 1u), "repair: a split corner inside one mesh is welded as before", "repaired %d, welded %u",
+	           b.repaired, b.repair[0]);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&two);
+	RldMk_FreePly(&one);
+	RldGltf_FreeFiles();
+}
+
 static void RldGltf_SelfTest(struct RldMkTestMesh *mesh, const u8 *chri, size_t chriSize)
 {
 	RldGltf_SelfTestSame(mesh, chri, chriSize);
@@ -1005,5 +1072,6 @@ static void RldGltf_SelfTest(struct RldMkTestMesh *mesh, const u8 *chri, size_t 
 	RldGltf_SelfTestRefused();
 	RldGltf_SelfTestRig();
 	RldGltf_SelfTestGuards();
+	RldGltf_SelfTestWeldMeshes();
 	RldGltf_FreeMorphs();
 }

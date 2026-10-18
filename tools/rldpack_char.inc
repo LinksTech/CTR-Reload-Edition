@@ -685,11 +685,14 @@ struct RldMkPly
 	u32 *faceSource;   // per face: the face of the model before a reader split it (the OBJ reader's texture
 	                   // detail), as an index of the faces it was given; NULL = no face was split. Step 4
 	                   // counts the pieces of one split face as one triangle when it picks the driver.
+	u32 *faceMesh;     // per face: the mesh it comes from (the glTF reader: its node); NULL = one mesh (PLY,
+	                   // OBJ). Step 3r welds positions of one mesh only (RldMk_StepRepair).
 };
 
 static void RldMk_FreePly(struct RldMkPly *ply)
 {
 	free(ply->faceSource);
+	free(ply->faceMesh);
 	free(ply->xyz);
 	free(ply->rgb);
 	free(ply->corners);
@@ -2073,7 +2076,7 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 	}
 	b->faceSource = ply->faceSource;
 	b->faceCount2 = ply->faceCount;
-	if (b->diagnose || (ply->faceSource != NULL))
+	if (b->diagnose || (ply->faceSource != NULL) || (ply->faceMesh != NULL))
 	{
 		b->diagFace = (u32 *)malloc((room + 1u) * sizeof(u32));
 		if (b->diagFace == NULL)
@@ -2318,6 +2321,12 @@ static void RldMk_StepOpenEdges(struct RldMkBuild *b)
 // (triangleOpen): with --open-parts two-sided such a triangle gets no cull bit
 // (RldMk_StepFlips) - the inside of an open kart shell is seen through it
 // otherwise. A model the repair leaves as it is keeps its bytes.
+// ONE MESH, ONE WELD: positions of different meshes (a glTF's nodes,
+// ply->faceMesh) are never welded together, however close - a figure's feet
+// on a kart's floor stay two parts, so step 4 can tell kart and driver apart.
+// A position stands for the mesh of the first triangle that uses it (a
+// position two meshes share exactly is one position already). A model of one
+// mesh (PLY, OBJ, a glTF of one node) is welded exactly as before.
 
 static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, const struct RldMkOptions *opt)
 {
@@ -2333,6 +2342,7 @@ static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	u32 *triangle = NULL;
 	u32 *diagFace = NULL;
 	u32 *plyPosition = NULL;
+	u32 *positionGroup = NULL;
 	u32 used = 0;
 	int same;
 	u32 i;
@@ -2359,14 +2369,41 @@ static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	in.cornerColor = NULL;
 	in.weldDistance = RldRep_DefaultWeld(b->positionCount, b->position);
 	in.holeMaxEdges = RLDREP_HOLE_MAX_EDGES_DEFAULT;
+	in.positionGroup = NULL;
+	if ((ply->faceMesh != NULL) && (b->diagFace != NULL))
+	{
+		positionGroup = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+		if (positionGroup == NULL)
+		{
+			free(corner);
+			return RldMk_OutOfMemory();
+		}
+		for (i = 0; i < b->positionCount; i++)
+		{
+			positionGroup[i] = RLDMK_NONE;
+		}
+		for (i = 0; i < (3u * triangles); i++)
+		{
+			const u32 face = b->diagFace[i / 3u];
+
+			if ((positionGroup[corner[i]] == RLDMK_NONE) && (face < ply->faceCount))
+			{
+				positionGroup[corner[i]] = ply->faceMesh[face];
+			}
+		}
+		in.positionGroup = positionGroup;
+	}
 	why[0] = '\0';
 	if (!RldRep_Repair(&in, &r, why, sizeof(why)))
 	{
+		free(positionGroup);
 		free(corner);
 		RldMk_Say("error", "model-repair", why, "The model cannot be repaired (%s). Build it with --repair off.", why);
 		return 0;
 	}
 
+	free(positionGroup);
+	positionGroup = NULL;
 	b->repaired = 1;
 	b->repair[0] = r.welded;
 	b->repair[1] = r.degenerate;

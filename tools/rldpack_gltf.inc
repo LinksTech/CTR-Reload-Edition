@@ -1321,6 +1321,18 @@ static int RldGltf_FaceRoom(struct RldObjModel *m, u32 corners, u32 faces)
 		{
 			m->faceName = name;
 		}
+		{
+			u32 *mesh = (u32 *)realloc(m->faceMesh, (size_t)needFaces * sizeof(u32));
+
+			if (mesh != NULL)
+			{
+				m->faceMesh = mesh;
+			}
+			else
+			{
+				name = NULL; // out of memory, said below
+			}
+		}
 		if ((first == NULL) || (count == NULL) || (name == NULL))
 		{
 			RldObj_Memory();
@@ -1626,6 +1638,7 @@ static int RldGltf_Primitive(struct RldGltfRead *r, const cgltf_mesh *mesh, cons
 		m->faceFirst[m->faceCount] = m->cornerCount;
 		m->faceCorners[m->faceCount] = 3u;
 		m->faceName[m->faceCount] = name;
+		m->faceMesh[m->faceCount] = node; // the node: make-char's repair welds within one mesh only
 		m->faceCount++;
 		for (c = 0; c < 3; c++)
 		{

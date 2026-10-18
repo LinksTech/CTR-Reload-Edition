@@ -18,7 +18,9 @@
 //
 // THE STEPS, one after the other:
 //
-//   1  WELD. Positions closer than weldDistance become one. The input is
+//   1  WELD. Positions closer than weldDistance become one - only positions
+//      of one group (positionGroup: make-char gives the mesh of each
+//      position; NULL = all one group, as before). The input is
 //      walked in index order; a position that is not taken yet stands for
 //      itself and takes every later free position within weldDistance of
 //      ITSELF (not of a position it took before). So a weld set is never a
@@ -160,6 +162,8 @@ typedef struct RldRepInput
 	const u32 *triangle;      // 3 position indices per triangle
 	const u32 *cornerColor;   // 3 per triangle, 0xRRGGBB; not read (sourceCorner says which corner an output corner carries), may be NULL
 	double weldDistance;      // positions closer than this are one (game units); 0 = only equal ones
+	const u32 *positionGroup; // per position a group (make-char: the mesh); positions of different groups are never
+	                          // welded, however close. NULL = one group (every caller before the field)
 	u32 holeMaxEdges;         // boundary loops with at most this many edges are closed; 0 = none
 } RldRepInput;
 
@@ -776,7 +780,8 @@ static int RldRep_Weld(struct RldRepState *s, u32 *welded)
 					{
 						const u32 q = cells[j].i;
 
-						if ((s->map[q] == RLDREP_NONE) && (RldRep_Distance2(p, RldRep_At(s, q)) <= (d * d)))
+						if ((s->map[q] == RLDREP_NONE) && (RldRep_Distance2(p, RldRep_At(s, q)) <= (d * d)) &&
+						    ((in->positionGroup == NULL) || (in->positionGroup[q] == in->positionGroup[i])))
 						{
 							s->map[q] = i;
 							(*welded)++;
@@ -3340,6 +3345,7 @@ static RldRepInput RldRep_TestInput(const struct RldRepTestMesh *t, double weld,
 	in.cornerColor = t->color;
 	in.weldDistance = weld;
 	in.holeMaxEdges = holeMax;
+	in.positionGroup = NULL;
 	return in;
 }
 
