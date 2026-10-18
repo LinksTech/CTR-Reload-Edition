@@ -541,24 +541,33 @@ def sha256_file(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
-def write_standin(out_dir):
-    """Builds and exports the stand-in kit into out_dir; returns the kit-info dict that was written."""
+def write_standin(out_dir, empty_root=False):
+    """Builds and exports the stand-in kit into out_dir; returns the kit-info dict that was written.
+    empty_root: the kart parts hang under an empty root node "kart" (as an earlier rldpack kit-extract wrote
+    them) - for the test that the generator takes such a file too."""
     out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
     body, steer, colours = build_kart()
     kart_tris = triangle_count(body) + triangle_count(steer)
+    parts = [body, steer]
+    if empty_root:
+        root = bpy.data.objects.new("kart", None)
+        bpy.context.scene.collection.objects.link(root)
+        for o in (body, steer):
+            o.parent = root
+        parts.append(root)
     kart_path = os.path.join(out_dir, "kit-kart.glb")
-    export_glb(kart_path, [body, steer])
+    export_glb(kart_path, parts)
 
     # glTF version: each byte g = min(255, round(255 * b / 128))
     for o, bytes_ in zip((body, steer), colours):
         set_colors(o, np.minimum(255, np.floor(255.0 * bytes_ / 128.0 + 0.5)).astype(np.int64))
     gltf_path = os.path.join(out_dir, "kit-kart-gltf.glb")
-    export_glb(gltf_path, [body, steer])
+    export_glb(gltf_path, parts)
 
-    for o in (body, steer):
+    for o in parts:
         bpy.data.objects.remove(o)
     wheel = build_wheel()
     wheel_tris = triangle_count(wheel)

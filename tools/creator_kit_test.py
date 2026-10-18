@@ -12,14 +12,15 @@ Without Blender 5.2 the test prints "creator-kit-test: SKIP (Blender 5.2 not fou
 (ctest SKIP_RETURN_CODE 77).
 
 Steps: 1 generate, 2 byte-identical second run, 3 reopen + re-export through both stored exporters,
-4 hires-check of creator-kit-demo-local.glb (0 warnings), 5 hires-check of creator-kit-figure.glb (no wheel
+4 hires-check of creator-kit-demo-local.glb (--kart-part: only HRG-41), 5 hires-check of creator-kit-figure.glb (no wheel
 nodes: only HRG-20, the standard wheels), 6 the kit marker (ctr_kit extras, ctrkit_ materials) on every kit
 part of the local demo and on nothing of the figure, 7 make-char --check, 8 creator_kit_measure, 9 --vcol
-gltf, 10 wrong-version exit 3, 11 no path in the .blend.
+gltf, 10 wrong-version exit 3, 11 no path in the .blend, 12 a kit kart with an empty root node.
+The local demo is checked as it is packed (--kart-part): only HRG-41 (the kit mark) may warn.
 Last line: "creator-kit-test: <n> steps, <f> failed"; exit 0 when f = 0, else 1.
 
 Every child process gets the Blender user folders, TEMP and TMP below <work>. Only the driver's own
-subfolders of <work> (r1, r2, gltf, fake, temp) are emptied. Standard library only.
+subfolders of <work> (r1, r2, gltf, fake, root, temp) are emptied. Standard library only.
 """
 import ast
 import hashlib
@@ -40,7 +41,7 @@ MEASURE = os.path.join(REPO, "tools", "creator_kit_measure.py")
 DEFAULT_BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
 TIMEOUT = 300
 SKIP_CODE = 77
-OWN_DIRS = ("r1", "r2", "gltf", "fake", "temp")
+OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "temp")
 
 
 # ------------------------------------------------------------------ helpers
@@ -94,7 +95,7 @@ def prepare_work(work):
     os.makedirs(work, exist_ok=True)
     for d in OWN_DIRS:
         shutil.rmtree(os.path.join(work, d), ignore_errors=True)
-    for f in ("reopen.py", "reexport-figure.glb", "reexport-local.glb", "settings.json"):
+    for f in ("reopen.py", "standin_root.py", "reexport-figure.glb", "reexport-local.glb", "settings.json"):
         p = os.path.join(work, f)
         if os.path.isfile(p):
             os.remove(p)
@@ -238,6 +239,26 @@ def kit_findings(j, local):
     return probs
 
 
+def local_check_ok(out):
+    # the local demo, checked as it is packed (--kart-part): 0 errors, exactly one warning - HRG-41, the kit
+    # mark (by design: the file holds the kart of the player's game data) - and no note
+    warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
+    return ("0 errors, 1 warnings, 0 notes" in out and len(warns) == 1 and " HRG-41 " in warns[0] + " "
+            and "clips 12/12" in out and "wheels 4/4" in out)
+
+
+# Writes the stand-in kit with an empty root node "kart" over the kart parts (as an earlier kit-extract did).
+STANDIN_ROOT_SCRIPT = r'''
+import sys
+i = sys.argv.index("--")
+templates, out = sys.argv[i + 1], sys.argv[i + 2]
+sys.path.insert(0, templates)
+import creator_kit_standin
+creator_kit_standin.write_standin(out, empty_root=True)
+print("CHK standin root ok")
+'''
+
+
 def figure_warnings_ok(out):
     # the figure alone has no wheel nodes: hires-check warns HRG-20 (the standard wheels); nothing else
     warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
@@ -282,8 +303,8 @@ def run_all(blender, packer, work):
         return run([blender, "--threads", "1", "--background", "--factory-startup", "--python-exit-code", "1",
                     "--python", GENERATOR, "--", "--kit", out] + list(extra), env)
 
-    def hires(glb, mode):
-        return run(packer + ["hires-check", glb, "--vertex-colors", mode], env)
+    def hires(glb, mode, *extra):
+        return run(packer + ["hires-check", glb, "--vertex-colors", mode] + list(extra), env)
 
     # 1 generate
     code, out = gen(r1, "--stand-in")
@@ -335,10 +356,10 @@ def run_all(blender, packer, work):
     except Exception as e:
         rep.fail("3 reopen", repr(e))
 
-    # 4 hires-check of the local demo (with the kit kart)
-    code, out = hires(loc1, "psx")
-    rep.check(code == 0 and "0 errors, 0 warnings" in out and "clips 12/12" in out and "wheels 4/4" in out,
-              "4 hires-check local", "0 errors, 0 warnings, clips 12/12, wheels 4/4",
+    # 4 hires-check of the local demo (with the kit kart), as it is packed: --kart-part
+    code, out = hires(loc1, "psx", "--kart-part")
+    rep.check(code == 0 and local_check_ok(out),
+              "4 hires-check local", "--kart-part: 0 errors, only HRG-41 (the kit mark), 0 notes, clips 12/12, wheels 4/4",
               "exit %s: %s" % (code, tail(out)))
 
     # 5 hires-check of the figure alone: no wheel nodes, so only HRG-20 (standard wheels) may warn
@@ -376,10 +397,10 @@ def run_all(blender, packer, work):
     if code != 0:
         rep.fail("9 gltf", "generate exit %s: %s" % (code, tail(out)))
     else:
-        code, out = hires(os.path.join(gl, LOCAL_GLB), "gltf")
+        code, out = hires(os.path.join(gl, LOCAL_GLB), "gltf", "--kart-part")
         code2, out2 = hires(os.path.join(gl, FIGURE_GLB), "gltf")
-        rep.check(code == 0 and "0 errors, 0 warnings" in out and code2 == 0 and figure_warnings_ok(out2),
-                  "9 gltf", "local 0 errors, 0 warnings; figure only HRG-20",
+        rep.check(code == 0 and local_check_ok(out) and code2 == 0 and figure_warnings_ok(out2),
+                  "9 gltf", "local (--kart-part) only HRG-41, 0 notes; figure only HRG-20",
                   "hires-check exit %s/%s: %s | %s" % (code, code2, tail(out, 2), tail(out2, 2)))
 
     # 10 version
@@ -395,6 +416,28 @@ def run_all(blender, packer, work):
                   "found: %s" % ", ".join(found))
     except Exception as e:
         rep.fail("11 no path", repr(e))
+
+    # 12 a kit whose kart parts hang under an empty root node "kart": the generator takes it
+    try:
+        rt = os.path.join(work, "root")
+        rs = os.path.join(work, "standin_root.py")
+        with open(rs, "w", encoding="utf-8") as f:
+            f.write(STANDIN_ROOT_SCRIPT)
+        code, out = run([blender, "--threads", "1", "--background", "--factory-startup", "--python-exit-code", "1",
+                         "--python", rs, "--", os.path.dirname(GENERATOR), rt], env)
+        if code != 0 or "CHK standin root ok" not in out:
+            rep.fail("12 empty root", "stand-in exit %s: %s" % (code, tail(out)))
+        else:
+            code, out = gen(rt)
+            loc = os.path.join(rt, LOCAL_GLB)
+            ok = code == 0 and "creator kit: ok" in out and os.path.isfile(loc)
+            probs = kit_findings(glb_json(loc), True) if ok else []
+            code2, out2 = hires(loc, "psx", "--kart-part") if ok else (1, "")
+            rep.check(ok and not probs and code2 == 0 and local_check_ok(out2), "12 empty root",
+                      "kit-kart.glb with an empty root 'kart': exit 0, kit parts marked, --kart-part only HRG-41",
+                      "exit %s: %s %s %s" % (code, tail(out, 3), "; ".join(probs)[:200], tail(out2, 2)))
+    except Exception as e:
+        rep.fail("12 empty root", repr(e))
 
     print("creator-kit-test: runtime %.0f s" % (time.time() - t0))
     print("creator-kit-test: %d steps, %d failed" % (rep.steps, rep.failed))

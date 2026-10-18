@@ -356,14 +356,17 @@ def make_empty(name, collection, kind, size, location, rotation=(0.0, 0.0, 0.0),
 def import_kart(kart_path, collection, rig, vcol):
     import bpy
     new = import_glb(kart_path)
-    # an empty importer root (not in the kit format): re-parent its children, then remove it
-    for o in [o for o in new if o.type == "EMPTY"]:
+    # an empty root node (an earlier kit-extract wrote one, "kart"): re-parent its children, then remove it.
+    # The list of the objects to keep is made BEFORE the removal: a removed object cannot be read at all.
+    empties = [o for o in new if o.type == "EMPTY"]
+    new = [o for o in new if o.type != "EMPTY"]
+    for o in empties:
         for c in list(o.children):
             mw = c.matrix_world.copy()
-            c.parent = o.parent
+            c.parent = None
             c.matrix_world = mw
+    for o in empties:
         bpy.data.objects.remove(o)
-    new = [o for o in new if o.name in bpy.data.objects]
     names = [o.name for o in new]
     for o in new:
         if o.type != "MESH" or not (o.name.startswith("kart_") or o.name == "kart_steer_wheel"):

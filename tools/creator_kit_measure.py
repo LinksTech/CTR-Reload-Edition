@@ -1188,7 +1188,9 @@ def part_data(m, nodes):
             for c in md["color"]:
                 if c is None:
                     continue
-                col.append(tuple(lin_to_srgb_byte(x) for x in c[:3]) + ((int(round(c[3] * 255)),) if len(c) > 3 else ()))
+                # RGB as sRGB bytes and alpha as a byte; COLOR_0 as VEC3 has alpha 1 (glTF), so a VEC3 file and
+                # its VEC4 re-export (Blender writes VEC4) compare equal
+                col.append(tuple(lin_to_srgb_byte(x) for x in c[:3]) + (int(round((c[3] if len(c) > 3 else 1.0) * 255)),))
         tri += md["ntri"]
     return pos, col, tri
 
