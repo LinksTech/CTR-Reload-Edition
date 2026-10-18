@@ -259,6 +259,26 @@ run("rldpack make-char (jpeg-hires, converted model)" "${PACKER}" make-char --mo
     --out "${DIR}/p-jpeg-hires-converted.classic.part")
 same("the classic fallback of the converted model" "${DIR}/p-jpeg-hires.classic.part" "${DIR}/p-jpeg-hires-converted.classic.part")
 message("charroute passed: jpeg converted to png")
+
+# THE KART (rs_hires_model.h): a node "kart" with a mesh is packed as the kart
+# part (--kart-part), a figure with the kit's mesh-less "kart" joint with the
+# game's kart (--game-kart template), and so is a plain kart with the switch
+# "Kart: from the player's game data" on (the page's runs below).
+set(packExtra --kart-part)
+route(kartpart route-kartpart.glb "${fallbackHires}" "--wheels;off" OFF)
+set(packExtra --game-kart template)
+route(kartjoint route-kartjoint.glb "${fallbackHires}" "" OFF)
+route(gamekart route-bare.glb "${fallbackHires}" "" OFF)
+set(packExtra "")
+run("rldpack hires-check (kartpart)" "${PACKER}" hires-check "${DIR}/s-kartpart.rldchar")
+if(NOT out MATCHES "parts: [^\n]*kart part")
+    message(FATAL_ERROR "charroute FAILED: the kart part is not in the header of s-kartpart.rldchar\n${out}")
+endif()
+run("rldpack hires-check (kartjoint)" "${PACKER}" hires-check "${DIR}/s-kartjoint.rldchar")
+if(NOT out MATCHES "parts: [^\n]*game")
+    message(FATAL_ERROR "charroute FAILED: the game's kart is not in the header of s-kartjoint.rldchar\n${out}")
+endif()
+message("charroute passed: the kart (kart part, the kit's joint, the switch)")
 message("charroute passed: 3 routes")
 
 # The page only checks (no build): route word, model, verbs after the model
@@ -348,6 +368,37 @@ if(PAGE)
     set(pageDo --do "upscale off" --do "vcolor gltf")
     page_route(vcol-gltf hires route-vcol.glb p-vcol-gltf.rldchar)
     set(pageDo "")
+
+    # THE KART: the page decides as the check says, byte for byte rldpack's
+    # chain with the same switch; the plain kart gets the game's kart only
+    # when the author switches it on.
+    set(pageDo --do "upscale off" --do "report ${DIR}/page-kartpart-report.txt")
+    page_route(kartpart hires route-kartpart.glb p-kartpart.rldchar)
+    set(pageDo --do "upscale off" --do "report ${DIR}/page-kartjoint-report.txt")
+    page_route(kartjoint hires route-kartjoint.glb p-kartjoint.rldchar)
+    set(pageDo --do "upscale off" --do "gamekart on" --do "report ${DIR}/page-gamekart-report.txt")
+    page_route(gamekart hires route-bare.glb p-gamekart.rldchar)
+    set(pageDo "")
+    file(READ "${DIR}/page-kartpart-report.txt" text)
+    if(NOT text MATCHES "parts: kart part" OR NOT text MATCHES "Your kart is left out on the podium")
+        message(FATAL_ERROR "charroute FAILED: the page (kartpart) does not pack the kart part or say so\n${text}")
+    endif()
+    file(READ "${DIR}/page-kartjoint-report.txt" text)
+    if(NOT text MATCHES "parts: game kart \\(donor template\\)" OR NOT text MATCHES "game kart: on \\(suggested" OR
+       NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data\.\"")
+        message(FATAL_ERROR "charroute FAILED: the page (kartjoint) does not suggest the game's kart\n${text}")
+    endif()
+    file(READ "${DIR}/page-gamekart-report.txt" text)
+    # Checked again with the game's kart: HRG-42 (its wheels come with it), no HRG-20.
+    if(NOT text MATCHES "parts: game kart \\(donor template\\)" OR NOT text MATCHES "game kart: on \\(chosen" OR
+       NOT text MATCHES "hires row: note HRG-42 " OR text MATCHES "hires row: [a-z]+ HRG-20 ")
+        message(FATAL_ERROR "charroute FAILED: the page (gamekart) does not take the switch\n${text}")
+    endif()
+    file(READ "${DIR}/page-hires-off-report.txt" text)
+    if(NOT text MATCHES "parts: none" OR NOT text MATCHES "game kart: off")
+        message(FATAL_ERROR "charroute FAILED: the plain kart is not packed as before (hires-off)\n${text}")
+    endif()
+    message("charroute page passed: the kart (kart part, the kit's joint, the switch)")
     message("charroute page passed: vertex colours psx off gltf")
 
     # The JPEG kart without the click: refused, the button offered, the

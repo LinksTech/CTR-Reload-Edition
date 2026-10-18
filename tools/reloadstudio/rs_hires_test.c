@@ -303,6 +303,8 @@ struct KtSpec {
     int vcol;       // COLOR_0 on the body: every corner this sRGB byte (grey), 0 = no COLOR_0
     int jpeg;       // 1 = the texture is s_ktJpeg (16 x 16), mimeType image/jpeg (png and pngHeader 0)
     int kit;        // 1 = the material is named "ctrkit_paint": the mark of the Creator Kit's kart (HRG-41)
+    int kart;       // a node "kart": 1 with the wheel's mesh (a kart part, --kart-part; needs wheels),
+                    // 2 without a mesh (the kit's kart joint: the game's kart, --game-kart template)
 };
 
 // A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
@@ -509,11 +511,17 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
         Kt_Text(&json, ",1");
     for (i = 0; i < wheels; i++)
         Kt_Text(&json, ",%d", wheelNode + i);
+    if (sp->kart)
+        Kt_Text(&json, ",%d", wheelNode + wheels);
     Kt_Text(&json, "]}],\"nodes\":[{\"name\":\"body\",\"mesh\":0%s}", sp->skin ? ",\"skin\":0" : "");
     if (sp->skin)
         Kt_Text(&json, ",{\"name\":\"root\"}");
     for (i = 0; i < wheels; i++)
         Kt_Text(&json, ",{\"name\":\"%s\",\"mesh\":1,\"translation\":[%.9g,%.9g,%.9g]}", s_ktWheel[i], s_ktWheelAt[i][0], s_ktWheelAt[i][1], s_ktWheelAt[i][2]);
+    if (sp->kart == 1 && wheels)
+        Kt_Text(&json, ",{\"name\":\"kart\",\"mesh\":1,\"translation\":[0,0.3,0.7]}");
+    else if (sp->kart)
+        Kt_Text(&json, ",{\"name\":\"kart\"}");
     Kt_Text(&json, "],\"meshes\":[{\"name\":\"body\",\"primitives\":[{\"attributes\":{\"POSITION\":%d,\"NORMAL\":%d,\"TEXCOORD_0\":%d", aPos, aNrm, aUv);
     if (sp->skin)
         Kt_Text(&json, ",\"JOINTS_0\":%d,\"WEIGHTS_0\":%d", aJnt, aWgt);
@@ -987,6 +995,41 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         Check(Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_BUILD, L"HRG-41",
                      L"This file contains the original kart from your game data. Don't share it, or export without the kart.", NULL),
               "HRG-41 (the Creator Kit's kart): a warning at the step Build, word for word");
+        // THE KART: the three cases from real checks (rs_hires_model.h).
+        {
+            struct KtSpec part = { 2, 1, 12, 4, 16, 0, 0, 0, 0, 1 }, joint = { 2, 1, 12, 0, 16, 0, 0, 0, 0, 2 },
+                          own = { 2, 1, 12, 4, 16, 0 }, bare = { 2, 1, 0, 0, 16, 0 }, both = { 2, 1, 12, 4, 16, 0, 0, 0, 0, 2 };
+            const wchar_t *a[RS_HIRES_PACK_ARGS];
+            Kt_Check(&part, &c);
+            n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+            Check(c.read && c.kartCase == RS_KART_PART && c.parts == RS_HIRES_PARTS_KART &&
+                      Kt_Has(m, n, RS_SEV_NOTE, RS_WIZ_PLACE_MODEL, L"", RS_TEXT_KART_PART, RS_FIX_KART_PART) && !Kt_HasRule(m, n, L"HRG-39"),
+                  "a node 'kart' with a mesh: the kart part (checked with bit 0, no HRG-39), its line on the step Model");
+            RsHires_CheckFree(&c);
+            Kt_Check(&joint, &c);
+            Check(c.read && c.kartCase == RS_KART_GAME && c.parts == RS_HIRES_PARTS_GAME_KART,
+                  "a figure with a mesh-less node 'kart' (the kit's joint) and no kart meshes: the game's kart, checked as --game-kart template");
+            RsHires_CheckFree(&c);
+            Kt_Check(&both, &c);
+            Check(c.read && c.kartCase == RS_KART_OWN && c.parts == 0u,
+                  "a mesh-less node 'kart' beside wheel meshes: its own kart - packed as before");
+            RsHires_CheckFree(&c);
+            Kt_Check(&own, &c);
+            Check(c.read && c.kartCase == RS_KART_OWN && c.parts == 0u, "own wheels, no node 'kart': packed as before");
+            RsHires_CheckFree(&c);
+            Kt_Check(&bare, &c);
+            Check(c.read && c.kartCase == RS_KART_OWN && c.parts == 0u, "a single body, no node 'kart': packed as before");
+            RsHires_CheckFree(&c);
+            Check(RsHires_PartsFor(RS_KART_OWN, 0) == 0u && RsHires_PartsFor(RS_KART_OWN, 1) == RS_HIRES_PARTS_GAME_KART &&
+                      RsHires_PartsFor(RS_KART_GAME, 0) == RS_HIRES_PARTS_GAME_KART && RsHires_PartsFor(RS_KART_PART, 1) == RS_HIRES_PARTS_KART,
+                  "the parts of a pack: the kart part wins, the switch gives the game's kart");
+            Check(RsHires_PackArgsParts(L"in.rldchar", L"m.glb", L"out.rldchar", RS_HIRES_VCOL_PSX, RS_HIRES_PARTS_KART, a) == 9 &&
+                      wcscmp(a[7], L"--kart-part") == 0 && wcscmp(a[8], L"--machine") == 0 &&
+                      RsHires_PackArgsParts(L"in.rldchar", L"m.glb", L"out.rldchar", -1, RS_HIRES_PARTS_GAME_KART, a) == 8 &&
+                      wcscmp(a[5], L"--game-kart") == 0 && wcscmp(a[6], L"template") == 0 && wcscmp(a[7], L"--machine") == 0 &&
+                      RsHires_PackArgsParts(L"in.rldchar", L"m.glb", L"out.rldchar", -1, 0u, a) == 6,
+                  "hires-add with --kart-part or --game-kart template before --machine; parts 0: the arguments of before");
+        }
         // The same from a real check: a model whose material is ctrkit_paint.
         {
             struct KtSpec kit = { 2, 1, 12, 4, 16, 0, 0, 0, 1 };
@@ -1197,6 +1240,8 @@ static int Kt_Write(const wchar_t *folder)
         { L"route-vcol.glb", { 2, 1, 0, 0, 16, 0, 128 } }, // as route-bare, with PS1-like COLOR_0 (grey 128): the page suggests PSX
         { L"route-jpeg.glb", { 2, 1, 0, 0, 0, 0, 0, 1 } },  // as route-bare, its 16 x 16 texture a JPEG: refused until "Convert to PNG"
         { L"route-kit.glb", { 2, 1, 12, 4, 16, 0, 0, 0, 1 } }, // as route-wheels, its material ctrkit_paint: HRG-41 (the kit's kart)
+        { L"route-kartpart.glb", { 2, 1, 12, 4, 16, 0, 0, 0, 0, 1 } }, // as route-wheels with a node "kart" holding a mesh: --kart-part
+        { L"route-kartjoint.glb", { 2, 1, 12, 0, 16, 0, 0, 0, 0, 2 } }, // a figure with the kit's mesh-less "kart" joint: --game-kart template
     };
     int i, route, ok = 1;
     for (i = 0; i < (int)(sizeof(karts) / sizeof(karts[0])); i++) {

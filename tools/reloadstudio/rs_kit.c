@@ -37,7 +37,9 @@
 //   3 the demo driver     (on request) the build of the page Character, route
 //                         Hi-Res, from creator-kit-demo-local.glb: [hires-upscale]
 //                         make-char -> hires-add, with the same switches and
-//                         suggestions; START-DEMO-PUPPE.bat with the command of
+//                         suggestions (the kit's kart is its kart part:
+//                         hires-add --kart-part, the podium and the menu leave
+//                         it out); START-DEMO-PUPPE.bat with the command of
 //                         "Test in game" (Rs_TestCharacterCommand)
 // Only when every step is done do the files replace those of an earlier kit
 // in <out>; a failed or cancelled run deletes kit.part and leaves an earlier
@@ -185,6 +187,7 @@ static struct {
     wchar_t demoModel[KIT_PATH];     // the model hires-add takes (the GLB, or its upscaled copy)
     wchar_t demoDerived[KIT_PATH];   // the upscaled copy, in Rs_TempDir; "" = none
     int demoWheelsOff, demoVcol, demoUpscale;
+    unsigned demoParts;              // the parts field of the pack (THE KART: the kit's kart part, --kart-part)
     wchar_t lastCreator[KIT_TEXT];   // the last line "creator kit: ..." of Blender
     wchar_t resultState[16];         // @result of rldpack
     struct KitMsg msg[KIT_MSGS];
@@ -663,6 +666,7 @@ static int Kit_StartDemo(HWND page)
     }
     g_kit.demoWheelsOff = c.read && c.wheels == 4;
     g_kit.demoUpscale = c.read && RsCharHires_SuggestUpscale(&c, RS_ROUTE_HIRES, NULL);
+    g_kit.demoParts = c.read ? c.parts : 0u;
     read = c.read;
     RsHires_CheckFree(&c);
     if (errors || !read)
@@ -719,7 +723,7 @@ static int Kit_StartPack(HWND page)
     wchar_t out[KIT_PATH];
     int n;
     Rs_PathJoin(out, KIT_PATH, g_kit.work, KIT_DEMO);
-    n = RsHires_PackArgs(g_kit.demoClassic, g_kit.demoModel, out, g_kit.demoVcol, args);
+    n = RsHires_PackArgsParts(g_kit.demoClassic, g_kit.demoModel, out, g_kit.demoVcol, g_kit.demoParts, args);
     return Kit_StartRldpack(page, KIT_JOB_PACK, args, n);
 }
 

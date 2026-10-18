@@ -194,9 +194,9 @@ file(MAKE_DIRECTORY "${base}/nogame")
 file(MAKE_DIRECTORY "${base}/models")
 execute_process(COMMAND "${TEST}" --write "${base}/models"
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
-set(demoModel "${base}/models/route-wheels.glb")
+set(demoModel "${base}/models/route-kartpart.glb")
 if(NOT rc EQUAL 0 OR NOT EXISTS "${demoModel}")
-    message(FATAL_ERROR "FAILED: rs_hires_selftest --write made no route-wheels.glb (exit ${rc})\n${out}")
+    message(FATAL_ERROR "FAILED: rs_hires_selftest --write made no route-kartpart.glb (exit ${rc})\n${out}")
 endif()
 
 # --- K9.1 / K9.9: the page end to end -------------------------------------------
@@ -273,6 +273,12 @@ file(SHA256 "${base}/page-demo.rldchar" hashPage)
 file(SHA256 "${base}/out-a/demo-puppet.rldchar" hashKit)
 if(NOT hashPage STREQUAL hashKit)
     message(FATAL_ERROR "FAILED: demo-puppet.rldchar (${hashKit}) is not what the page Character builds (${hashPage})")
+endif()
+# The demo's kart is the kart part (--kart-part): the podium and the menu leave it out.
+execute_process(COMMAND "${STUDIO}" --rldpack hires-check "${base}/out-a/demo-puppet.rldchar"
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
+if(NOT out MATCHES "parts: [^\n]*kart part")
+    message(FATAL_ERROR "FAILED: demo-puppet.rldchar is not packed with the kart part\n${out}")
 endif()
 
 # --- K9.3: the bat and the page's test command -----------------------------------------

@@ -71,6 +71,23 @@ enum RsWizPlace {
 // report, word for word.
 #define RS_TEXT_KIT_KART L"This file contains the original kart from your game data. Don't share it, or export without the kart."
 
+// THE KART of a CHRG route (rs_hires_model.h, RsHiresCheck.kartCase): the
+// lines of the step Model. A kart part (a node "kart" with its meshes) is
+// packed with --kart-part; the game's kart (the kit's mesh-less kart joint, or
+// the switch "Kart: from the player's game data" under Advanced) with
+// --game-kart template.
+#define RS_TEXT_KART_PART L"Your kart is left out on the podium, in the menu and in the driver select."
+#define RS_FIX_KART_PART  L"Nothing to do; in a race it is drawn with your driver."
+#define RS_TEXT_GAME_KART L"The game adds the original kart from the player's game data."
+// The switch's lines (RsCharHires_GameKartLine, RsCharHires_GameKartStepLine):
+// on = the switch, suggested = the model has the kit's kart joint (RS_KART_GAME).
+// The line below the switch under Advanced: what it does and why it is set.
+void RsCharHires_GameKartLine(int on, int suggested, wchar_t *out, int cap);
+// The line on the step Model (the standing rule of suggestions under
+// Advanced): said when the switch is suggested or the author's choice differs
+// from the suggestion; L"" when it is off and not suggested.
+void RsCharHires_GameKartStepLine(int on, int suggested, wchar_t *out, int cap);
+
 struct RsWizMsg {
     int severity;                     // RS_SEV_* (reloadstudio.h)
     int place;                        // RS_WIZ_PLACE_*

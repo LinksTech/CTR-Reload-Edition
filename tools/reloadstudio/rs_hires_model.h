@@ -152,7 +152,27 @@ struct RsHiresCheck {
     int vcolMedian;
     int vcolMode;
     int vcolChecked;                 // the mode the check ran in (HRG-36 is said in glTF only); vcolMode may change after it
+
+    // THE KART (include/rldhires.inc, THE PARTS): how a .glb is packed.
+    // kartCase RS_KART_PART: a node "kart" with a mesh in its subtree that can
+    // be left out (no vertex weighted inside and outside it) - packed with
+    // --kart-part, the podium, the menu and the driver select leave it out.
+    // RS_KART_GAME: a node "kart" without any mesh in its subtree (the kart
+    // joint of the Creator Kit's template) and no mesh under a node "kart",
+    // "kart_*" or "wheel_*" anywhere - the suggestion "Kart: from the player's
+    // game data" (--game-kart template). RS_KART_OWN: anything else (an own
+    // kart without the convention, an old single mesh) - packed as before.
+    // Of a .rldchar: what its parts field says. parts: the field the check
+    // ran with (RS_HIRES_PARTS_*; 0 = none).
+    int kartCase;
+    unsigned parts;
 };
+
+enum RsKartCase { RS_KART_OWN = 0, RS_KART_PART = 1, RS_KART_GAME = 2 };
+// The parts field of a pack (RLDHIRES_PART_* of include/rldhires.inc):
+// --kart-part, and --game-kart template (bit 1, donor 0xFF = the CHRI template).
+#define RS_HIRES_PARTS_KART      0x1u
+#define RS_HIRES_PARTS_GAME_KART (0x2u | (0xffu << 8))
 
 // The vertex colour modes, RLDHIRES_VCOL_* of include/rldhires_color.inc
 // (rs_hires_model.c checks that they are the same numbers).
@@ -257,8 +277,20 @@ void RsHires_SetPointSampling(int on);
 // byte of the file). vertexColors: a mode (RS_HIRES_VCOL_*) for the switch,
 // -1 = no switch (rldpack then writes mode glTF, the bytes of before). args
 // needs room for RS_HIRES_PACK_ARGS; returns the count.
-#define RS_HIRES_PACK_ARGS 8
+#define RS_HIRES_PACK_ARGS 10
 int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors, const wchar_t **args);
+// The same with the parts field: RS_HIRES_PARTS_KART adds --kart-part,
+// RS_HIRES_PARTS_GAME_KART --game-kart template (before --machine), 0 nothing -
+// the arguments of RsHires_PackArgs.
+int RsHires_PackArgsParts(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors,
+                          unsigned parts, const wchar_t **args);
+// The parts field a check's kart case packs with (RS_KART_PART: the kart part,
+// RS_KART_GAME: the game's kart, else 0), or the game's kart when gameKart is
+// 1 (the switch "Kart: from the player's game data") and the model has no kart part.
+unsigned RsHires_PartsFor(int kartCase, int gameKart);
+// A .glb checked with this parts field (the page's choice: the game's kart on
+// a model without the kit's joint); kartCase stays what the model is.
+int RsHires_CheckFileParts(const wchar_t *path, unsigned parts, struct RsHiresCheck *out);
 
 // THE OPTION "Upscale small textures": before packing, rldpack hires-upscale
 // <model> -o <derived> --machine writes a new model (the source is only read;

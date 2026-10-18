@@ -201,6 +201,19 @@
 // choices per model, as the vertex colour mode); "upscale auto" in
 // automation forgets it.
 //
+// THE KART of a CHRG route (rs_charroute.h, RsHiresCheck.kartCase): three
+// cases. A model with a node "kart" that has meshes (RS_KART_PART) is packed
+// with --kart-part, and the check says RS_TEXT_KART_PART as a message; the
+// switch below is hidden then. The kit's mesh-less kart joint (RS_KART_GAME)
+// suggests "Kart: from the player's game data" (Advanced, card Options, below
+// the upscale): the box is ticked, one line below it and one on the step Model
+// with "Change" say so, and the pack gets --game-kart template (the game puts
+// the original kart from the player's own game data under the figure). Any
+// other model (RS_KART_OWN) has the switch off and is packed as before - the
+// same bytes. A box the author clicked stays with that model (the choices per
+// model); "gamekart auto" in automation forgets it. A finished character
+// (.rldchar) has no switch: what its CHRG says is reported ("parts:").
+//
 // THE JPEG TEXTURES of a CHRG route (rs_charroute.h): the game reads PNG
 // only, so a model with a JPEG texture is refused (HRG-16) - the error stays
 // at its place and its "How to fix" names the button "Convert to PNG" on the
@@ -527,12 +540,18 @@
 #define CHAR_ID_CLASSIC_STEP   244   // its line on the step Model (only while it comes from a character)
 #define CHAR_ID_CLASSIC_CHANGE 245   // "Change" at its end: opens Advanced at the list
 #define CHAR_ID_CHAR_NOTE      246   // the card Options with a finished character as the model: why nothing is there
+#define CHAR_ID_GAMEKART       247   // "Kart: from the player's game data" (Advanced of a CHRG route, card Options)
+#define CHAR_ID_GAMEKART_HELP  248
+#define CHAR_ID_GAMEKART_NOTE  249   // the line below the box: the suggestion, or the author's choice
+#define CHAR_ID_GAMEKART_STEP  250   // the line of the switch on the step Model itself (outside Advanced)
+#define CHAR_ID_GAMEKART_CHANGE 251  // "Change" at its end: opens Advanced at the box
 #define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode, upscale or PNG conversion the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
 #define CHAR_CHOICE_UPSCALE    1     // "Upscale small textures" (0 or 1)
 #define CHAR_CHOICE_PNG        2     // "Convert JPEG textures to PNG" (1; off is forgotten)
-#define CHAR_CHOICE_KINDS      3
+#define CHAR_CHOICE_GAMEKART   3     // "Kart: from the player's game data" (0 or 1)
+#define CHAR_CHOICE_KINDS      4
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): Advanced of the step Model shows them.
 // The card Import (380..399) is the page's own.
@@ -936,6 +955,12 @@ static struct {
     HWND upscaleStep, upscaleChange;
     int upSuggested, upChosen;
     unsigned upLargest;
+    // THE KART of a CHRG route: the box "Kart: from the player's game data" and
+    // its help, the line below it, the line on the step Model with "Change";
+    // 1 = the check of the model suggests the box (the kit's kart joint), 1 =
+    // the box is the author's choice for this model.
+    HWND gameKart, gameKartHelp, gameKartNote, gameKartStep, gameKartChange;
+    int kartSuggested, kartChosen;
     // THE JPEG TEXTURES of a CHRG route: the box of Advanced and its help,
     // the line on the step Model with "Change" (empty and hidden while the
     // box is off), the button "Convert to PNG" (shown: pngFixOn); of the
@@ -976,6 +1001,7 @@ static struct {
     struct RsHiresCheck hires;
     int hiresChecked;               // hires holds the check of hiresPath
     int hiresPng;                   // ... as converted to PNG ("Convert JPEG textures to PNG" was on)
+    int hiresGameKart;              // ... with the author's choice of "Kart: from the player's game data" (-1 none, 0, 1)
     wchar_t hiresPath[CHAR_VAL];
     unsigned long long hiresStamp;
     HWND previewSwitch[2];
@@ -992,6 +1018,7 @@ static struct {
     int chainStep;                  // CHAR_CHAIN_* of the running build, CHAR_CHAIN_NONE = a Vanilla build
     int chainPng;                   // the running chain converts JPEG textures to PNG first
     int chainUpscale;               // the running chain upscales
+    unsigned chainParts;            // the parts field the running chain packs (RsHires_PartsFor)
     int chainWritten;               // @written of the last upscale or pack step
     wchar_t chainPath[CHAR_VAL], chainSha[80];
     struct CharChainMsg { int severity; wchar_t code[16]; wchar_t text[RS_HIRES_TEXT_MAX]; } chainMsg[RS_HIRES_ROWS_MAX];
@@ -1136,6 +1163,7 @@ static struct CharJobData g_charJob;
 
 static void Char_Layout(HWND page, int w, int h);
 static int Char_Check(HWND page);
+static int Char_Remembered(const wchar_t *path, int kind);
 static void Char_ObjUpdate(HWND page);
 static void Char_NativeResult(wchar_t **f, int n);
 static void Char_VoiceSelShow(void);
@@ -1221,6 +1249,16 @@ static int Char_ModelIsCharacter(void)
     return Char_EndsWith(model, L".rldchar");
 }
 
+// THE KART: the box "Kart: from the player's game data" has a place - a CHRG
+// route, a .glb model, and not a model with a kart part of its own (that wins:
+// the check says so as a message).
+static int Char_KartBoxWanted(void)
+{
+    if (!Char_Chrg() || Char_ModelIsCharacter())
+        return 0;
+    return !(g_char.hiresChecked && g_char.hires.read && g_char.hires.kartCase == RS_KART_PART);
+}
+
 // No make-char on this route as it is set: the steps Driver, In-game look and
 // Voices have nothing to set (their values are those of the character file).
 static int Char_NoMake(void)
@@ -1281,7 +1319,7 @@ static int Char_RouteHides(HWND c)
     int id = GetDlgCtrlID(c);
     if (!Char_Chrg())
         return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
-               c == g_char.upscaleChange || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_PREVIEW_SWITCH ||
+               c == g_char.upscaleChange || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_PREVIEW_SWITCH ||
                id == CHAR_ID_PREVIEW_SWITCH + 1 ||
                (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP) || (id >= CHAR_ID_CLIP_LABEL && id <= CHAR_ID_CHAR_NOTE);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
@@ -1515,7 +1553,8 @@ static int Char_TextHeight(HWND label, int width, int maxLines)
         // step Model, the same of "Convert JPEG textures to PNG", where the
         // build goes, what Test in game did.
         if (g_char.compact && lineH > 0 && label != g_char.headline && label != g_char.upscaleHelp && label != g_char.upscaleNote &&
-            label != g_char.upscaleStep && label != g_char.pngHelp && label != g_char.pngStep && label != g_char.outNote &&
+            label != g_char.upscaleStep && label != g_char.gameKartHelp && label != g_char.gameKartNote &&
+            label != g_char.gameKartStep && label != g_char.pngHelp && label != g_char.pngStep && label != g_char.outNote &&
             label != g_char.testNote) {
             Rs_LabelOneLine(label, h > lineH);
             if (h > lineH)
@@ -2707,7 +2746,8 @@ static int Char_TabOfId(int id, int *card)
         return CHAR_TAB_MODEL;
     }
     if ((id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE || id == CHAR_ID_UPSCALE ||
-        id == CHAR_ID_UPSCALE_HELP || id == CHAR_ID_UPSCALE_NOTE || (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP) ||
+        id == CHAR_ID_UPSCALE_HELP || id == CHAR_ID_UPSCALE_NOTE || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_NOTE) ||
+        (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP) ||
         id == CHAR_ID_PNG || id == CHAR_ID_PNG_HELP) {
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
@@ -2721,7 +2761,7 @@ static int Char_TabOfId(int id, int *card)
         return CHAR_TAB_MODEL;
     }
     if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE ||
-        (id >= CHAR_ID_PNG_STEP && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_CLASSIC_STEP || id == CHAR_ID_CLASSIC_CHANGE) {
+        id == CHAR_ID_GAMEKART_STEP || id == CHAR_ID_GAMEKART_CHANGE || (id >= CHAR_ID_PNG_STEP && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_CLASSIC_STEP || id == CHAR_ID_CLASSIC_CHANGE) {
         *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
@@ -5825,7 +5865,9 @@ static void Char_ChrgInfo(void)
     swprintf(t, 640, L"%ls triangles of %ls%ls - textures up to %u px, %d texture%ls, %.1f of %.1f MiB - %d of %d animations - %ls - %ls",
              tris[0], tris[1], p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge,
              c->textures, c->textures == 1 ? L"" : L"s", (double)c->textureBytes / 1048576.0, (double)c->budgetTextureBytes / 1048576.0,
-             c->clips, RS_HIRES_CLIPS, c->wheels == 4 ? L"its own wheels" : L"standard wheels", skin);
+             c->clips, RS_HIRES_CLIPS,
+             c->wheels == 4 ? L"its own wheels" : c->parts == RS_HIRES_PARTS_GAME_KART ? L"the game's kart and wheels" : L"standard wheels",
+             skin);
     Char_SetInfo(t, c->usable ? RS_COL_TEXT : RS_COL_ERROR);
 }
 
@@ -6050,8 +6092,10 @@ static void Char_HiresEnsure(const wchar_t *model)
 {
     unsigned long long stamp = Char_StampFile(CHAR_STAMP_START, model);
     const int png = Char_IsChecked(g_char.png);
+    const int gameKart = Char_Remembered(model, CHAR_CHOICE_GAMEKART);
     wchar_t dir[CHAR_VAL], beside[CHAR_VAL], converted[CHAR_VAL];
-    if (g_char.hiresChecked && _wcsicmp(model, g_char.hiresPath) == 0 && stamp == g_char.hiresStamp && png == g_char.hiresPng)
+    if (g_char.hiresChecked && _wcsicmp(model, g_char.hiresPath) == 0 && stamp == g_char.hiresStamp && png == g_char.hiresPng &&
+        gameKart == g_char.hiresGameKart)
         return;
     Char_HiresStop();
     RsHires_CheckFree(&g_char.hires);
@@ -6081,6 +6125,15 @@ static void Char_HiresEnsure(const wchar_t *model)
         }
     }
     RsHires_CheckFile(converted[0] ? converted : model, &g_char.hires);
+    // THE KART: the author's choice of "Kart: from the player's game data"
+    // against what the model suggests - checked with the parts it is packed
+    // with (the game's kart: HRG-42 instead of HRG-20), the case kept.
+    if (gameKart >= 0 && g_char.hires.read && !g_char.hires.fromCharacter && g_char.hires.kartCase != RS_KART_PART &&
+        RsHires_PartsFor(RS_KART_OWN, gameKart) != g_char.hires.parts) {
+        RsHires_CheckFree(&g_char.hires);
+        memset(&g_char.hires, 0, sizeof(g_char.hires));
+        RsHires_CheckFileParts(converted[0] ? converted : model, RsHires_PartsFor(RS_KART_OWN, gameKart), &g_char.hires);
+    }
     if (converted[0])
         DeleteFileW(converted);
     // THE CLIPS: another model starts at idle (or its bind pose); the same
@@ -6089,6 +6142,7 @@ static void Char_HiresEnsure(const wchar_t *model)
         g_char.clipSel = -1;
     g_char.hiresChecked = 1;
     g_char.hiresPng = png;
+    g_char.hiresGameKart = gameKart;
     g_char.hiresStamp = stamp;
     Char_Copy(g_char.hiresPath, CHAR_VAL, model);
     g_char.animSeconds = 0.0f;
@@ -6311,6 +6365,98 @@ static void Char_OptionsChange(HWND page, HWND box)
 static void Char_UpscaleChange(HWND page)
 {
     Char_OptionsChange(page, g_char.upscale);
+}
+
+// THE KART: the line below the box and the line on the step Model as the box
+// and the suggestion are; the page laid out again when a line came, went or
+// changed (as Char_UpscaleControls).
+static void Char_GameKartControls(void)
+{
+    wchar_t line[RS_WIZ_TEXT_MAX], was[RS_WIZ_TEXT_MAX], step[RS_WIZ_TEXT_MAX], wasStep[RS_WIZ_TEXT_MAX];
+    const int on = Char_IsChecked(g_char.gameKart);
+    line[0] = 0;
+    step[0] = 0;
+    if (Char_KartBoxWanted()) {
+        RsCharHires_GameKartLine(on, g_char.kartSuggested, line, RS_WIZ_TEXT_MAX);
+        RsCharHires_GameKartStepLine(on, g_char.kartSuggested, step, RS_WIZ_TEXT_MAX);
+    }
+    GetWindowTextW(g_char.gameKartNote, was, RS_WIZ_TEXT_MAX);
+    GetWindowTextW(g_char.gameKartStep, wasStep, RS_WIZ_TEXT_MAX);
+    Rs_SetText(g_char.gameKartNote, line);
+    Rs_SetText(g_char.gameKartStep, step);
+    if (((was[0] != 0) != (line[0] != 0) || wcscmp(wasStep, step) != 0) && g_char.view)
+        Char_Relayout(GetParent(g_char.view));
+}
+
+// After the hi-res check of a CHRG route (as Char_UpscaleUpdate): the
+// suggestion (the model has the kit's kart joint, RS_KART_GAME) and the box -
+// the author's choice for this model, or the suggestion. A model with a kart
+// part of its own (RS_KART_PART) or without a check has no box and no
+// suggestion: the box is off.
+static void Char_GameKartUpdate(void)
+{
+    const int was = Char_IsChecked(g_char.gameKart);
+    static int wasWanted = -1;      // the box had a place at the last check
+    int chosen, on, wanted;
+    if (!Char_Chrg() || !g_char.hiresChecked || !g_char.hires.read || g_char.hires.fromCharacter ||
+        g_char.hires.kartCase == RS_KART_PART) {
+        g_char.kartSuggested = 0;
+        g_char.kartChosen = 0;
+        Char_SetChecked(g_char.gameKart, 0);
+        Char_GameKartControls();
+        wanted = Char_KartBoxWanted();
+        if (wanted != wasWanted && g_char.view)
+            Char_Relayout(GetParent(g_char.view));   // the box itself came or went
+        wasWanted = wanted;
+        return;
+    }
+    g_char.kartSuggested = g_char.hires.kartCase == RS_KART_GAME;
+    chosen = Char_Remembered(g_char.hiresPath, CHAR_CHOICE_GAMEKART);
+    g_char.kartChosen = chosen >= 0;
+    on = chosen >= 0 ? chosen : g_char.kartSuggested;
+    Char_SetChecked(g_char.gameKart, on);
+    Char_GameKartControls();
+    wanted = Char_KartBoxWanted();
+    if ((wanted != wasWanted || on != was) && g_char.view)
+        Char_Relayout(GetParent(g_char.view));
+    wasWanted = wanted;
+    if (Rs_Automating() && on != was)
+        Rs_AutoLog(L"  game kart: %ls (%ls; suggested %ls)", on ? L"on" : L"off",
+                   g_char.kartChosen ? L"the author's choice" : L"the suggestion", g_char.kartSuggested ? L"on" : L"off");
+}
+
+// The author (the box) or the automation sets "Kart: from the player's game
+// data": kept for this model when one is checked. It changes the build
+// (--game-kart template) and the check: the model is checked again with the
+// parts it is packed with (Char_HiresEnsure).
+static void Char_GameKartSet(HWND page, int on)
+{
+    Char_SetChecked(g_char.gameKart, on);
+    if (Char_Chrg() && g_char.hiresChecked && g_char.hiresPath[0]) {
+        Char_Remember(g_char.hiresPath, CHAR_CHOICE_GAMEKART, on != 0);
+        g_char.kartChosen = 1;
+    }
+    g_char.builtFresh = 0;
+    Char_UpdateButtons();
+    Char_GameKartControls();
+    Char_Check(page);
+}
+
+static void Char_GameKartChange(HWND page)
+{
+    Char_OptionsChange(page, g_char.gameKart);
+}
+
+// What the next build packs, as the parts field: the kart part or the game's
+// kart (RsHires_PartsFor) from the model checked and the box; a finished
+// character: what its CHRG says.
+static unsigned Char_KartParts(void)
+{
+    if (!g_char.hiresChecked || !g_char.hires.read)
+        return 0;
+    if (Char_ModelIsCharacter() || g_char.hires.fromCharacter)
+        return g_char.hires.parts;
+    return RsHires_PartsFor(g_char.hires.kartCase, Char_KartBoxWanted() && Char_IsChecked(g_char.gameKart) ? 1 : 0);
 }
 
 // THE JPEG TEXTURES: the line on the step Model (while the box is on) and the
@@ -7679,6 +7825,7 @@ static int Char_CheckRun(HWND page, int force)
         }
         Char_VcolUpdate();      // the suggestion and the mode (also for another route)
         Char_UpscaleUpdate();   // the same for "Upscale small textures"
+        Char_GameKartUpdate();  // and for "Kart: from the player's game data"
         Char_PngControls();     // the line and the button of "Convert JPEG textures to PNG"
         Char_ClassicControls(); // the line of the classic model
         if (model[0] && Char_NoMake()) {
@@ -7867,6 +8014,8 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
     Char_Copy(g_char.chainOut, CHAR_VAL, path);
     Char_FieldPath(g_char.model, g_char.chainModel, CHAR_VAL);
     g_char.chainUpscale = Char_IsChecked(g_char.upscale);
+    g_char.chainParts = RsHires_PartsFor(g_char.hiresChecked && g_char.hires.read ? g_char.hires.kartCase : RS_KART_OWN,
+                                         Char_KartBoxWanted() && Char_IsChecked(g_char.gameKart) ? 1 : 0);
     g_char.chainPng = Char_IsChecked(g_char.png);
     g_char.chainVcol = g_char.vcolMode;       // -1: the model has no COLOR_0, no switch
     g_char.chainDerived[0] = 0;
@@ -7993,7 +8142,8 @@ static void Char_ChainDone(HWND page, int exitCode)
             Char_ChainFailed(page, L"Upscaling", exitCode);
             return;
         }
-        n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : model, g_char.chainOut, g_char.chainVcol, args);
+        n = RsHires_PackArgsParts(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : model, g_char.chainOut,
+                                  g_char.chainVcol, g_char.chainParts, args);
         swprintf(what, 64, L"Packing the %ls model...", Char_ChrgTitle());
         if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, what))
             return;
@@ -8902,6 +9052,11 @@ static int Char_SetRoute(HWND page, int route)
     g_char.upChosen = 0;
     Rs_SetText(g_char.upscaleNote, L"");
     Rs_SetText(g_char.upscaleStep, L"");
+    Char_SetChecked(g_char.gameKart, 0);
+    g_char.kartSuggested = 0;   // until the check of the model on this route
+    g_char.kartChosen = 0;
+    Rs_SetText(g_char.gameKartNote, L"");
+    Rs_SetText(g_char.gameKartStep, L"");
     Rs_SetText(g_char.pngStep, L"");    // until the check of the model on this route
     g_char.pngFixOn = 0;
     Char_ExtrasFix();
@@ -9092,6 +9247,21 @@ static void Char_ReportFlow(FILE *f)
         Char_Put(f, L"upscale step line: \"%ls\"%ls", line,
                  !line[0] ? L"" : Char_IsShown(g_char.upscaleStep) && Char_IsShown(g_char.upscaleChange) ? L" (shown, with \"Change\")"
                                                                                                            : L" (not shown on this view)");
+        // THE KART: the box, who set it, the suggestion, the lines, and what
+        // the next build packs.
+        GetWindowTextW(g_char.gameKartNote, line, RS_WIZ_TEXT_MAX);
+        Char_Put(f, L"game kart: %ls (%ls), suggested %ls, line \"%ls\"%ls", Char_IsChecked(g_char.gameKart) ? L"on" : L"off",
+                 g_char.kartChosen ? L"chosen" : checked ? L"suggested" : L"default", g_char.kartSuggested ? L"on" : L"off", line,
+                 !Char_Chrg() ? L" [no CHRG route: hidden, not used]" : Char_KartBoxWanted() ? L"" : L" [no box on this model]");
+        GetWindowTextW(g_char.gameKartStep, line, RS_WIZ_TEXT_MAX);
+        Char_Put(f, L"game kart step line: \"%ls\"%ls", line,
+                 !line[0] ? L"" : Char_IsShown(g_char.gameKartStep) && Char_IsShown(g_char.gameKartChange) ? L" (shown, with \"Change\")"
+                                                                                                             : L" (not shown on this view)");
+        {
+            const unsigned parts = Char_KartParts();
+            Char_Put(f, L"parts: %ls", (parts & RS_HIRES_PARTS_GAME_KART) == RS_HIRES_PARTS_GAME_KART ? L"game kart (donor template)"
+                                       : (parts & RS_HIRES_PARTS_KART) ? L"kart part" : L"none");
+        }
         // THE JPEG TEXTURES: the box (only ever the author's), what the check
         // shown is of, the button "Convert to PNG" and the line on the step
         // Model.
@@ -10557,6 +10727,21 @@ static void Char_Create(HWND page)
     Rs_SetTextColor(g_char.upscaleStep, RS_COL_MUTED);
     g_char.upscaleChange = Rs_Button(page, CHAR_ID_UPSCALE_CHANGE, L"Change");
     Rs_SetTip(g_char.upscaleChange, L"Opens Advanced at \"Upscale small textures\".");
+    // THE KART: the box (ticked by the check of a model with the kit's kart
+    // joint), its help, its line below the box and its line on the step Model
+    // with "Change" (Char_GameKartControls).
+    g_char.gameKart = Rs_Check(page, CHAR_ID_GAMEKART, L"Kart: from the player's game data");
+    g_char.gameKartHelp = Rs_Label(page, CHAR_ID_GAMEKART_HELP,
+                                   L"For a figure without a kart: in the race the game puts the original kart from the player's own "
+                                   L"game data under it. Leave it off for a model with a kart of its own.",
+                                   RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.gameKartHelp, RS_COL_MUTED);
+    g_char.gameKartNote = Rs_Label(page, CHAR_ID_GAMEKART_NOTE, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.gameKartNote, RS_COL_MUTED);
+    g_char.gameKartStep = Rs_Label(page, CHAR_ID_GAMEKART_STEP, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.gameKartStep, RS_COL_MUTED);
+    g_char.gameKartChange = Rs_Button(page, CHAR_ID_GAMEKART_CHANGE, L"Change");
+    Rs_SetTip(g_char.gameKartChange, L"Opens Advanced at \"Kart: from the player's game data\".");
     // THE JPEG TEXTURES: the box (never ticked by the Studio itself), its
     // help, its line on the step Model with "Change", and the button of the
     // JPEG error's fix.
@@ -10662,6 +10847,7 @@ static void Char_Create(HWND page)
     Char_ClipControls();
     g_char.vcolMode = g_char.vcolSuggested = -1;
     g_char.chainVcol = -1;
+    g_char.chainParts = 0;
     for (i = 0; i < 2; i++)
         g_char.previewSwitch[i] = Char_TabButton(page, CHAR_ID_PREVIEW_SWITCH + i, Char_PreviewText(i), RS_FONT_SECTION);
     Char_PreviewTip();
@@ -10918,6 +11104,8 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         y = Char_LayStepLine(g_char.pngStep, g_char.pngChange, x, y, fieldW);
     if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.upscaleStep) > 0)
         y = Char_LayStepLine(g_char.upscaleStep, g_char.upscaleChange, x, y, fieldW);
+    if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.gameKartStep) > 0)
+        y = Char_LayStepLine(g_char.gameKartStep, g_char.gameKartChange, x, y, fieldW);
     // A model with JPEG textures: "Convert to PNG", the fix of its error.
     if (chrg && g_char.pngFixOn) {
         int bw = Char_TextWidth(g_char.pngFix, L"Convert to PNG") + Rs_Px(32);
@@ -11066,6 +11254,23 @@ static int Char_LayOptions(const RECT *in)
         noteH = Char_TextHeight(g_char.upscaleHelp, w, CHAR_NOTE_LINES);
         MoveWindow(g_char.upscaleHelp, x, y, w, noteH, TRUE);
         y += noteH;
+        // THE KART: the box with its line and help, not for a model with a
+        // kart part of its own.
+        if (Char_KartBoxWanted()) {
+            bw = Char_CheckWidth(g_char.gameKart);
+            y += Rs_Px(14);
+            MoveWindow(g_char.gameKart, x, y, bw < w ? bw : w, Rs_Px(24), TRUE);
+            if (GetWindowTextLengthW(g_char.gameKartNote) > 0) {
+                y += Rs_Px(26);
+                noteH = Char_NoteHeight(g_char.gameKartNote, w);
+                MoveWindow(g_char.gameKartNote, x, y, w, noteH, TRUE);
+                y += noteH + Rs_Px(6);
+            } else
+                y += Rs_Px(28);
+            noteH = Char_TextHeight(g_char.gameKartHelp, w, CHAR_NOTE_LINES);
+            MoveWindow(g_char.gameKartHelp, x, y, w, noteH, TRUE);
+            y += noteH;
+        }
         // "Convert JPEG textures to PNG" and its help.
         bw = Char_CheckWidth(g_char.png);
         y += Rs_Px(14);
@@ -11727,7 +11932,7 @@ static int Char_Wanted(HWND c)
             return Char_ModelIsCharacter();
         if (Char_ModelIsCharacter() &&
             (c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
-             c == g_char.upscaleChange || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) ||
+             c == g_char.upscaleChange || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) ||
              (id >= CHAR_ID_CLASSIC_LABEL && id <= CHAR_ID_CLASSIC_CHANGE)))
             return 0;
         if (c == g_char.reduceFit)
@@ -11744,6 +11949,12 @@ static int Char_Wanted(HWND c)
             return g_char.objOn;
         if (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP)
             return g_char.vcolMode >= 0;
+        if ((id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) && !Char_KartBoxWanted())
+            return 0;
+        if (c == g_char.gameKartNote || c == g_char.gameKartStep)
+            return GetWindowTextLengthW(c) > 0;
+        if (c == g_char.gameKartChange)
+            return GetWindowTextLengthW(g_char.gameKartStep) > 0;
         if (c == g_char.upscaleNote || c == g_char.upscaleStep)
             return GetWindowTextLengthW(c) > 0;
         if (c == g_char.upscaleChange)
@@ -12131,6 +12342,16 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_UPSCALE_CHANGE:
         if (code == BN_CLICKED)
             Char_UpscaleChange(page);
+        break;
+    case CHAR_ID_GAMEKART:
+        // The author's choice, kept for this model; it changes only the
+        // build (--game-kart template), not the check.
+        if (code == BN_CLICKED)
+            Char_GameKartSet(page, Char_IsChecked(g_char.gameKart));
+        break;
+    case CHAR_ID_GAMEKART_CHANGE:
+        if (code == BN_CLICKED)
+            Char_GameKartChange(page);
         break;
     case CHAR_ID_PNG:
         // The author's choice, kept for this model; the model is checked
@@ -12878,6 +13099,36 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         UpdateWindow(page);
         Rs_AutoLog(L"  upscale: %ls (%ls; suggested %ls, largest base colour texture %u px)", Char_IsChecked(g_char.upscale) ? L"on" : L"off",
                    g_char.upChosen ? L"the author's choice" : L"the suggestion", g_char.upSuggested ? L"on" : L"off", g_char.upLargest);
+        return RS_AUTO_DONE;
+    }
+    // "gamekart on|off|auto|change": "Kart: from the player's game data" of a
+    // CHRG route, exactly like "upscale" (on, off: the author's choice, kept
+    // for the model checked; auto: the choice forgotten, the suggestion again;
+    // change: a click on "Change" at the end of the line on the step Model).
+    if (wcscmp(verb, L"gamekart") == 0) {
+        int on = _wcsicmp(arg, L"on") == 0;
+        if (!Char_Chrg()) {
+            Rs_AutoLog(L"  gamekart: only Low-Poly and Hi-Res have \"Kart: from the player's game data\"");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"change") == 0)
+            return Char_AutoChange(page, L"gamekart", CHAR_ID_GAMEKART_CHANGE, g_char.gameKartChange, g_char.gameKart,
+                                   L"Kart: from the player's game data");
+        if (_wcsicmp(arg, L"auto") == 0) {
+            Char_Remember(g_char.hiresPath, CHAR_CHOICE_GAMEKART, -1);
+            Char_GameKartUpdate();
+            g_char.builtFresh = 0;
+            Char_UpdateButtons();
+            Char_Check(page);
+        } else if (on || _wcsicmp(arg, L"off") == 0) {
+            Char_GameKartSet(page, on);
+        } else {
+            Rs_AutoLog(L"  gamekart: say on, off, auto or change");
+            return RS_AUTO_FAIL;
+        }
+        UpdateWindow(page);
+        Rs_AutoLog(L"  game kart: %ls (%ls; suggested %ls)", Char_IsChecked(g_char.gameKart) ? L"on" : L"off",
+                   g_char.kartChosen ? L"the author's choice" : L"the suggestion", g_char.kartSuggested ? L"on" : L"off");
         return RS_AUTO_DONE;
     }
     // "png convert|on|off|change": "Convert JPEG textures to PNG" of a CHRG

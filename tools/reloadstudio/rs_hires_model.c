@@ -1250,9 +1250,77 @@ static int RsHires_CheckGlbMode(const unsigned char *glb, size_t size, int mode,
     return 1;
 }
 
+// 1 if the node or a node below it has a mesh.
+static int RsHires_SubtreeMesh(const cgltf_node *n, int depth)
+{
+    cgltf_size i;
+    if (!n || depth > 64)
+        return 0;
+    if (n->mesh)
+        return 1;
+    for (i = 0; i < n->children_count; i++)
+        if (RsHires_SubtreeMesh(n->children[i], depth + 1))
+            return 1;
+    return 0;
+}
+
+// THE KART of a .glb (rs_hires_model.h, RsHiresCheck.kartCase): opened as
+// rldpack opens it for --kart-part, then the node names.
+static int RsHires_KartCase(const unsigned char *glb, size_t size)
+{
+    static RldHiresReport rep;   // the findings are not used: the check says them
+    RldHiresModel m;
+    int kase = RS_KART_OWN;
+    cgltf_size i;
+
+    if (size > (size_t)(RLDHIRES_CHUNK_LIMIT - RLDHIRES_CHUNK_HEADER_BYTES))
+        return RS_KART_OWN;
+    RldHires_ReportClear(&rep);
+    memset(&m, 0, sizeof(m));
+    RldHires_OpenParts(glb, (u32)size, RLDHIRES_VCOL_GLTF, RLDHIRES_PART_KART, &m, &rep);
+    if (m.data && m.kartNode >= 0 && (cgltf_size)m.kartNode < m.data->nodes_count) {
+        if (RsHires_SubtreeMesh(&m.data->nodes[m.kartNode], 0)) {
+            if (m.kartPart)
+                kase = RS_KART_PART;
+        } else {
+            int meshes = 0;
+            for (i = 0; i < m.data->nodes_count && !meshes; i++) {
+                const char *name = m.data->nodes[i].name;
+                if (name && (strcmp(name, "kart") == 0 || strncmp(name, "kart_", 5) == 0 || strncmp(name, "wheel_", 6) == 0))
+                    meshes = RsHires_SubtreeMesh(&m.data->nodes[i], 0);
+            }
+            if (!meshes)
+                kase = RS_KART_GAME;
+        }
+    }
+    RldHires_Close(&m);
+    return kase;
+}
+
+unsigned RsHires_PartsFor(int kartCase, int gameKart)
+{
+    if (kartCase == RS_KART_PART)
+        return RS_HIRES_PARTS_KART;
+    if (kartCase == RS_KART_GAME || gameKart)
+        return RS_HIRES_PARTS_GAME_KART;
+    return 0u;
+}
+
+// A .glb: its kart decided, then checked with the parts it is packed with.
+static int RsHires_CheckGlbParts(const unsigned char *glb, size_t size, int useParts, unsigned parts, struct RsHiresCheck *out)
+{
+    int kase = RsHires_KartCase(glb, size), r;
+    if (!useParts)
+        parts = RsHires_PartsFor(kase, 0);
+    r = RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, parts, out);
+    out->kartCase = kase;
+    out->parts = parts;
+    return r;
+}
+
 int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out)
 {
-    return RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, 0u, out);
+    return RsHires_CheckGlbParts(glb, size, 0, 0u, out);
 }
 
 static unsigned char *RsHires_ReadAll(const wchar_t *path, size_t limit, size_t *size, wchar_t *why, int whyCap)
@@ -1334,7 +1402,9 @@ int RsHires_CharLook(const wchar_t *path, struct RsCharLook *out, wchar_t *why, 
     return 1;
 }
 
-int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
+// A file: the CHRG of a .rldchar as its header says, a .glb with its kart
+// decided (useParts 0) or with parts (useParts 1).
+static int RsHires_CheckFileAs(const wchar_t *path, int useParts, unsigned parts, struct RsHiresCheck *out)
 {
     unsigned char head[8];
     unsigned char *bytes;
@@ -1402,6 +1472,8 @@ int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
         }
         r = RsHires_CheckGlbMode(c.glb, c.glbSize, RldHiresColor_Mode(c.flags), c.parts, out);
         out->fromCharacter = 1;
+        out->parts = c.parts;
+        out->kartCase = (c.parts & RLDHIRES_PART_KART) ? RS_KART_PART : (c.parts & RLDHIRES_PART_GAME_KART) ? RS_KART_GAME : RS_KART_OWN;
         free(bytes);
         return r;
     }
@@ -1410,10 +1482,20 @@ int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
     if (!bytes)
         return 0;
     {
-        int r = RsHires_CheckGlb(bytes, size, out);
+        int r = RsHires_CheckGlbParts(bytes, size, useParts, parts, out);
         free(bytes);
         return r;
     }
+}
+
+int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
+{
+    return RsHires_CheckFileAs(path, 0, 0u, out);
+}
+
+int RsHires_CheckFileParts(const wchar_t *path, unsigned parts, struct RsHiresCheck *out)
+{
+    return RsHires_CheckFileAs(path, 1, parts, out);
 }
 
 void RsHires_CheckFree(struct RsHiresCheck *c)
@@ -1440,6 +1522,20 @@ int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar
     if (RsHires_ColourWord(vertexColors)) {
         args[n++] = L"--vertex-colors";
         args[n++] = RsHires_ColourWord(vertexColors);
+    }
+    args[n++] = L"--machine";
+    return n;
+}
+
+int RsHires_PackArgsParts(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors,
+                          unsigned parts, const wchar_t **args)
+{
+    int n = RsHires_PackArgs(character, model, out, vertexColors, args) - 1;   // without --machine
+    if (parts == RS_HIRES_PARTS_KART) {
+        args[n++] = L"--kart-part";
+    } else if (parts == RS_HIRES_PARTS_GAME_KART) {
+        args[n++] = L"--game-kart";
+        args[n++] = L"template";
     }
     args[n++] = L"--machine";
     return n;

@@ -154,6 +154,9 @@ static const struct RsHrgSay s_say[] = {
     { L"HRG-40", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Nothing to do; build the character again to write the field anew." },
     // The kart of the Creator Kit (glTF extras "ctr_kit" or a material ctrkit_*):
     // it is made from the user's game data. The fixed warning, at the build.
+    // A model without wheel nodes that gets the game's kart: its wheels come with it.
+    { L"HRG-42", RS_WIZ_PLACE_MODEL, TEXT_OWN, L"Your model has no wheels of its own - the game adds them with its kart.",
+      L"Nothing to do." },
     { L"HRG-41", RS_WIZ_PLACE_BUILD, TEXT_OWN, RS_TEXT_KIT_KART,
       L"Keep this file to yourself. To share your driver, export it again with the collection Kart switched off." },
 };
@@ -216,6 +219,28 @@ static void RsCharHires_Put(struct RsWizMsg *m, int severity, int place, const w
 }
 
 #define RS_WIZ_LIST_MAX (RS_HIRES_ROWS_MAX + 8)
+
+void RsCharHires_GameKartLine(int on, int suggested, wchar_t *out, int cap)
+{
+    if (on && suggested)
+        swprintf(out, cap, L"Your model has the kart joint of the Creator Kit and no kart - the game adds the original kart.");
+    else if (on)
+        swprintf(out, cap, L"The game adds the original kart from the player's game data (your choice).");
+    else if (suggested)
+        swprintf(out, cap, L"Your model has the kart joint of the Creator Kit, but stays without a kart (your choice).");
+    else
+        swprintf(out, cap, L"For a figure without a kart: the game adds the original kart from the player's game data.");
+}
+
+void RsCharHires_GameKartStepLine(int on, int suggested, wchar_t *out, int cap)
+{
+    if (on)
+        swprintf(out, cap, L"%ls", RS_TEXT_GAME_KART);
+    else if (suggested)
+        swprintf(out, cap, L"The game will not add a kart - your model is drawn as it is.");
+    else if (cap > 0)
+        out[0] = 0;
+}
 
 int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMsg *out, int cap)
 {
@@ -309,6 +334,14 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
             RsCharHires_Put(&list[count++], RS_SEV_WARNING, RS_WIZ_PLACE_WHEELS, L"HRG-20", line, RS_FIX_WHEELS);
         }
     }
+
+    // The kart (THE KART, rs_charroute.h): a kart part is left out where the
+    // kart is not wanted; a finished character with the game's kart says so
+    // (for a .glb the switch "Kart: from the player's game data" says it).
+    if (c->read && c->kartCase == RS_KART_PART)
+        RsCharHires_Put(&list[count++], RS_SEV_NOTE, RS_WIZ_PLACE_MODEL, L"", RS_TEXT_KART_PART, RS_FIX_KART_PART);
+    else if (c->read && c->fromCharacter && c->kartCase == RS_KART_GAME)
+        RsCharHires_Put(&list[count++], RS_SEV_NOTE, RS_WIZ_PLACE_MODEL, L"", RS_TEXT_GAME_KART, L"Nothing to do.");
 
     // The route's targets (Low-Poly): advice, the build stays possible. Over
     // the game's budget the error HRG-27 says it already.
