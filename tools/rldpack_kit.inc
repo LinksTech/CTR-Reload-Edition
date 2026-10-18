@@ -12,7 +12,7 @@
 //       reads the player's own game data (without --game: assets\BIGFILE.BIG or
 //       assets\ctr-u.bin next to this program or up to two folders above it,
 //       as the game looks) and writes into the existing <folder>:
-//         kit-kart.glb        the kart of the driver: node "kart" with kart_body
+//         kit-kart.glb        the kart of the driver: two root nodes, kart_body
 //                             (the retail kart, smoothed, its textures upscaled)
 //                             and kart_steer_wheel (made new at the retail ring,
 //                             origin at the ring's centre, no rotation); vertex
@@ -345,10 +345,9 @@ static u8 *RldKit_WriteGlb(const RldKitResult *r, int wholeKart, int vcolMode, s
 
 	RldKitBuf_Printf(&json, "{\"asset\":{\"version\":\"2.0\",\"generator\":\"rldpack kit-extract (CTR Reload %s) - made from your own game data, keep it on this computer\"},",
 	                 CTR_NATIVE_VERSION);
-	RldKitBuf_Printf(&json, "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[");
+	RldKitBuf_Printf(&json, "\"scene\":0,\"scenes\":[{\"nodes\":[%s]}],\"nodes\":[", wholeKart ? "0,1" : "0");
 	if (wholeKart)
 	{
-		RldKitBuf_Printf(&json, "{\"name\":\"kart\",\"extras\":{\"ctr_kit\":\"kart\"},\"children\":[1,2]},");
 		RldKitBuf_Printf(&json, "{\"name\":\"kart_body\",\"extras\":{\"ctr_kit\":\"kart\"},\"mesh\":0},");
 		RldKitBuf_Printf(&json, "{\"name\":\"kart_steer_wheel\",\"extras\":{\"ctr_kit\":\"steer_wheel\"},\"mesh\":1,\"translation\":[%.9g,%.9g,%.9g]}",
 		                 r->ringCenter[0], r->ringCenter[1], r->ringCenter[2]);
@@ -1472,8 +1471,8 @@ static int RldKit_SelfTest(void)
 			printf("       ring: measured %d, %u records, centre %.3f %.3f %.3f, normal %.3f %.3f %.3f, radius %.3f\n", r.ringMeasured, (unsigned)r.ringRecords,
 			       r.ringCenter[0] * 64.0, r.ringCenter[1] * 64.0, r.ringCenter[2] * 64.0, r.ringNormal[0], r.ringNormal[1], r.ringNormal[2], r.ringRadius * 64.0);
 		}
-		KitTest_Check(r.wheelMeasured && (fabs(r.wheelRadius * 64.0 - 15.0) < 0.6) && (fabs(r.wheelWidth * 64.0 - 15.0) < 1e-6) && (r.tyre[0] < 40u) && (r.rim[0] > 120u),
-		              "the wheel from the sprites: radius 15, width limited to 15, dark tyre, light rim");
+		KitTest_Check(r.wheelMeasured && (fabs(r.wheelRadius * 64.0 - 15.0) < 0.6) && (fabs(r.wheelWidth * 64.0 - 22.0) < 1e-6) && (r.tyre[0] < 40u) && (r.rim[0] > 120u),
+		              "the wheel from the sprites: radius 15, width 22 (the tread sprite), dark tyre, light rim");
 		KitTest_Check((r.wheel.indices / 3u <= 1500u) && (r.wheel.indices / 3u > 500u), "the wheel: 500..1500 triangles");
 		KitTest_Check((fabs(r.wheelPos[0][0] * 64.0 - 36.0) < 1e-9) && (fabs(r.wheelPos[1][0] * 64.0 + 36.0) < 1e-9) && (fabs(r.wheelPos[2][2] * 64.0 + 24.0) < 1e-9),
 		              "the wheel points of the game");
@@ -1492,10 +1491,10 @@ static int RldKit_SelfTest(void)
 			int ok;
 
 			RldHires_ReportClear(&rep);
-			ok = RldHires_OpenParts(bytes[0], (u32)sizes[0], RLDHIRES_VCOL_PSX, RLDHIRES_PART_KART, &m, &rep);
-			KitTest_Check(ok && (rep.errors == 0) && m.kartPart && (m.kartNodes == 3u) && (m.wheelsFound == 0) && RldHires_ReportHas(&rep, "HRG-41") &&
+			ok = RldHires_OpenAs(bytes[0], (u32)sizes[0], RLDHIRES_VCOL_PSX, &m, &rep);
+			KitTest_Check(ok && (rep.errors == 0) && (m.drawNodeCount == 2) && (m.wheelsFound == 0) && RldHires_ReportHas(&rep, "HRG-41") &&
 			                  RldHires_CheckBudget(&m, &rep),
-			              "kit-kart.glb: usable, kart part of 3 nodes (kart, kart_body, kart_steer_wheel), no wheel node, HRG-41, within the budget");
+			              "kit-kart.glb: usable, two mesh nodes (kart_body, kart_steer_wheel), no wheel node, HRG-41, within the budget");
 			for (i = 0; i < rep.count; i++)
 			{
 				if ((strcmp(rep.msg[i].rule, "HRG-41") != 0) && (strcmp(rep.msg[i].rule, "HRG-19") != 0) && (strcmp(rep.msg[i].rule, "HRG-20") != 0))

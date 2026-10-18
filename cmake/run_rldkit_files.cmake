@@ -6,8 +6,8 @@
 # 1. <folder> is removed and created empty.
 # 2. kit-standin writes <folder>/BIGFILE.BIG; kit-extract --game <folder> reads
 #    it like the game's own and writes the six kit files.
-# 3. kit-kart.glb is checked with the game's rules as a kart part in PSX mode:
-#    no error, the kart part on, the kit mark said (HRG-41); kit-kart-gltf.glb
+# 3. kit-kart.glb is checked with the game's rules in PSX mode: no error, the
+#    kit mark said (HRG-41); kit-kart-gltf.glb
 #    in glTF mode without HRG-36; the wheel opens without an error.
 # 4. A second kit-extract gives the same bytes; driver 15 and a missing folder
 #    of game data are refused.
@@ -62,13 +62,12 @@ if(NOT (at GREATER -1))
 endif()
 math(EXPR checks "${checks} + 1")
 
-pack(c hires-check "${DIR}/kit/kit-kart.glb" --vertex-colors psx --kart-part)
+pack(c hires-check "${DIR}/kit/kit-kart.glb" --vertex-colors psx)
 set(LAST_OUT "${c_OUT}")
-string(FIND "${c_OUT}" "kart part on (3 nodes)" atKart)
 string(FIND "${c_OUT}" "HRG-41" at41)
 string(FIND "${c_OUT}" "hires check: 0 errors" atSum)
-if(NOT (c_RESULT EQUAL 0 AND atKart GREATER -1 AND at41 GREATER -1 AND atSum GREATER -1))
-    fail("kit-kart.glb: no error, the kart part on, the kit mark (HRG-41)")
+if(NOT (c_RESULT EQUAL 0 AND at41 GREATER -1 AND atSum GREATER -1))
+    fail("kit-kart.glb: no error, the kit mark (HRG-41)")
 endif()
 math(EXPR checks "${checks} + 1")
 pack(c hires-check "${DIR}/kit/kit-kart-gltf.glb")

@@ -132,13 +132,17 @@ static const double s_rldKitFloorZ[RLDKIT_FLOOR_LINE] = {-53.0, -50.0, -46.0, -4
 
 // The wheel points of the game (game/DrawTires.c BuildWheelLocalPairs: the
 // middles (+-0x90, 0x40, 0xc7 / -0x60) / 4 in model units, tools/rldpack_dummy.inc
-// RLDDUM_TIRE_*), the kart's side (x 28.3, RLDDUM_KART_BOX) the tyre stays out of.
+// RLDDUM_TIRE_*), the kart's side (x 28.3, RLDDUM_KART_BOX). The tyre is as wide
+// as the tread sprite shows it (22 texels = 22 units for the retail sprites: its
+// inner side reaches into the kart's side as the retail sprites do), at most
+// RLDKIT_TIRE_WIDTH_MAX.
 #define RLDKIT_TIRE_X 36.0
 #define RLDKIT_TIRE_Y 16.0
 #define RLDKIT_TIRE_FRONT_Z 49.75
 #define RLDKIT_TIRE_REAR_Z (-24.0)
 #define RLDKIT_TIRE_HALF_SIZE 16.0
 #define RLDKIT_KART_SIDE_X 28.5
+#define RLDKIT_TIRE_WIDTH_MAX 24.0
 #define RLDKIT_TIRE_SEG 24
 #define RLDKIT_TIRE_RIBS 5
 
@@ -2979,7 +2983,7 @@ static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKi
 		u32 side[3];
 		double R = RLDKIT_TIRE_HALF_SIZE - 1.0;
 		double across = 22.0;
-		const double widthMax = 2.0 * (RLDKIT_TIRE_X - RLDKIT_KART_SIDE_X);
+		const double widthMax = RLDKIT_TIRE_WIDTH_MAX;
 		int k;
 		int okTread = RldKit_TireIcon(src->pack, src->packSize, 0, tread);
 		int okSide = RldKit_TireIcon(src->pack, src->packSize, 16, side);
