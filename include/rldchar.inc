@@ -34,6 +34,7 @@
 #ifndef RLDCHAR_INC
 #define RLDCHAR_INC
 
+#include <math.h>
 #include <stdarg.h>
 
 //========================================================================================
@@ -61,7 +62,8 @@
 #define RLDCHAR_MASK_UKA 2u                // Uka Uka; 3 is reserved and read as RLDCHAR_MASK_LIKE
 #define RLDCHAR_FLAG_MAP_COLOR 0x8u        // CHRI flags bit 3: the minimap marker has the color at 0x20 (RldChar_MapColor)
 #define RLDCHAR_FLAG_FULL_HEIGHT 0x10u     // CHRI flags bit 4: the up axis uses odd values too, the game keeps bit 0 of the height
-#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR | RLDCHAR_FLAG_FULL_HEIGHT)   // the CHRI flag bits this reader understands
+#define RLDCHAR_FLAG_GAME_KART 0x20u       // CHRI flags bit 5 (4.3): the stand-in kart of CMDL is replaced by a retail kart of the game data (THE GAME KART)
+#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR | RLDCHAR_FLAG_FULL_HEIGHT | RLDCHAR_FLAG_GAME_KART)   // the CHRI flag bits this reader understands
 #define RLDCHAR_CHRI_MAP_COLOR_OFFSET 0x20u   // u8 r, g, b, 0 - present when fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR
 #define RLDCHAR_CHRI_SIZE_MAP_COLOR 0x24u
 #define RLDCHAR_CHRI_LOOK_OFFSET 0x24u     // the look (shadow and exhaust, RldChar_ParseLook) - present when fixedSize >= RLDCHAR_CHRI_SIZE_LOOK
@@ -71,6 +73,14 @@
 #define RLDCHAR_CHRI_EXHAUST_COUNT 0x26u   // u8 1 or 2 with custom, else 0; 0x27 is reserved (0)
 #define RLDCHAR_CHRI_SHADOW_QUAD 0x28u     // s16 xMin, xMax, zMin, zMax
 #define RLDCHAR_CHRI_EXHAUST_POINTS 0x30u  // s16 x, y, z of point 0, then of point 1
+#define RLDCHAR_CHRI_SIZE_GAME_KART 0x50u  // the game kart field 0x3C..0x4F (THE GAME KART) - present when fixedSize >= this, written only with bit 5
+#define RLDCHAR_CHRI_KART_DONOR 0x3Cu      // u8 0..14, RLDCHAR_GAME_KART_TEMPLATE = the template; 0x3D reserved (0)
+#define RLDCHAR_CHRI_KART_TRIANGLES 0x3Eu  // u16 the stand-in triangles
+#define RLDCHAR_CHRI_KART_COMMANDS 0x40u   // u16 first, u16 end: list indices of the stand-in range
+#define RLDCHAR_CHRI_KART_RECORDS 0x44u    // u16 first, u16 end: its records
+#define RLDCHAR_CHRI_KART_SCALE 0x48u      // u16, 1/4096
+#define RLDCHAR_CHRI_KART_OFFSET 0x4Au     // s16 x, y, z, 1/16 model unit
+#define RLDCHAR_GAME_KART_TEMPLATE 0xFFu
 #define RLDCHAR_LOOK_RETAIL 0u             // shadowMode / exhaustMode 0: what retail draws - every file from before the field
 #define RLDCHAR_LOOK_AUTO 1u               // shadowMode 1: the quad at 0x28
 #define RLDCHAR_LOOK_CUSTOM 1u             // exhaustMode 1: the points at 0x30
@@ -196,7 +206,8 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x18 u32 charVersion  the version for humans; the game tells versions apart by the CMDL hash
 // 0x1C u32 flags        only when fixedSize >= 0x20, else 0; bit 0 RLDCHAR_FLAG_NO_WHEELS,
 //                       bits 1-2 the mask (RLDCHAR_MASK_*, RldChar_Mask),
-//                       bit 3 RLDCHAR_FLAG_MAP_COLOR, bit 4 RLDCHAR_FLAG_FULL_HEIGHT
+//                       bit 3 RLDCHAR_FLAG_MAP_COLOR, bit 4 RLDCHAR_FLAG_FULL_HEIGHT,
+//                       bit 5 RLDCHAR_FLAG_GAME_KART (4.3)
 // 0x20 u8[4] mapColor   only when fixedSize >= 0x24: red, green, blue of the
 //                       minimap marker, then 0; used only with bit 3 set
 // The look, only when fixedSize >= 0x3C (RldChar_ParseLook):
@@ -207,6 +218,11 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x28 s16[4] shadowQuad    xMin, xMax, zMin, zMax, 1/16 model units; only with shadow auto
 // 0x30 s16[3] exhaust0      x, y, z, 1/16 model units; in place of retail source 0 (+X, left)
 // 0x36 s16[3] exhaust1      x, y, z; in place of retail source 1 (-X, right), only with count 2, else 0
+// The game kart, only when fixedSize >= 0x50 and written only with bit 5
+// (RldChar_ParseGameKart, THE GAME KART below):
+// 0x3C u8 kartDonor, 0x3D u8 0, 0x3E u16 kartTriangles, 0x40 u16 kartCommandFirst,
+// 0x42 u16 kartCommandEnd, 0x44 u16 kartRecordFirst, 0x46 u16 kartRecordEnd,
+// 0x48 u16 kartScale, 0x4A s16[3] kartOffset
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
 //
 // A new field only ever lengthens fixedSize, a new string is only ever
@@ -1860,6 +1876,645 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
                                               struct RldCharModelFacts *facts)
 {
 	return RldChar_CheckProfile(&s_rldCharProfileModel, cmdl, size, first, report, context, facts);
+}
+
+//========================================================================================
+// THE GAME KART (CHRI bit 5, container format 4.3)
+//========================================================================================
+//
+// A figure-only file (rldpack make-char --figure-only, the Creator Kit's figure)
+// holds no game data: its CMDL is the figure on a plain grey STAND-IN KART made
+// by code. CHRI bit 5 RLDCHAR_FLAG_GAME_KART says two things:
+//   - the stand-in's kart body is a FIXED RANGE: the tail of the command list
+//     and of the records, as CHRI 0x3C..0x4F describes it. Nothing ever looks
+//     for the stand-in by its shape or its colour; the range is the packer's.
+//   - the game puts the kart of a retail driver (the donor) from the PLAYER'S
+//     OWN game data in its place, once when it loads the file
+//     (platform/native_chars.c, THE GAME KART). The classic model is then the
+//     figure in the donor's kart on both classic paths (the engine with the
+//     hi-res part dropped, and the PS1 path); the stand-in's steering ring stays.
+//
+// 0x3C u8     kartDonor         0..14, 0xFF = the CHRI template
+// 0x3D u8     reserved          0
+// 0x3E u16    kartTriangles     the triangles the range draws
+// 0x40 u16    kartCommandFirst  list index of its first command (index 0 is the color count)
+// 0x42 u16    kartCommandEnd    list index of the end word 0xFFFFFFFF: the range is the tail
+// 0x44 u16    kartRecordFirst   its first record
+// 0x46 u16    kartRecordEnd     = the records per frame
+// 0x48 u16    kartScale         1/4096: the factor the packer scaled the model by (4096 = 1)
+// 0x4A s16[3] kartOffset        1/16 model unit: the one shift the packer moved it by
+// A point p of the donor's kart (model units of the retail model) lands at
+// kartScale / 4096 x p + kartOffset / 16 in the model.
+//
+// Written only with bit 5, then fixedSize is 0x50 (the look bytes 0x24..0x3B are
+// 0 = retail unless the file has a look, mapColor 0 without bit 3). A reader
+// from before 4.3 ignores bit 5 and the longer fixedSize (unknown flag bits are
+// no CHRI finding) and draws the stand-in. NOTHING HERE REFUSES A FILE: a field
+// or a range that does not hold only keeps the stand-in.
+
+struct RldCharGameKart
+{
+	u32 donor;          // as stored: 0..14 or RLDCHAR_GAME_KART_TEMPLATE
+	u32 triangles;
+	u32 commandFirst;
+	u32 commandEnd;
+	u32 recordFirst;
+	u32 recordEnd;
+	u32 scale;          // 1/4096
+	int offset[3];      // 1/16 model unit
+};
+
+// The field of a CHRI that RldChar_ParseInfo has accepted (info is its result).
+// NULL = there and usable; else a fixed text why the stand-in stays.
+static const char *RldChar_ParseGameKart(const struct RldCharInfo *info, const u8 *chri, size_t size, struct RldCharGameKart *out)
+{
+	int k;
+
+	memset(out, 0, sizeof(*out));
+	if ((info == NULL) || (chri == NULL) || ((info->flags & RLDCHAR_FLAG_GAME_KART) == 0u))
+	{
+		return "CHRI bit 5 is not set";
+	}
+	if ((info->fixedSize < RLDCHAR_CHRI_SIZE_GAME_KART) || (size < (size_t)RLDCHAR_CHRI_SIZE_GAME_KART))
+	{
+		return "CHRI bit 5 without its field (fixedSize below 0x50)";
+	}
+	out->donor = chri[RLDCHAR_CHRI_KART_DONOR];
+	out->triangles = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_TRIANGLES]);
+	out->commandFirst = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_COMMANDS]);
+	out->commandEnd = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_COMMANDS + 2u]);
+	out->recordFirst = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_RECORDS]);
+	out->recordEnd = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_RECORDS + 2u]);
+	out->scale = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_SCALE]);
+	for (k = 0; k < 3; k++)
+	{
+		const u32 v = Rld_ReadLE16(&chri[RLDCHAR_CHRI_KART_OFFSET + 2u * (u32)k]);
+
+		out->offset[k] = (v >= 0x8000u) ? ((int)v - 0x10000) : (int)v;
+	}
+	if ((out->donor > RLDCHAR_TEMPLATE_MAX) && (out->donor != RLDCHAR_GAME_KART_TEMPLATE))
+	{
+		return "the kart donor is neither a retail driver with a kart (0..14) nor the template";
+	}
+	if (out->scale == 0u)
+	{
+		return "kartScale is 0";
+	}
+	if ((out->triangles == 0u) || (out->commandFirst == 0u) || (out->commandFirst >= out->commandEnd) || (out->recordFirst >= out->recordEnd))
+	{
+		return "the stand-in range is empty";
+	}
+	return NULL;
+}
+
+// The retail driver whose kart a file takes: its donor, or its template.
+static u32 RldChar_GameKartDonor(const struct RldCharGameKart *gk, u32 templateId)
+{
+	return (gk->donor == RLDCHAR_GAME_KART_TEMPLATE) ? templateId : gk->donor;
+}
+
+// Does the range hold in this CMDL? cmdl must have passed RldChar_CheckModel
+// (the structures lie in the body, the list ends there). The range is the
+// tail: its first command starts a strip, it reads no cache slot it has not
+// written itself, it has no color-only command, its end is the end word, its
+// first record is the one the commands before it leave, and it draws
+// kartTriangles. NULL = it holds, else a fixed text.
+static const char *RldChar_GameKartRange(const u8 *cmdl, size_t size, const struct RldCharGameKart *gk)
+{
+	u8 written[256];
+	u32 bodyBytes;
+	const u8 *body;
+	u32 header;
+	u32 list;
+	u32 at;
+	u32 index = 1;
+	u32 records = 0;
+	u32 recordsBefore = 0;
+	u32 triangles = 0;
+	u32 strip = 0;
+	int inRange = 0;
+	int ended = 0;
+
+	if ((cmdl == NULL) || (size < 8u))
+	{
+		return "no model";
+	}
+	bodyBytes = Rld_ReadLE32(&cmdl[0]);
+	if (((u64)bodyBytes + 8u) > (u64)size)
+	{
+		return "no model";
+	}
+	body = &cmdl[4];
+	header = Rld_ReadLE32(&body[RLDCHAR_MODEL_HEADERS]);
+	if ((header == 0u) || (((u64)header + RLDCHAR_HEADER_BYTES) > bodyBytes))
+	{
+		return "no model header";
+	}
+	list = Rld_ReadLE32(&body[header + RLDCHAR_HEADER_COMMANDS]);
+	memset(written, 0, sizeof(written));
+	for (at = list + 4u; ((u64)at + 4u) <= (u64)bodyBytes; at += 4u, index++)
+	{
+		const u32 command = Rld_ReadLE32(&body[at]);
+		const u32 slot = RLDCHAR_CMD_SLOT(command);
+
+		if (command == RLDCHAR_CMD_END)
+		{
+			ended = 1;
+			break;
+		}
+		if (index == gk->commandFirst)
+		{
+			inRange = 1;
+			recordsBefore = records;
+			memset(written, 0, sizeof(written));
+			if ((command & RLDCHAR_CMD_NEW_STRIP) == 0u)
+			{
+				return "the first command of the stand-in range does not start a strip";
+			}
+		}
+		if ((command >> 16) == 0u)
+		{
+			if (inRange)
+			{
+				return "a color-only command in the stand-in range";
+			}
+			continue;
+		}
+		if ((command & RLDCHAR_CMD_CACHED) != 0u)
+		{
+			if (inRange && !written[slot])
+			{
+				return "the stand-in range reads a cache slot written before it";
+			}
+		}
+		else
+		{
+			records++;
+			written[slot] = 1;
+		}
+		if ((command & RLDCHAR_CMD_NEW_STRIP) != 0u)
+		{
+			strip = 0;
+		}
+		if (strip < 2u)
+		{
+			strip++;
+			continue;
+		}
+		strip++;
+		triangles += inRange ? 1u : 0u;
+	}
+	if (!ended || (index != gk->commandEnd))
+	{
+		return "the stand-in range does not end at the end word";
+	}
+	if (!inRange)
+	{
+		return "the stand-in range starts past the list";
+	}
+	if ((recordsBefore != gk->recordFirst) || (records != gk->recordEnd))
+	{
+		return "the stand-in records are not where CHRI says";
+	}
+	if (triangles != gk->triangles)
+	{
+		return "the stand-in range draws another number of triangles than CHRI says";
+	}
+	return NULL;
+}
+
+// One triangle of the donor's kart, as the game hands it over (made from the
+// player's game data by include/rldkit.inc, RldKit_ClassicKart): the corners in
+// the order the retail model draws them, in the retail model's units (y up, z the
+// kart's front, still in every frame); their colors; the 12 bytes of its
+// TextureLayout (u0 v0 clut, u1 v1 tpage, u2 v2 u3 v3), which point into the
+// shared VRAM every retail kart samples; bits 28-29 of the command that draws it.
+struct RldCharKartTri
+{
+	double p[3][3];
+	u8 rgb[3][3];
+	u32 layout[3];
+	u32 cull;          // RLDCHAR_CMD_CULL_BITS of the retail command
+	int textured;
+};
+
+struct RldCharSpliceFacts
+{
+	u32 kartTriangles;   // the donor's, in place of the stand-in's
+	u32 standIn;         // the stand-in's triangles, left out
+	u32 colors;          // of the new model
+	u32 colorsAdded;
+	u32 colorsNear;      // donor colors that found no room: the nearest color of the table
+	u32 clamped;         // record values outside 0..255, clamped
+	u32 layouts;
+	u32 records;         // per frame
+	size_t bytes;        // the new CMDL
+};
+
+#define RLDCHAR_CMD_CULL_BITS 0x30000000u   // bits 28 and 29: back-face test and its side
+#define RLDCHAR_KART_TRIANGLES_MAX 1024u     // the most donor triangles a splice takes
+#define RLDCHAR_KART_LAYOUTS_MAX 511u        // the texture index has 9 bits
+
+// A record value of the donor's point v (model units) on one axis: v = (pos +
+// byte) x 4 x scale / 16384, so byte = v x 4096 / scale - pos; the up axis
+// without full height on even sums (the renderer clears bit 0 of pos.y + byte).
+static u32 RldChar_KartByte(double v, int scale, int pos, int even, u32 *clamped)
+{
+	const double q = v * 4096.0 / (double)scale;
+	double r = even ? (2.0 * floor(q * 0.5 + 0.5)) : floor(q + 0.5);
+	double b = r - (double)pos;
+
+	if (b < 0.0)
+	{
+		(*clamped)++;
+		b = 0.0;
+	}
+	else if (b > 255.0)
+	{
+		(*clamped)++;
+		b = 255.0;
+	}
+	return (u32)b;
+}
+
+static void RldChar_PutLE32(u8 *at, u32 value)
+{
+	at[0] = (u8)value;
+	at[1] = (u8)(value >> 8);
+	at[2] = (u8)(value >> 16);
+	at[3] = (u8)(value >> 24);
+}
+
+static int RldChar_CompareU32(const void *a, const void *b)
+{
+	const u32 x = *(const u32 *)a;
+	const u32 y = *(const u32 *)b;
+
+	return (x < y) ? -1 : ((x > y) ? 1 : 0);
+}
+
+// THE SPLICE: a new CMDL (u32 G, body, u32 mapBytes, map - the layout of the
+// file's) of the file's model with the donor's kart in place of the stand-in
+// range. cmdl must have passed RldChar_CheckModel and the range
+// RldChar_GameKartRange (both checked again here: the range, and every size).
+// Kept byte for byte: Model, header, the commands before the range, the colors,
+// every animation and frame head, the records before the range. New: each donor
+// triangle as a strip of its own of three new records (no cache read, no fan),
+// its first command - the one that draws it - with its cull bits and texture;
+// its colors from the table (an equal one, else appended up to 128, else the
+// nearest); the same records in every frame (the stand-in is still in all 47),
+// placed with that frame's pos and the header's scale.
+// textures 0: every donor triangle untextured and no texture table - the model
+// RldChar_CheckModel takes as it is (the shadow the caller checks); 1: the
+// texture table (pointers, then the layouts) after the colors.
+// NULL = *out (malloc'ed, *outSize) made; else a fixed text, *out NULL.
+static const char *RldChar_SpliceKart(const u8 *cmdl, size_t size, const struct RldCharGameKart *gk, const struct RldCharKartTri *tri, u32 count, int fullHeight,
+                                      int textures, u8 **out, size_t *outSize, struct RldCharSpliceFacts *facts)
+{
+	static u32 layout[RLDCHAR_KART_LAYOUTS_MAX][3]; // not reentrant, as RldChar_CheckModel
+	u32 colors[RLDCHAR_COLORS_MAX];
+	u8 *cornerColor = NULL;
+	u16 *triLayout = NULL;
+	const u8 *body;
+	u32 bodyBytes;
+	u32 header;
+	u32 list;
+	u32 colorTable;
+	u32 animTable;
+	u32 colorCount;
+	u32 layouts = 0;
+	int scale[3];
+	u32 records;
+	u32 frameSize;
+	u32 listWords;
+	u32 anim[RLDCHAR_ANIM_COUNT];
+	u32 frames[RLDCHAR_ANIM_COUNT];
+	u32 oldFrameSize[RLDCHAR_ANIM_COUNT];
+	u32 at;
+	u32 newHeader = RLDCHAR_MODEL_BYTES;
+	u32 newTable;
+	u32 newList;
+	u32 newColors;
+	u32 newLayouts;
+	u32 newAnims;
+	u32 newBody;
+	u32 map[16u + RLDCHAR_KART_LAYOUTS_MAX];
+	u32 mapCount = 0;
+	u8 *o;
+	u32 t;
+	u32 i;
+	int a;
+	const char *why;
+
+	*out = NULL;
+	*outSize = 0;
+	memset(facts, 0, sizeof(*facts));
+	if ((count == 0u) || (count > RLDCHAR_KART_TRIANGLES_MAX) || (tri == NULL))
+	{
+		return "the donor's kart has no triangles, or too many";
+	}
+	why = RldChar_GameKartRange(cmdl, size, gk);
+	if (why != NULL)
+	{
+		return why;
+	}
+	bodyBytes = Rld_ReadLE32(&cmdl[0]);
+	body = &cmdl[4];
+	header = Rld_ReadLE32(&body[RLDCHAR_MODEL_HEADERS]);
+	list = Rld_ReadLE32(&body[header + RLDCHAR_HEADER_COMMANDS]);
+	colorTable = Rld_ReadLE32(&body[header + RLDCHAR_HEADER_COLORS]);
+	animTable = Rld_ReadLE32(&body[header + RLDCHAR_HEADER_ANIMS]);
+	colorCount = Rld_ReadLE32(&body[list]);
+	if ((Rld_ReadLE32(&body[header + RLDCHAR_HEADER_NUM_ANIMS]) != RLDCHAR_ANIM_COUNT) || (colorCount > RLDCHAR_COLORS_MAX) ||
+	    (((u64)colorTable + 4u * (u64)colorCount) > bodyBytes) || (((u64)animTable + 4u * RLDCHAR_ANIM_COUNT) > bodyBytes))
+	{
+		return "the model is not one RldChar_CheckModel accepts";
+	}
+	for (a = 0; a < 3; a++)
+	{
+		const u32 v = Rld_ReadLE16(&body[header + RLDCHAR_HEADER_SCALE + 2u * (u32)a]);
+
+		scale[a] = (v >= 0x8000u) ? ((int)v - 0x10000) : (int)v;
+		if (scale[a] <= 0)
+		{
+			return "the model's scale is not positive";
+		}
+	}
+	for (a = 0; a < (int)RLDCHAR_ANIM_COUNT; a++)
+	{
+		anim[a] = Rld_ReadLE32(&body[animTable + 4u * (u32)a]);
+		if ((anim[a] == 0u) || (((u64)anim[a] + RLDCHAR_ANIM_BYTES) > bodyBytes))
+		{
+			return "the model is not one RldChar_CheckModel accepts";
+		}
+		frames[a] = Rld_ReadLE16(&body[anim[a] + RLDCHAR_ANIM_NUM_FRAMES]) & 0x7fffu;
+		oldFrameSize[a] = Rld_ReadLE16(&body[anim[a] + RLDCHAR_ANIM_FRAME_SIZE]);
+		if ((((u64)anim[a] + RLDCHAR_ANIM_BYTES + (u64)frames[a] * oldFrameSize[a]) > bodyBytes) ||
+		    (oldFrameSize[a] < (RLDCHAR_FRAME_BYTES + RLDCHAR_RECORD_BYTES * gk->recordFirst)))
+		{
+			return "the model is not one RldChar_CheckModel accepts";
+		}
+	}
+
+	// The colors, per donor corner.
+	cornerColor = (u8 *)malloc((size_t)count * 3u);
+	triLayout = (u16 *)malloc((size_t)count * sizeof(u16));
+	if ((cornerColor == NULL) || (triLayout == NULL))
+	{
+		free(cornerColor);
+		free(triLayout);
+		return "out of memory";
+	}
+	for (i = 0; i < colorCount; i++)
+	{
+		colors[i] = Rld_ReadLE32(&body[colorTable + 4u * i]);
+	}
+	facts->colors = colorCount;
+	for (t = 0; t < count; t++)
+	{
+		int c;
+
+		for (c = 0; c < 3; c++)
+		{
+			const u8 *rgb = tri[t].rgb[c];
+			const u32 word = (u32)rgb[0] | ((u32)rgb[1] << 8) | ((u32)rgb[2] << 16);
+			u32 best = 0;
+			long bestDistance = -1;
+
+			for (i = 0; i < facts->colors; i++)
+			{
+				if ((colors[i] & 0x00ffffffu) == word)
+				{
+					break;
+				}
+			}
+			if ((i == facts->colors) && (facts->colors < RLDCHAR_COLORS_MAX))
+			{
+				colors[facts->colors++] = word;
+				facts->colorsAdded++;
+			}
+			else if (i == facts->colors)
+			{
+				for (i = 0; i < facts->colors; i++)
+				{
+					const long dr = (long)(colors[i] & 0xffu) - rgb[0];
+					const long dg = (long)((colors[i] >> 8) & 0xffu) - rgb[1];
+					const long db = (long)((colors[i] >> 16) & 0xffu) - rgb[2];
+					const long d = dr * dr + dg * dg + db * db;
+
+					if ((bestDistance < 0) || (d < bestDistance))
+					{
+						bestDistance = d;
+						best = i;
+					}
+				}
+				i = best;
+				facts->colorsNear++;
+			}
+			cornerColor[t * 3u + (u32)c] = (u8)i;
+		}
+
+		// The texture table: one entry per distinct layout.
+		triLayout[t] = 0;
+		if (textures && tri[t].textured)
+		{
+			for (i = 0; i < layouts; i++)
+			{
+				if ((layout[i][0] == tri[t].layout[0]) && (layout[i][1] == tri[t].layout[1]) && (layout[i][2] == tri[t].layout[2]))
+				{
+					break;
+				}
+			}
+			if (i == layouts)
+			{
+				if (layouts >= RLDCHAR_KART_LAYOUTS_MAX)
+				{
+					free(cornerColor);
+					free(triLayout);
+					return "the donor's kart has more than 511 texture layouts";
+				}
+				memcpy(layout[layouts++], tri[t].layout, sizeof(layout[0]));
+			}
+			triLayout[t] = (u16)(i + 1u);
+		}
+	}
+	facts->layouts = layouts;
+
+	// The sizes. records: those before the range and three per donor triangle.
+	records = gk->recordFirst + 3u * count;
+	frameSize = (RLDCHAR_FRAME_BYTES + RLDCHAR_RECORD_BYTES * records + 3u) & ~3u;
+	if (frameSize > RLDCHAR_FRAME_SIZE_MAX)
+	{
+		free(cornerColor);
+		free(triLayout);
+		return "the frame with the donor's kart is larger than 0xFFFF bytes";
+	}
+	listWords = 1u + (gk->commandFirst - 1u) + 3u * count + 1u;
+	newTable = newHeader + RLDCHAR_HEADER_BYTES;
+	newList = newTable + 4u * RLDCHAR_ANIM_COUNT;
+	newColors = newList + 4u * listWords;
+	newLayouts = newColors + 4u * facts->colors;
+	newAnims = newLayouts + layouts * 16u;
+	newBody = newAnims;
+	for (a = 0; a < (int)RLDCHAR_ANIM_COUNT; a++)
+	{
+		newBody += RLDCHAR_ANIM_BYTES + frames[a] * frameSize;
+	}
+	mapCount = 4u + RLDCHAR_ANIM_COUNT + layouts + ((layouts != 0u) ? 1u : 0u);
+	facts->bytes = 8u + (size_t)newBody + 4u * (size_t)mapCount;
+	if (facts->bytes > RLDCHAR_LIMIT_CMDL)
+	{
+		free(cornerColor);
+		free(triLayout);
+		return "the model with the donor's kart is larger than the CMDL limit";
+	}
+	o = (u8 *)calloc(1, facts->bytes);
+	if (o == NULL)
+	{
+		free(cornerColor);
+		free(triLayout);
+		return "out of memory";
+	}
+
+	// Model, header, the animation table.
+	memcpy(&o[4], body, RLDCHAR_MODEL_BYTES);
+	RldChar_PutLE32(&o[4u + RLDCHAR_MODEL_HEADERS], newHeader);
+	memcpy(&o[4u + newHeader], &body[header], RLDCHAR_HEADER_BYTES);
+	RldChar_PutLE32(&o[4u + newHeader + RLDCHAR_HEADER_COMMANDS], newList);
+	RldChar_PutLE32(&o[4u + newHeader + RLDCHAR_HEADER_COLORS], newColors);
+	RldChar_PutLE32(&o[4u + newHeader + RLDCHAR_HEADER_TEX_LAYOUT], (layouts != 0u) ? newLayouts : 0u);
+	RldChar_PutLE32(&o[4u + newHeader + RLDCHAR_HEADER_ANIMS], newTable);
+
+	// The command list: word 0, the commands before the range, the donor's, the end word.
+	RldChar_PutLE32(&o[4u + newList], facts->colors);
+	memcpy(&o[4u + newList + 4u], &body[list + 4u], 4u * (size_t)(gk->commandFirst - 1u));
+	at = newList + 4u * gk->commandFirst;
+	{
+		u32 slot = 0;
+
+		for (t = 0; t < count; t++)
+		{
+			int c;
+
+			for (c = 0; c < 3; c++)
+			{
+				u32 command = ((slot + 1u) << 16) | ((u32)cornerColor[t * 3u + (u32)c] << 9);
+
+				if (c == 0)
+				{
+					command |= RLDCHAR_CMD_NEW_STRIP | (tri[t].cull & RLDCHAR_CMD_CULL_BITS) | (u32)triLayout[t];
+				}
+				RldChar_PutLE32(&o[4u + at], command);
+				at += 4u;
+				slot = (slot + 1u) % RLDCHAR_SLOT_MAX; // slots 1..87, first in first out
+			}
+		}
+	}
+	RldChar_PutLE32(&o[4u + at], RLDCHAR_CMD_END);
+
+	// The colors, the texture table (pointers, then the layouts).
+	for (i = 0; i < facts->colors; i++)
+	{
+		RldChar_PutLE32(&o[4u + newColors + 4u * i], colors[i]);
+	}
+	for (i = 0; i < layouts; i++)
+	{
+		const u32 entry = newLayouts + 4u * layouts + 12u * i;
+
+		RldChar_PutLE32(&o[4u + newLayouts + 4u * i], entry);
+		RldChar_PutLE32(&o[4u + entry], layout[i][0]);
+		RldChar_PutLE32(&o[4u + entry + 4u], layout[i][1]);
+		RldChar_PutLE32(&o[4u + entry + 8u], layout[i][2]);
+	}
+
+	// The animations and their frames.
+	at = newAnims;
+	for (a = 0; a < (int)RLDCHAR_ANIM_COUNT; a++)
+	{
+		u32 f;
+
+		RldChar_PutLE32(&o[4u + newTable + 4u * (u32)a], at);
+		memcpy(&o[4u + at], &body[anim[a]], RLDCHAR_ANIM_BYTES);
+		o[4u + at + RLDCHAR_ANIM_FRAME_SIZE] = (u8)frameSize;
+		o[4u + at + RLDCHAR_ANIM_FRAME_SIZE + 1u] = (u8)(frameSize >> 8);
+		for (f = 0; f < frames[a]; f++)
+		{
+			const u8 *src = &body[anim[a] + RLDCHAR_ANIM_BYTES + f * oldFrameSize[a]];
+			u8 *dst = &o[4u + at + RLDCHAR_ANIM_BYTES + f * frameSize];
+			int pos[3];
+			u8 *rec;
+
+			memcpy(dst, src, RLDCHAR_FRAME_BYTES + RLDCHAR_RECORD_BYTES * (size_t)gk->recordFirst);
+			for (i = 0; i < 3u; i++)
+			{
+				const u32 v = Rld_ReadLE16(&src[2u * i]);
+
+				pos[i] = (v >= 0x8000u) ? ((int)v - 0x10000) : (int)v;
+			}
+			rec = &dst[RLDCHAR_FRAME_BYTES + RLDCHAR_RECORD_BYTES * gk->recordFirst];
+			for (t = 0; t < count; t++)
+			{
+				int c;
+
+				for (c = 0; c < 3; c++)
+				{
+					double p[3];
+					int k;
+
+					for (k = 0; k < 3; k++)
+					{
+						p[k] = ((double)gk->scale / 4096.0) * tri[t].p[c][k] + (double)gk->offset[k] / 16.0;
+					}
+					// A record is X, Z (forward), Y (up).
+					rec[0] = (u8)RldChar_KartByte(p[0], scale[0], pos[0], 0, &facts->clamped);
+					rec[1] = (u8)RldChar_KartByte(p[2], scale[2], pos[2], 0, &facts->clamped);
+					rec[2] = (u8)RldChar_KartByte(p[1], scale[1], pos[1], !fullHeight, &facts->clamped);
+					rec += RLDCHAR_RECORD_BYTES;
+				}
+			}
+		}
+		at += RLDCHAR_ANIM_BYTES + frames[a] * frameSize;
+	}
+
+	// The pointer map, in ascending order.
+	{
+		u32 *m = map;
+		u32 n = 0;
+
+		m[n++] = RLDCHAR_MODEL_HEADERS;
+		m[n++] = newHeader + RLDCHAR_HEADER_COMMANDS;
+		if (layouts != 0u)
+		{
+			m[n++] = newHeader + RLDCHAR_HEADER_TEX_LAYOUT;
+		}
+		m[n++] = newHeader + RLDCHAR_HEADER_COLORS;
+		m[n++] = newHeader + RLDCHAR_HEADER_ANIMS;
+		for (a = 0; a < (int)RLDCHAR_ANIM_COUNT; a++)
+		{
+			m[n++] = newTable + 4u * (u32)a;
+		}
+		for (i = 0; i < layouts; i++)
+		{
+			m[n++] = newLayouts + 4u * i;
+		}
+		qsort(m, n, sizeof(u32), RldChar_CompareU32);
+		mapCount = n;
+		RldChar_PutLE32(&o[0], newBody);
+		RldChar_PutLE32(&o[4u + newBody], 4u * mapCount);
+		for (i = 0; i < mapCount; i++)
+		{
+			RldChar_PutLE32(&o[8u + newBody + 4u * i], m[i]);
+		}
+	}
+	facts->bytes = 8u + (size_t)newBody + 4u * (size_t)mapCount;
+	facts->kartTriangles = count;
+	facts->standIn = gk->triangles;
+	facts->records = records;
+	free(cornerColor);
+	free(triLayout);
+	*out = o;
+	*outSize = facts->bytes;
+	return NULL;
 }
 
 //========================================================================================

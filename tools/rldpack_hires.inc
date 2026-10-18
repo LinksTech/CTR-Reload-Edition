@@ -593,6 +593,41 @@ static int RldHiresPack_Finish(const struct RldHiresPackIn *in, const u8 *chrg, 
 	return 0;
 }
 
+// hires-add --game-kart on a file with CHRI bit 5 (make-char --figure-only,
+// include/rldchar.inc THE GAME KART): the classic model and the hi-res part show
+// the same kart, so the donor of --game-kart goes into CHRI too (one line when
+// it changes). A file without bit 5, or one whose field is not there, stays as it is.
+static void RldHiresPack_GameKartDonor(struct RldHiresPackIn *in, u32 donor)
+{
+	int i;
+
+	for (i = 0; i < in->c.chunkCount; i++)
+	{
+		struct RldChunk *chunk = &in->c.chunks[i];
+		struct RldCharInfo info;
+		struct RldCharGameKart gk;
+		char was[12];
+		char now[12];
+
+		if ((memcmp(chunk->type, "CHRI", 4) != 0) || (chunk->sizeStored != chunk->sizeRaw) || (chunk->stored == NULL))
+		{
+			continue;
+		}
+		if ((RldChar_ParseInfo(&info, chunk->stored, (size_t)chunk->sizeStored) != NULL) ||
+		    (RldChar_ParseGameKart(&info, chunk->stored, (size_t)chunk->sizeStored, &gk) != NULL) || (gk.donor == donor))
+		{
+			return;
+		}
+		RldMk_DonorText(gk.donor, was, sizeof(was));
+		RldMk_DonorText(donor, now, sizeof(now));
+		chunk->stored[RLDCHAR_CHRI_KART_DONOR] = (u8)donor;
+		Sha256(chunk->stored, (size_t)chunk->sizeStored, chunk->hash);
+		printf("  game kart: the classic model's kart donor (CHRI) set from %s to %s, the hi-res part's\n", was, now);
+		Rld_Say("info", "game-kart", NULL, "The classic model's kart donor (CHRI) was %s; it is %s now, as the hi-res part's, so both show the same kart.", was, now);
+		return;
+	}
+}
+
 static int RldHires_AddCommand(int argc, char **argv)
 {
 	static RldHiresReport rep;
@@ -660,6 +695,10 @@ static int RldHires_AddCommand(int argc, char **argv)
 		Rld_Say("error", "rldchar", paths[0], "%s is no readable character: %s", paths[0], why);
 		free(glb);
 		return 1;
+	}
+	if ((parts & RLDHIRES_PART_GAME_KART) != 0u)
+	{
+		RldHiresPack_GameKartDonor(&in, (parts & RLDHIRES_PART_DONOR_MASK) >> RLDHIRES_PART_DONOR_SHIFT);
 	}
 	chunk = RldHires_BuildChunkParts(glb, (u32)glbSize, (u32)mode, parts, &chunkSize);
 	free(glb);

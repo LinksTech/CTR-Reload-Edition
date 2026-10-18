@@ -284,8 +284,10 @@ static void Sha256(const void *bytes, size_t size, u8 out[32])
 // 4.3, since 2026-10-18: CHRG stays version 1 and is EXTENDED IGNORABLY - the
 // parts field at 0x10 is accepted, the clip list has the optional finish_win
 // and finish_lose (include/rldhires.inc); a reader of 4.2 skips the longer
-// header and takes the new clip names for unknown ones. Again no byte of a
-// track changes but the minor field, and every reader takes any minor.
+// header and takes the new clip names for unknown ones. A .rldchar gets CHRI
+// flag bit 5, the game kart of a figure-only file (include/rldchar.inc), which
+// a reader of 4.2 ignores. Again no byte of a track changes but the minor
+// field, and every reader takes any minor.
 #define RLD_VERSION_MAJOR 4
 #define RLD_VERSION_MINOR 3
 #define RLD_HEADER_SIZE    40

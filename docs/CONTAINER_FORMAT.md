@@ -146,8 +146,9 @@ instead of refusing the file.
 Magic `RLDTRACK`, major 4, minor 3. A reader takes 4.0, 4.1, 4.2 and 4.3
 alike. 4.3 (2026-10-18) changes no byte of a track but the minor: it extends
 the hi-res driver chunk CHRG version 1 ignorably - the parts field is
-accepted and the clip list has the optional finish_win and finish_lose
-(section 3); a reader of 4.2 reads past both. 4.2 (2026-10-17) marked CHRG
+accepted and the clip list has the optional finish_win and finish_lose - and
+gives CHRI flag bit 5, the game kart of a figure-only file (section 3); a
+reader of 4.2 reads past all of them. 4.2 (2026-10-17) marked CHRG
 version 1 as frozen, again with no byte of a track but the minor. 4.1
 (2026-09-28) froze the track format.
 
@@ -546,7 +547,7 @@ Planned: emissive (not built).
 | 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning; the game drives the character with it |
 | 0x04 | char[20] | name | display name, see the name rule |
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
-| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); bit 3 (`RLDCHAR_FLAG_MAP_COLOR`): the minimap marker has the color at 0x20; bit 4 (`RLDCHAR_FLAG_FULL_HEIGHT`): the models of the file (CMDL and CMSK) use odd heights too - the game draws them with the vertex mask 0xfffcffff instead of the retail 0xfff8ffff, which clears bit 0 of pos.y + byte, so the Y bytes can take all 256 values instead of 128 even ones; the file keeps pos.y even in every frame (the bounding box still clears bit 0 of pos.y and spans 255 from there), the load line adds `, full height`, and a game from before the bit draws an odd height one value lower; further bits are reserved |
+| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); bit 3 (`RLDCHAR_FLAG_MAP_COLOR`): the minimap marker has the color at 0x20; bit 4 (`RLDCHAR_FLAG_FULL_HEIGHT`): the models of the file (CMDL and CMSK) use odd heights too - the game draws them with the vertex mask 0xfffcffff instead of the retail 0xfff8ffff, which clears bit 0 of pos.y + byte, so the Y bytes can take all 256 values instead of 128 even ones; the file keeps pos.y even in every frame (the bounding box still clears bit 0 of pos.y and spans 255 from there), the load line adds `, full height`, and a game from before the bit draws an odd height one value lower; bit 5 (`RLDCHAR_FLAG_GAME_KART`, 4.3): the game kart - the classic model's stand-in kart is replaced by a retail kart from the player's game data (see "The game kart" below); further bits are reserved |
 | 0x20 | u8[4] | mapColor | only when fixedSize >= 0x24, else absent: red, green, blue of the minimap marker, then 0; used only with bit 3 set (bit 3 without the field, or the field without bit 3: the template's color, no finding) |
 | 0x24 | u8 | shadowMode | the look, only when fixedSize >= 0x3C, else retail: 0 retail, 1 auto (the quad at 0x28), 2 off; any other value is read as retail |
 | 0x25 | u8 | exhaustMode | 0 retail, 1 custom (the points at 0x30), 2 off; any other value is read as retail |
@@ -555,6 +556,13 @@ Planned: emissive (not built).
 | 0x28 | s16[4] | shadowQuad | xMin, xMax, zMin, zMax in 1/16 game units; only with shadow auto, else 0 |
 | 0x30 | s16[3] | exhaust0 | x, y, z in 1/16 game units: the exhaust in place of retail source 0 (+X, the driver's left); only with exhaust custom, else 0 |
 | 0x36 | s16[3] | exhaust1 | x, y, z in 1/16 game units: in place of retail source 1 (-X, the right); only with custom and count 2, else 0 |
+| 0x3C | u8 | kartDonor | the game kart, only when fixedSize >= 0x50 (written only with bit 5): the retail driver 0..14 whose kart is put in, 0xFF = the template |
+| 0x3D | u8 | reserved | written 0 |
+| 0x3E | u16 | kartTriangles | the triangles of the stand-in range |
+| 0x40 | u16[2] | kartCommands | first, end: list indices of the stand-in range (index 0 is the color count; end is the index of the end word 0xFFFFFFFF - the range is the tail of the list) |
+| 0x44 | u16[2] | kartRecords | first, end: its records (end = the records per frame) |
+| 0x48 | u16 | kartScale | 1/4096: the factor the model was scaled by (4096 = 1) |
+| 0x4A | s16[3] | kartOffset | 1/16 game unit: the shift the model was moved by; a point p of a retail kart lands at kartScale / 4096 x p + kartOffset / 16 |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
 | | | string 0 | author, at most 64 bytes; "" when absent |
 
@@ -606,6 +614,48 @@ Planned: emissive (not built).
   Studio's field "Minimap colour" (Choose... / Like the template) starts at
   the template's colour (808080 for Fake Crash: the marker as drawn) and
   passes `--map-color` only when a colour is chosen.
+
+The game kart (CHRI bit 5, container format 4.3; `RldChar_ParseGameKart`,
+`RldChar_GameKartRange`, `RldChar_SpliceKart` in `include/rldchar.inc`):
+
+- A figure-only file (`rldpack make-char --figure-only`, the Creator Kit's
+  figure) holds no game data. Its CMDL is the figure on a plain grey stand-in
+  kart made by code (floor, sides, steering column and ring). make-char
+  always sets bit 5 with it: it writes the stand-in's kart body as the TAIL of
+  the command list and of the records - every other triangle first, then,
+  with the vertex cache emptied, the stand-in's - and describes that range
+  in 0x3C..0x4F. Which triangles are the stand-in is known by their origin
+  (the faces make-char added), never told by shape or colour. The frame
+  holds 2 game units of room around the stand-in kart.
+  `--kart-donor <0..14|template>` (default template) names the donor.
+  Without `--figure-only` nothing of this runs: the bytes are those of before.
+- The game (`platform/native_chars.c`, THE GAME KART), at the first load
+  stage 5 of the session: reads the 15 racer models HI of the player's game
+  data (BIGFILE 242..256), tells the donor's kart from its figure
+  (`include/rldkit.inc`, `RldKit_ClassicKarts`: triangles still in the turn and
+  found in the other drivers) and splices it into the file's model in place
+  of the range: each donor triangle as a strip of its own, with its own
+  texture layout (into shared.vrm, in VRAM from the boot on) and colours, the
+  same records in every frame. The rest of the model is the file's, byte for
+  byte; the stand-in's steering ring stays. The new model is held to
+  `RldChar_CheckModel` (without its texture table, which the file format
+  does not have) and may cost at most the draw memory of the file's (normal
+  and ghost). Both classic paths draw it: the engine's CMDL route with the
+  hi-res part dropped, and the PS1 path (`--no-engine`). Log:
+  `[CTR Char] classic kart from game data, donor N: <file> - K kart triangles in place of the stand-in's T (colours +C, nearest M, clamped Z)`.
+- Never a refusal: without game data, with a field or a range that does not
+  hold, or a limit, the file's model stays (the grey stand-in) with one line
+  `[CTR Char] classic kart: <file>: not made (...) - the grey stand-in kart stays`.
+- A game from before 4.3 ignores bit 5 and the longer fixedSize and draws the
+  stand-in, as before.
+- `rldpack hires-add --game-kart <d>` on a file with bit 5 sets kartDonor to
+  d when it differs, so the classic model and the hi-res part show the same
+  kart (one line).
+- `rldpack info` and `rldpack verify`: `game kart donor <n|template>, stand-in
+  T triangles (commands a..b, records c..d), scale s, offset x y z - the
+  stand-in range holds`, or `game kart ignored: <why> - the game keeps the
+  grey stand-in`; with `--machine` `@value game-kart <n|template|ignored>
+  <container|why>`. make-char prints `@value game-kart <n|template> container`.
 
 The look (`RldChar_ParseLook`, one function for packer and reader): the
 ground shadow and the exhaust of the driver, fitted to the model.
@@ -2488,7 +2538,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new field in the CHRG header | more header bytes (headerBytes > 16) for what an older reader may ignore; a new flag bit or CHRG version 2 for what it must not ignore - an older reader then drops only the hi-res part (see "Extending CHRG") |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color. The game kart at 0x3C came as a later one (fixedSize 0x50, written only with bit 5): an older reader draws the stand-in kart |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |

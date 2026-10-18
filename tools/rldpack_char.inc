@@ -227,6 +227,7 @@ static u32 s_rldRedSlowPasses = 4u;
 // source face (right-hand normal = front, as Blender writes it) gets bit 0x20.
 // make-char sets 0x20 = (window order reversed against the source) XOR 1.
 #define RLDMK_CULL_SIGN 1u
+#define RLDMK_GAME_KART_ROOM 2.0  // game units of room around the stand-in kart in the frame (--figure-only, RldMk_StepQuantize)
 
 // With --fit none the automatic poses turn the driver about the hip: 0.25
 // Blender units above the ground, on the center line (16 game units). With
@@ -1469,7 +1470,11 @@ struct RldMkOptions
 	int maskModel;    // the own mask (--mask-model): the profile of RldMk_BuildMaskOnce, sizePercent
 	                  // is --mask-size then
 	int yFull;        // --y-full: the up axis on every value 0..255, CHRI flag RLDCHAR_FLAG_FULL_HEIGHT
-	int figureOnly;   // --figure-only: a figure without a kart, the stand-in kart put under it (RldMk_AddStandInKart)
+	int figureOnly;   // --figure-only: a figure without a kart, the stand-in kart put under it (RldMk_AddStandInKart);
+	                  // CHRI bit 5: the game puts a retail kart in place of the stand-in (THE GAME KART)
+	u32 kartDonor;    // --kart-donor: 0..14, RLDCHAR_GAME_KART_TEMPLATE (default) = the template
+	u32 standInFace;  // set by RldMk_AddStandInKart: the first PLY face of the stand-in kart
+	double standInBox[6];  // set by RldMk_AddStandInKart: the stand-in kart body as made, game units (x0 y0 z0 x1 y1 z1)
 	int nativeKeep;   // --native-model on: a reduction keeps the positions before it for the native
 	                  // model (RldMkBuild.nativePosition); without a reduction nothing changes
 	const struct RldMkPoseKeys *keys;  // shape keys of the model (RldMk_StepKeys); NULL = none, the
@@ -1483,6 +1488,7 @@ struct RldMkPart
 	double lo[3];
 	double hi[3];
 	int group;
+	int standIn;      // --figure-only: a part of the stand-in kart, by origin (its faces are RldMk_AddStandInKart's)
 };
 
 // --diagnose: one value step 9 cut off (RldMk_StepQuantize).
@@ -1583,6 +1589,16 @@ struct RldMkBuild
 	u32 frameSize;
 	u32 drawBytes;
 	u8 *bothSides;             // per triangle: 1 = drawn without the cull bit (RldMk_StepFlips); NULL = none
+
+	// --figure-only (CHRI bit 5, THE GAME KART): the stand-in kart body - the
+	// triangles of the kart group in parts of the stand-in - is the tail of the
+	// command list and of the records (RldMk_StepCommands).
+	int gameKart;              // the build is a figure-only one
+	double appliedScale;       // the factor the model was scaled by (--fit crash or --scale)
+	u32 kartCommandFirst;      // list index of the tail's first command (index 0 = the color count); 0 = no tail
+	u32 kartCommandEnd;        // list index of the end word
+	u32 kartRecordFirst;
+	u32 kartTriangles;
 
 	// --fit crash (RldMk_StepDummy): the model on the reference dummy
 	int kartSourceValid;       // --remesh: the kart part and the kart group before the hulls
@@ -3106,6 +3122,20 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	for (t = 0; t < b->triangleCount; t++)
 	{
 		b->parts[b->positionPart[b->vertexPosition[b->triangle[3u * t]]]].triangles++;
+	}
+	// --figure-only: the parts of the stand-in kart, by origin - their faces
+	// come after the model's (RldMk_AddStandInKart); never by shape or color.
+	if (opt->figureOnly && (b->diagFace != NULL))
+	{
+		for (t = 0; t < b->triangleCount; t++)
+		{
+			const u32 face = b->diagFace[t];
+
+			if ((face != RLDMK_NONE) && (face >= opt->standInFace) && (face < b->faceCount2))
+			{
+				b->parts[b->positionPart[b->vertexPosition[b->triangle[3u * t]]]].standIn = 1;
+			}
+		}
 	}
 	for (i = 0; i < b->partCount; i++)
 	{
@@ -6587,6 +6617,28 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 		}
 	}
 
+	// --figure-only (CHRI bit 5): room around the stand-in kart, so that any
+	// retail kart the game puts in its place lies inside the frame
+	// (RldChar_SpliceKart clamps what does not).
+	if (b->gameKart && (b->positionGroup != NULL) && (b->positionPart != NULL) && (b->positionCount != 0u))
+	{
+		for (i = 0; i < total; i++)
+		{
+			const u32 q = (u32)(i % b->positionCount);
+
+			if ((b->positionGroup[q] == RLDMK_GROUP_KART) && b->parts[b->positionPart[q]].standIn)
+			{
+				for (a = 0; a < 3; a++)
+				{
+					const double v = b->frame[3u * i + (size_t)a];
+
+					lo[a] = ((v - RLDMK_GAME_KART_ROOM) < lo[a]) ? (v - RLDMK_GAME_KART_ROOM) : lo[a];
+					hi[a] = ((v + RLDMK_GAME_KART_ROOM) > hi[a]) ? (v + RLDMK_GAME_KART_ROOM) : hi[a];
+				}
+			}
+		}
+	}
+
 	for (a = 0; a < 3; a++)
 	{
 		const double needed = RldMk_Ceil((hi[a] - lo[a]) * 4096.0 / spans[a]);
@@ -7474,6 +7526,132 @@ static void RldMk_DrawTriangle(struct RldMkStripper *s, u32 triangle, u32 comman
 	b->drawOrder[3u * d + 2u] = s->cornerPosition[g2];
 }
 
+// The strips from where the list is until `until` triangles are drawn: the
+// lowest unused triangle where the cache holds the most corners starts a
+// strip, which runs on as far as its last edge (or its fan edge) leads.
+static void RldMk_StripTo(struct RldMkStripper *s, struct RldMkBuild *b, u32 until)
+{
+	u32 t;
+
+	while (b->drawCount < until)
+	{
+		u32 start = RLDMK_NONE;
+		int bestScore = -1;
+		u32 rotation = 0;
+		const u32 *source;
+		u32 s0;
+		u32 s1;
+		u32 s2;
+		u32 first;
+		int r;
+
+		// Start where the cache still holds the most corners; lowest index on a tie.
+		for (t = 0; t < b->triangleCount; t++)
+		{
+			int score = 0;
+			int k;
+
+			if (s->used[t])
+			{
+				continue;
+			}
+
+			for (k = 0; k < 3; k++)
+			{
+				if (s->positionSlot[s->cornerPosition[s->triangleCorner[3u * t + (u32)k]]] != RLDMK_NONE)
+				{
+					score++;
+				}
+			}
+
+			if (score > bestScore)
+			{
+				bestScore = score;
+				start = t;
+				if (score == 3)
+				{
+					break;
+				}
+			}
+		}
+
+		source = &s->triangleCorner[3u * start];
+		s->used[start] = 1;
+
+		// The source order turned so that its last edge leads on (a strip step),
+		// else so that the fan edge does; the first triangle then always runs
+		// like its source face.
+		for (r = 2; r >= 0; r--)
+		{
+			if (RldMk_Neighbor(s, source[(r + 1) % 3], source[(r + 2) % 3]) != RLDMK_NONE)
+			{
+				rotation = (u32)r;
+			}
+		}
+		if (RldMk_Neighbor(s, source[(rotation + 1u) % 3u], source[(rotation + 2u) % 3u]) == RLDMK_NONE)
+		{
+			for (r = 2; r >= 0; r--)
+			{
+				if (RldMk_Neighbor(s, source[r], source[(r + 2) % 3]) != RLDMK_NONE)
+				{
+					rotation = (u32)r;
+				}
+			}
+		}
+
+		s0 = source[rotation];
+		s1 = source[(rotation + 1u) % 3u];
+		s2 = source[(rotation + 2u) % 3u];
+
+		first = RldMk_EmitCorner(s, s0, RLDMK_CMD_STRIP);
+		RldMk_EmitCorner(s, s1, 0u);
+		RldMk_EmitCorner(s, s2, 0u);
+		RldMk_DrawTriangle(s, start, first, s0, s1, s2);
+		b->strips++;
+
+		for (;;)
+		{
+			u32 next = RldMk_Neighbor(s, s1, s2);
+			u32 w;
+			u32 command;
+
+			if (next != RLDMK_NONE)
+			{
+				w = RldMk_Third(s, next, s1, s2);
+				command = RldMk_EmitCorner(s, w, 0u);
+				RldMk_DrawTriangle(s, next, command, s1, s2, w);
+				s0 = s1;
+				s1 = s2;
+				s2 = w;
+				continue;
+			}
+
+			next = RldMk_Neighbor(s, s0, s2);
+			if (next != RLDMK_NONE)
+			{
+				w = RldMk_Third(s, next, s0, s2);
+				command = RldMk_EmitCorner(s, w, RLDMK_CMD_FAN);
+				RldMk_DrawTriangle(s, next, command, s0, s2, w);
+				b->fanSteps++;
+				s1 = s2;
+				s2 = w;
+				continue;
+			}
+
+			break;
+		}
+	}
+}
+
+// --figure-only: 1 = triangle t is the stand-in kart body - the kart group in
+// a part of the stand-in (RldMk_StepParts), the tail of the list.
+static int RldMk_KartTail(const struct RldMkBuild *b, u32 t)
+{
+	const u32 position = b->vertexPosition[b->triangle[3u * t]];
+
+	return b->gameKart && (b->positionGroup[position] == RLDMK_GROUP_KART) && b->parts[b->positionPart[position]].standIn;
+}
+
 static int RldMk_StepCommands(struct RldMkBuild *b, const struct RldMkOptions *opt)
 {
 	struct RldMkStripper s;
@@ -7577,113 +7755,46 @@ static int RldMk_StepCommands(struct RldMkBuild *b, const struct RldMkOptions *o
 		s.slotPosition[i] = RLDMK_NONE;
 	}
 
-	while (b->drawCount < b->triangleCount)
+	// Without --figure-only one pass over everything. With it the stand-in
+	// kart body comes last, as a range of its own (CHRI bit 5): first every
+	// other triangle, then - the cache emptied, so the range reads no slot the
+	// figure wrote - the stand-in's.
+	if (b->gameKart)
 	{
-		u32 start = RLDMK_NONE;
-		int bestScore = -1;
-		u32 rotation = 0;
-		const u32 *source;
-		u32 s0;
-		u32 s1;
-		u32 s2;
-		u32 first;
-		int r;
+		u32 tail = 0;
 
-		// Start where the cache still holds the most corners; lowest index on a tie.
 		for (t = 0; t < b->triangleCount; t++)
 		{
-			int score = 0;
-			int k;
-
-			if (s.used[t])
-			{
-				continue;
-			}
-
-			for (k = 0; k < 3; k++)
-			{
-				if (s.positionSlot[s.cornerPosition[s.triangleCorner[3u * t + (u32)k]]] != RLDMK_NONE)
-				{
-					score++;
-				}
-			}
-
-			if (score > bestScore)
-			{
-				bestScore = score;
-				start = t;
-				if (score == 3)
-				{
-					break;
-				}
-			}
+			s.used[t] = (u8)RldMk_KartTail(b, t);
+			tail += s.used[t];
 		}
-
-		source = &s.triangleCorner[3u * start];
-		s.used[start] = 1;
-
-		// The source order turned so that its last edge leads on (a strip step),
-		// else so that the fan edge does; the first triangle then always runs
-		// like its source face.
-		for (r = 2; r >= 0; r--)
+		RldMk_StripTo(&s, b, b->triangleCount - tail);
+		if (tail != 0u)
 		{
-			if (RldMk_Neighbor(&s, source[(r + 1) % 3], source[(r + 2) % 3]) != RLDMK_NONE)
+			const u32 drawn = b->drawCount;
+
+			for (t = 0; t < b->triangleCount; t++)
 			{
-				rotation = (u32)r;
+				s.used[t] = (u8)!RldMk_KartTail(b, t);
 			}
+			for (i = 0; i < b->positionCount; i++)
+			{
+				s.positionSlot[i] = RLDMK_NONE;
+			}
+			for (i = 0; i <= (u32)RLDCHAR_SLOT_MAX; i++)
+			{
+				s.slotPosition[i] = RLDMK_NONE;
+			}
+			b->kartCommandFirst = b->commandCount + 1u;
+			b->kartRecordFirst = b->recordCount;
+			RldMk_StripTo(&s, b, b->triangleCount);
+			b->kartTriangles = b->drawCount - drawn;
+			b->kartCommandEnd = b->commandCount + 1u;
 		}
-		if (RldMk_Neighbor(&s, source[(rotation + 1u) % 3u], source[(rotation + 2u) % 3u]) == RLDMK_NONE)
-		{
-			for (r = 2; r >= 0; r--)
-			{
-				if (RldMk_Neighbor(&s, source[r], source[(r + 2) % 3]) != RLDMK_NONE)
-				{
-					rotation = (u32)r;
-				}
-			}
-		}
-
-		s0 = source[rotation];
-		s1 = source[(rotation + 1u) % 3u];
-		s2 = source[(rotation + 2u) % 3u];
-
-		first = RldMk_EmitCorner(&s, s0, RLDMK_CMD_STRIP);
-		RldMk_EmitCorner(&s, s1, 0u);
-		RldMk_EmitCorner(&s, s2, 0u);
-		RldMk_DrawTriangle(&s, start, first, s0, s1, s2);
-		b->strips++;
-
-		for (;;)
-		{
-			u32 next = RldMk_Neighbor(&s, s1, s2);
-			u32 w;
-			u32 command;
-
-			if (next != RLDMK_NONE)
-			{
-				w = RldMk_Third(&s, next, s1, s2);
-				command = RldMk_EmitCorner(&s, w, 0u);
-				RldMk_DrawTriangle(&s, next, command, s1, s2, w);
-				s0 = s1;
-				s1 = s2;
-				s2 = w;
-				continue;
-			}
-
-			next = RldMk_Neighbor(&s, s0, s2);
-			if (next != RLDMK_NONE)
-			{
-				w = RldMk_Third(&s, next, s0, s2);
-				command = RldMk_EmitCorner(&s, w, RLDMK_CMD_FAN);
-				RldMk_DrawTriangle(&s, next, command, s0, s2, w);
-				b->fanSteps++;
-				s1 = s2;
-				s2 = w;
-				continue;
-			}
-
-			break;
-		}
+	}
+	else
+	{
+		RldMk_StripTo(&s, b, b->triangleCount);
 	}
 
 done:
@@ -8687,6 +8798,8 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 		RldMk_StepFit(ply, opt, b, &fitted.scale);
 	}
 	opt = &fitted;
+	b->gameKart = opt->figureOnly;
+	b->appliedScale = fitted.scale;
 
 	if (!RldMk_StepWeld(ply, opt, b, &keyCount) || !RldMk_StepTriangles(ply, b, keyCount))
 	{
@@ -10091,6 +10204,143 @@ static u8 *RldMk_BuildChriLook(u32 templateId, u32 classId, const u8 name[RLDCHA
 
 	*sizeOut = size;
 	return data;
+}
+
+// THE GAME KART (CHRI bit 5, include/rldchar.inc): the field of a figure-only
+// build. The stand-in range is the tail RldMk_StepCommands made; the scale is
+// the one the model was scaled by; the offset moves the stand-in kart body as
+// RldMk_AddStandInKart made it (opt->standInBox, the dummy's space - the space
+// of every retail kart) onto where it is in the model, centre onto centre
+// (frame 10 of the turn: the stand-in is still in every frame). 0 = no tail, or
+// a value outside its field.
+static int RldMk_GameKartField(const struct RldMkBuild *b, const struct RldMkOptions *opt, struct RldCharGameKart *gk)
+{
+	double lo[3] = {1.0e30, 1.0e30, 1.0e30};
+	double hi[3] = {-1.0e30, -1.0e30, -1.0e30};
+	const double scale = (b->appliedScale > 0.0) ? b->appliedScale : 1.0;
+	u32 q;
+	int a;
+
+	memset(gk, 0, sizeof(*gk));
+	if (!b->gameKart || (b->kartCommandFirst == 0u) || (b->kartTriangles == 0u) || (b->frame == NULL) || (b->positionCount == 0u))
+	{
+		return 0;
+	}
+	for (q = 0; q < b->positionCount; q++)
+	{
+		const double *v = &b->frame[3u * ((size_t)RLDMK_NEUTRAL_FRAME * b->positionCount + q)];
+
+		if ((b->positionGroup[q] != RLDMK_GROUP_KART) || !b->parts[b->positionPart[q]].standIn)
+		{
+			continue;
+		}
+		for (a = 0; a < 3; a++)
+		{
+			lo[a] = (v[a] < lo[a]) ? v[a] : lo[a];
+			hi[a] = (v[a] > hi[a]) ? v[a] : hi[a];
+		}
+	}
+	gk->donor = opt->kartDonor;
+	gk->triangles = b->kartTriangles;
+	gk->commandFirst = b->kartCommandFirst;
+	gk->commandEnd = b->kartCommandEnd;
+	gk->recordFirst = b->kartRecordFirst;
+	gk->recordEnd = b->recordCount;
+	gk->scale = (u32)RldMk_Floor(scale * 4096.0 + 0.5);
+	for (a = 0; a < 3; a++)
+	{
+		const double made = 0.5 * (opt->standInBox[a] + opt->standInBox[3 + a]);
+		const double now = 0.5 * (lo[a] + hi[a]);
+
+		if (!(hi[a] >= lo[a]))
+		{
+			return 0;
+		}
+		gk->offset[a] = (int)RldMk_Floor((now - scale * made) * 16.0 + 0.5);
+		if ((gk->offset[a] < -32768) || (gk->offset[a] > 32767))
+		{
+			return 0;
+		}
+	}
+	return (gk->scale >= 1u) && (gk->scale <= 0xffffu) && (gk->triangles <= 0xffffu) && (gk->commandEnd <= 0xffffu) && (gk->recordEnd <= 0xffffu);
+}
+
+// A CHRI with the game kart: the bytes of `chri` with fixedSize 0x50, flags bit
+// 5 and the field at 0x3C..0x4F; what lay at 0x1C..fixedSize stays (0 where the
+// old CHRI ended before, i.e. no flags, no map color, the retail look), the
+// strings follow unchanged. NULL = out of memory.
+static u8 *RldMk_ChriGameKart(const u8 *chri, size_t size, const struct RldCharGameKart *gk, size_t *sizeOut)
+{
+	const u32 fixedSize = Rld_ReadLE16(&chri[0x00]);
+	const size_t strings = size - fixedSize;
+	const size_t outSize = RLDCHAR_CHRI_SIZE_GAME_KART + strings;
+	u8 *out;
+	int k;
+
+	*sizeOut = 0;
+	if ((fixedSize > RLDCHAR_CHRI_SIZE_GAME_KART) || (fixedSize > size))
+	{
+		return NULL;
+	}
+	out = (u8 *)calloc(1, outSize);
+	if (out == NULL)
+	{
+		return NULL;
+	}
+	memcpy(out, chri, fixedSize);
+	Rld_WriteLE16(&out[0x00], RLDCHAR_CHRI_SIZE_GAME_KART);
+	Rld_WriteLE32(&out[RLDCHAR_CHRI_FLAGS_OFFSET],
+	              ((fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS) ? Rld_ReadLE32(&chri[RLDCHAR_CHRI_FLAGS_OFFSET]) : 0u) | RLDCHAR_FLAG_GAME_KART);
+	out[RLDCHAR_CHRI_KART_DONOR] = (u8)gk->donor;
+	Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_TRIANGLES], gk->triangles);
+	Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_COMMANDS], gk->commandFirst);
+	Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_COMMANDS + 2u], gk->commandEnd);
+	Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_RECORDS], gk->recordFirst);
+	Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_RECORDS + 2u], gk->recordEnd);
+	Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_SCALE], gk->scale);
+	for (k = 0; k < 3; k++)
+	{
+		Rld_WriteLE16(&out[RLDCHAR_CHRI_KART_OFFSET + 2u * (u32)k], (u32)(u16)gk->offset[k]);
+	}
+	memcpy(&out[RLDCHAR_CHRI_SIZE_GAME_KART], &chri[fixedSize], strings);
+	*sizeOut = outSize;
+	return out;
+}
+
+// The donor as a word: "template" or 0..14.
+static void RldMk_DonorText(u32 donor, char *out, size_t size)
+{
+	if (donor == RLDCHAR_GAME_KART_TEMPLATE)
+	{
+		snprintf(out, size, "template");
+	}
+	else
+	{
+		snprintf(out, size, "%u", (unsigned)donor);
+	}
+}
+
+// --kart-donor <0..14|template>: *donor 0..14 or RLDCHAR_GAME_KART_TEMPLATE.
+// 0 = neither, said.
+static int RldMk_KartDonorSwitch(const char *arg, u32 *donor)
+{
+	char word[12];
+	char *end = NULL;
+	long value;
+
+	if (RldMk_Lower(arg, word, sizeof(word)) && (strcmp(word, "template") == 0))
+	{
+		*donor = RLDCHAR_GAME_KART_TEMPLATE;
+		return 1;
+	}
+	value = strtol(arg, &end, 10);
+	if ((end != arg) && (*end == '\0') && (value >= 0) && (value <= RLDCHAR_TEMPLATE_MAX))
+	{
+		*donor = (u32)value;
+		return 1;
+	}
+	RldMk_Say("error", "kart-donor", arg, "The kart donor must be a retail driver 0..14 or template.");
+	return 0;
 }
 
 // Does the look of a CHRI read back as written? NULL = yes, else what differs.
@@ -13663,7 +13913,7 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 // shows the figure in that grey kart - the classic fallback of a figure-only
 // file. Shape keys move it by 0. 1 = added; 0 = out of memory or too many
 // points (said).
-static int RldMk_AddStandInKart(struct RldMkPly *ply, const struct RldMkOptions *opt)
+static int RldMk_AddStandInKart(struct RldMkPly *ply, struct RldMkOptions *opt)
 {
 	static const double wheelCenter[3] = RLDDUM_WHEEL_CENTER;
 	struct RldDumMeshOut ground;
@@ -13792,6 +14042,15 @@ static int RldMk_AddStandInKart(struct RldMkPly *ply, const struct RldMkOptions 
 		return RldMk_OutOfMemory();
 	}
 
+	// Where the stand-in begins (its faces follow the model's) and its body as
+	// made, in game units: CHRI bit 5 tells the game where it lies (THE GAME KART).
+	opt->standInFace = ply->faceCount;
+	for (k = 0; k < 3; k++)
+	{
+		opt->standInBox[k] = 1.0e30;
+		opt->standInBox[3 + k] = -1.0e30;
+	}
+
 	// The points: the dummy's (game units, y up, z front) in the file's frame
 	// and meters, without the ground's and the seat's.
 	for (p = firstP, i = 0; p < positions; p++)
@@ -13805,6 +14064,12 @@ static int RldMk_AddStandInKart(struct RldMkPly *ply, const struct RldMkOptions 
 		if ((p >= seatP) && (p < seatP + boxP))
 		{
 			continue;
+		}
+		// The body's box: everything before the steering column and ring.
+		for (k = 0; (p < seatP) && (k < 3); k++)
+		{
+			opt->standInBox[k] = (at[k] < opt->standInBox[k]) ? at[k] : opt->standInBox[k];
+			opt->standInBox[3 + k] = (at[k] > opt->standInBox[3 + k]) ? at[k] : opt->standInBox[3 + k];
 		}
 
 		if (opt->backwards)
@@ -13872,7 +14137,7 @@ static int RldMk_AddStandInKart(struct RldMkPly *ply, const struct RldMkOptions 
 	free(tri);
 	free(col);
 	RldMk_Say("info", "figure-only", NULL,
-	          "--figure-only: a plain grey stand-in kart (%u triangles, made by code from the dummy's measures - no game data) is put under the figure; the classic model shows the figure in it. In the game the hi-res figure gets the original kart from the player's game data (rldpack hires-add --game-kart).",
+	          "--figure-only: a plain grey stand-in kart (%u triangles, made by code from the dummy's measures - no game data) is put under the figure; the classic model shows the figure in it, and the game puts the original kart from the player's game data in its place (CHRI bit 5). In the game the hi-res figure gets the original kart too (rldpack hires-add --game-kart).",
 	          newF);
 	return 1;
 }
@@ -14074,6 +14339,7 @@ static void RldMk_DefaultOptions(struct RldMkOptions *opt)
 	opt->fit = 1;
 	opt->reduce = 1;
 	opt->repair = 1;
+	opt->kartDonor = RLDCHAR_GAME_KART_TEMPLATE;
 }
 
 // --diagnose: the diagnosis of a build into `path` (RldMk_Diagnosis); never a
@@ -14240,6 +14506,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *reduceArg = NULL;
 	const char *wheelsArg = NULL;
 	const char *maskArg = NULL;
+	const char *kartDonorArg = NULL;
 	const char *maskModelArg = NULL;
 	const char *mapColorArg = NULL;
 	const char *shadowArg = NULL;
@@ -14540,6 +14807,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			opt.figureOnly = 1;
 		}
+		else if ((strcmp(arg, "--kart-donor") == 0) && hasValue)
+		{
+			kartDonorArg = argv[++i];
+		}
 		else if (strcmp(arg, "--check") == 0)
 		{
 			check = 1;
@@ -14645,6 +14916,17 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 	(void)RldMk_MaskSwitch(maskArg, &opt.mask);
+	if (kartDonorArg != NULL)
+	{
+		if (!opt.figureOnly)
+		{
+			RldMk_Say("error", "kart-donor", kartDonorArg, "--kart-donor needs --figure-only: only a figure without a kart gets a kart from the game data.");
+		}
+		else
+		{
+			(void)RldMk_KartDonorSwitch(kartDonorArg, &opt.kartDonor);
+		}
+	}
 	// THE LOOK (--shadow, --exhaust): its defaults follow the wheels.
 	RldMk_LookResolve(shadowArg, exhaustArg, opt.noWheels, &look, &shadowSwitch, &exhaustSwitch);
 	if (mapColorArg != NULL)
@@ -15318,6 +15600,56 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			RldMk_Say("error", "chri", why, "Internal error: the character info does not read back (%s). Please report it.", why);
 			free(chri);
 			chri = NULL;
+		}
+	}
+
+	// --figure-only: CHRI bit 5 and the game kart field (THE GAME KART), held to
+	// the game's own reading - the field, and the range against the CMDL just
+	// built - before anything is written.
+	if ((chri != NULL) && opt.figureOnly)
+	{
+		struct RldCharGameKart gk;
+		struct RldCharGameKart back;
+		struct RldCharInfo info;
+		u8 *withKart = NULL;
+		size_t withSize = 0;
+		const char *why = RldMk_GameKartField(&build, &opt, &gk) ? NULL : "no stand-in range";
+		char donor[12];
+
+		if (why == NULL)
+		{
+			withKart = RldMk_ChriGameKart(chri, chriSize, &gk, &withSize);
+			why = (withKart == NULL) ? "out of memory" : RldChar_ParseInfo(&info, withKart, withSize);
+		}
+		if (why == NULL)
+		{
+			why = RldChar_ParseGameKart(&info, withKart, withSize, &back);
+		}
+		if ((why == NULL) && (memcmp(&back, &gk, sizeof(gk)) != 0))
+		{
+			why = "the field differs";
+		}
+		if (why == NULL)
+		{
+			why = RldChar_GameKartRange(build.cmdl, build.cmdlSize, &back);
+		}
+		if (why != NULL)
+		{
+			RldMk_Say("error", "chri", why, "Internal error: the game kart of --figure-only does not read back (%s). Please report it.", why);
+			free(withKart);
+			free(chri);
+			chri = NULL;
+		}
+		else
+		{
+			free(chri);
+			chri = withKart;
+			chriSize = withSize;
+			RldMk_DonorText(gk.donor, donor, sizeof(donor));
+			RldMk_Say("info", "game-kart", NULL,
+			          "CHRI bit 5: in the game the classic model gets the kart of retail driver %s from the player's game data in place of the stand-in (%u triangles); a game before 4.3 shows the stand-in.",
+			          (gk.donor == RLDCHAR_GAME_KART_TEMPLATE) ? "the template" : donor, gk.triangles);
+			Rld_Emit("value", "game-kart", donor, "container", (const char *)NULL);
 		}
 	}
 
@@ -16068,6 +16400,28 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 		printf("  height        %s\n", ((info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0u) ? "every value of the up axis (--y-full, CHRI bit 4)"
 		                                                                                 : "even values of the up axis, as retail");
+		if ((info.flags & RLDCHAR_FLAG_GAME_KART) != 0u)
+		{
+			struct RldCharGameKart gk;
+			const char *why = RldChar_ParseGameKart(&info, chri, chriSize, &gk);
+			char donor[12];
+
+			if ((why == NULL) && (cmdl != NULL) && (RldChar_CheckModel(cmdl, cmdlSize, NULL, NULL, NULL, NULL) == RLDCHAR_VERDICT_OK))
+			{
+				why = RldChar_GameKartRange(cmdl, cmdlSize, &gk);
+			}
+			RldMk_DonorText(gk.donor, donor, sizeof(donor));
+			if (why == NULL)
+			{
+				printf("  game kart     donor %s%s, stand-in %u triangles (commands %u..%u, records %u..%u), scale %.4f, offset %.2f %.2f %.2f - the stand-in range holds\n",
+				       donor, (gk.donor == RLDCHAR_GAME_KART_TEMPLATE) ? " (the template)" : "", gk.triangles, gk.commandFirst, gk.commandEnd, gk.recordFirst,
+				       gk.recordEnd, (double)gk.scale / 4096.0, (double)gk.offset[0] / 16.0, (double)gk.offset[1] / 16.0, (double)gk.offset[2] / 16.0);
+			}
+			else
+			{
+				printf("  game kart     ignored: %s - the game keeps the grey stand-in\n", why);
+			}
+		}
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
 			printf("  flags         0x%08x (unknown bits ignored)\n", info.flags);
@@ -16199,6 +16553,18 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		if (look.why != NULL)
 		{
 			Rld_Emit("value", "look", "retail", look.why, (const char *)NULL);
+		}
+		if ((info.flags & RLDCHAR_FLAG_GAME_KART) != 0u)
+		{
+			struct RldCharGameKart gk;
+			const char *why = RldChar_ParseGameKart(&info, chri, chriSize, &gk);
+
+			if ((why == NULL) && (cmdl != NULL) && (verdict == RLDCHAR_VERDICT_OK))
+			{
+				why = RldChar_GameKartRange(cmdl, cmdlSize, &gk);
+			}
+			RldMk_DonorText(gk.donor, number, sizeof(number));
+			Rld_Emit("value", "game-kart", (why == NULL) ? number : "ignored", (why == NULL) ? "container" : why, (const char *)NULL);
 		}
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
@@ -16567,7 +16933,10 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              Creator Kit's): a plain grey stand-in kart,\n");
 	fprintf(out, "                              made by code, is put under it for the classic\n");
 	fprintf(out, "                              model; the game gives the hi-res figure the\n");
-	fprintf(out, "                              original kart (hires-add --game-kart)\n");
+	fprintf(out, "                              original kart (hires-add --game-kart), and from\n");
+	fprintf(out, "                              4.3 on the classic model too (CHRI bit 5)\n");
+	fprintf(out, "  --kart-donor <0..14|template>  with --figure-only: the retail driver whose\n");
+	fprintf(out, "                              kart the game puts in (default template)\n");
 	fprintf(out, "  --y-full                    the up axis on every value instead of the even\n");
 	fprintf(out, "                              ones: half the height step (CHRI bit 4; a game\n");
 	fprintf(out, "                              from before it draws odd heights one value lower)\n");
@@ -23884,6 +24253,259 @@ static void RldMk_SelfTestFigureOnly(struct RldMkTestMesh *mesh)
 	}
 }
 
+// THE GAME KART (CHRI bit 5): the figure-only model of RldMk_SelfTestFigureOnly
+// (a box of 432 triangles above the seat, the stand-in kart under it), built
+// through the whole chain. 1 = built; ply and b are freed by the caller.
+static int RldMk_GameKartTestModel(struct RldMkTestMesh *mesh, struct RldMkPly *ply, struct RldMkBuild *b, struct RldMkOptions *opt)
+{
+	static const double figureLo[3] = {-0.25, 0.20, -0.40};
+	static const double figureHi[3] = {0.25, 1.00, 0.10};
+	size_t size = 0;
+	u8 *data;
+	int ok;
+
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, figureLo, figureHi, 6u, 10u, 0, -1);
+	memset(ply, 0, sizeof(*ply));
+	memset(b, 0, sizeof(*b));
+	RldMk_ResetSaid();
+	RldMk_TestOptions(opt);
+	opt->figureOnly = 1;
+	data = RldMk_TestPly(mesh, 0, 1, 0, &size);
+	ok = (data != NULL) && RldMk_ParsePly(data, size, ply) && RldMk_AddStandInKart(ply, opt) && RldMk_BuildModel(ply, opt, b);
+	free(data);
+	return ok;
+}
+
+// A code-made donor kart: a floor of two textured triangles (one layout) and
+// two red side triangles, where a retail kart lies (model units).
+static u32 RldMk_TestDonorKart(struct RldCharKartTri tri[4])
+{
+	static const double p[4][3][3] = {
+	    {{-20.0, 6.0, -40.0}, {20.0, 6.0, -40.0}, {20.0, 6.0, 40.0}},
+	    {{-20.0, 6.0, -40.0}, {20.0, 6.0, 40.0}, {-20.0, 6.0, 40.0}},
+	    {{-26.0, 6.0, 0.0}, {-26.0, 20.0, 0.0}, {-26.0, 6.0, 30.0}},
+	    {{26.0, 6.0, 0.0}, {26.0, 6.0, 30.0}, {26.0, 20.0, 0.0}},
+	};
+	static const u32 layout[3] = {0x7a400000u, 0x00120f00u, 0x0f0f000fu};
+	u32 t;
+	int c;
+
+	memset(tri, 0, 4u * sizeof(*tri));
+	for (t = 0; t < 4u; t++)
+	{
+		memcpy(tri[t].p, p[t], sizeof(tri[t].p));
+		for (c = 0; c < 3; c++)
+		{
+			tri[t].rgb[c][0] = (t < 2u) ? 0x80u : 200u;
+			tri[t].rgb[c][1] = (t < 2u) ? 0x80u : 30u;
+			tri[t].rgb[c][2] = (t < 2u) ? 0x80u : 30u;
+		}
+		tri[t].textured = (t < 2u);
+		if (t < 2u)
+		{
+			memcpy(tri[t].layout, layout, sizeof(layout));
+		}
+		tri[t].cull = (t < 2u) ? 0x30000000u : ((t == 2u) ? 0x10000000u : 0u);
+	}
+	return 4u;
+}
+
+// The command list of a CMDL (u32 G, body, map): the body offset of word 0.
+static u32 RldMk_TestListAt(const u8 *cmdl)
+{
+	const u32 header = Rld_ReadLE32(&cmdl[4u + RLDCHAR_MODEL_HEADERS]);
+
+	return Rld_ReadLE32(&cmdl[4u + header + RLDCHAR_HEADER_COMMANDS]);
+}
+
+// The first frame of animation 0 of a CMDL: its body offset.
+static u32 RldMk_TestFrame0At(const u8 *cmdl)
+{
+	const u32 header = Rld_ReadLE32(&cmdl[4u + RLDCHAR_MODEL_HEADERS]);
+	const u32 table = Rld_ReadLE32(&cmdl[4u + header + RLDCHAR_HEADER_ANIMS]);
+
+	return Rld_ReadLE32(&cmdl[4u + table]) + RLDCHAR_ANIM_BYTES;
+}
+
+// THE GAME KART (CHRI bit 5, include/rldchar.inc): make-char --figure-only
+// draws the stand-in kart body last, as a range of its own; the CHRI field
+// describes it and reads back with the game's reader; the game's range check
+// holds on the CMDL and refuses a wrong field; the splice puts a code-made
+// donor kart in its place - the head of the model byte for byte, the model
+// (without its texture table) through RldChar_CheckModel, the same bytes
+// twice; with the texture table the file format's own check refuses it
+// (model-zero): only the game's splice has textures.
+static void RldMk_SelfTestGameKart(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	struct RldCharGameKart gk;
+	struct RldCharGameKart back;
+	struct RldCharInfo info;
+	struct RldCharKartTri tri[4];
+	struct RldCharSpliceFacts facts;
+	struct RldCharSpliceFacts facts2;
+	struct RldCharModelFacts mf;
+	struct RldCharModelFacts fileFacts;
+	struct RldCharFinding finding;
+	u8 field[RLDCHAR_NAME_FIELD];
+	u8 *chri = NULL;
+	u8 *withKart = NULL;
+	u8 *shadow = NULL;
+	u8 *again = NULL;
+	u8 *real = NULL;
+	size_t chriSize = 0;
+	size_t withSize = 0;
+	size_t shadowSize = 0;
+	size_t againSize = 0;
+	size_t realSize = 0;
+	const char *why;
+	u32 n;
+	int ok = RldMk_GameKartTestModel(mesh, &ply, &b, &opt);
+
+	memset(&gk, 0, sizeof(gk));
+	RldMk_Test(ok && (b.kartTriangles == 228u) && (b.kartCommandFirst > 1u) && (b.kartRecordFirst < b.recordCount) && (b.kartCommandEnd == b.commandCount + 1u),
+	           "game kart: --figure-only draws the stand-in kart body (228 triangles) last, as a range of its own", "built %d, tail %u triangles from command %u",
+	           ok, b.kartTriangles, b.kartCommandFirst);
+	ok = ok && RldMk_GameKartField(&b, &opt, &gk);
+	RldMk_Test(ok && (gk.scale == 4096u) && (abs(gk.offset[0]) <= 16) && (abs(gk.offset[1]) <= 16) && (abs(gk.offset[2]) <= 16) && (gk.donor == 0u),
+	           "game kart: the field - scale 1, the stand-in where it was made (offset within 1 unit), the donor given", "scale %u, offset %d %d %d, donor %u",
+	           gk.scale, gk.offset[0], gk.offset[1], gk.offset[2], gk.donor);
+	why = ok ? RldChar_GameKartRange(b.cmdl, b.cmdlSize, &gk) : "not built";
+	RldMk_Test(why == NULL, "game kart: the game's range check holds on the CMDL just built", "%s", (why != NULL) ? why : "");
+	{
+		struct RldCharGameKart bad[4];
+		int k;
+		int refused = 0;
+
+		for (k = 0; k < 4; k++)
+		{
+			bad[k] = gk;
+		}
+		bad[0].commandFirst++;
+		bad[1].triangles++;
+		bad[2].recordFirst--;
+		bad[3].commandEnd--;
+		for (k = 0; ok && (k < 4); k++)
+		{
+			refused += (RldChar_GameKartRange(b.cmdl, b.cmdlSize, &bad[k]) != NULL) ? 1 : 0;
+		}
+		RldMk_Test(ok && (refused == 4), "game kart: a field one off (first command, triangles, first record, end) - the range does not hold", "%d of 4 refused",
+		           refused);
+	}
+
+	// CHRI: fixedSize 0x50, bit 5, the field and the author read back.
+	memset(field, 0, sizeof(field));
+	memcpy(field, "GAME KART", 9);
+	chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", 0u, &chriSize);
+	withKart = (chri != NULL) ? RldMk_ChriGameKart(chri, chriSize, &gk, &withSize) : NULL;
+	why = (withKart != NULL) ? RldChar_ParseInfo(&info, withKart, withSize) : "out of memory";
+	if (why == NULL)
+	{
+		why = RldChar_ParseGameKart(&info, withKart, withSize, &back);
+	}
+	RldMk_Test((why == NULL) && (Rld_ReadLE16(&withKart[0x00]) == RLDCHAR_CHRI_SIZE_GAME_KART) && (info.flags == RLDCHAR_FLAG_GAME_KART) &&
+	               (strcmp(info.author, "self-test") == 0) && (memcmp(&back, &gk, sizeof(gk)) == 0) && (withSize == chriSize + (RLDCHAR_CHRI_SIZE_GAME_KART - 0x1Cu)),
+	           "game kart: CHRI fixedSize 0x50, bit 5, the field and the author read back", "%s", (why != NULL) ? why : "a field differs");
+	// What a reader before 4.3 does: flag bits it does not know are no finding
+	// (the same path as for bit 5 there); the stand-in is drawn as stored.
+	if (withKart != NULL)
+	{
+		Rld_WriteLE32(&withKart[RLDCHAR_CHRI_FLAGS_OFFSET], RLDCHAR_FLAG_GAME_KART | 0x40u);
+		why = RldChar_ParseInfo(&info, withKart, withSize);
+		RldMk_Test((why == NULL) && (info.flags == (RLDCHAR_FLAG_GAME_KART | 0x40u)) && (strcmp(info.author, "self-test") == 0),
+		           "game kart: an unknown flag bit beside bit 5 is no finding (what a 4.2 reader does with bit 5), the strings behind 0x50 are read", "%s",
+		           (why != NULL) ? why : "a field differs");
+	}
+	free(chri);
+	chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", RLDCHAR_FLAG_GAME_KART, &chriSize);
+	why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, chriSize) : "out of memory";
+	RldMk_Test((why == NULL) && (RldChar_ParseGameKart(&info, chri, chriSize, &back) != NULL) &&
+	               (strstr(RldChar_ParseGameKart(&info, chri, chriSize, &back), "without its field") != NULL),
+	           "game kart: bit 5 without its field (fixedSize 0x20) - the file loads, the stand-in stays", "%s", (why != NULL) ? why : "the field was taken");
+
+	// THE SPLICE with a code-made donor.
+	n = RldMk_TestDonorKart(tri);
+	why = ok ? RldChar_SpliceKart(b.cmdl, b.cmdlSize, &gk, tri, n, 0, 0, &shadow, &shadowSize, &facts) : "not built";
+	if ((why == NULL) && (RldChar_CheckModel(shadow, shadowSize, &finding, NULL, NULL, &mf) != RLDCHAR_VERDICT_OK))
+	{
+		why = finding.detail;
+	}
+	(void)RldChar_CheckModel(b.cmdl, b.cmdlSize, NULL, NULL, NULL, &fileFacts);
+	RldMk_Test((why == NULL) && (facts.kartTriangles == 4u) && (facts.standIn == 228u) && (facts.clamped == 0u) && (facts.records == gk.recordFirst + 12u) &&
+	               (mf.triangles == fileFacts.triangles - 228u + 4u) && (mf.drawBytes < fileFacts.drawBytes) && (facts.colorsAdded + facts.colorsNear >= 1u),
+	           "game kart: the splice - 4 donor triangles in place of the stand-in's 228, 12 records, no clamp, through RldChar_CheckModel, less draw memory",
+	           "%s (kart %u, stand-in %u, clamped %u, records %u, triangles %u of %u)", (why != NULL) ? why : "", facts.kartTriangles, facts.standIn, facts.clamped,
+	           facts.records, mf.triangles, fileFacts.triangles);
+	if ((why == NULL) && (shadow != NULL))
+	{
+		const u32 at = RldMk_TestListAt(b.cmdl);
+		const u32 now = RldMk_TestListAt(shadow);
+		const u32 f0 = RldMk_TestFrame0At(b.cmdl);
+		const u32 f1 = RldMk_TestFrame0At(shadow);
+		const u32 head = 4u * (gk.commandFirst - 1u);
+		const u32 first = Rld_ReadLE32(&shadow[4u + now + 4u * gk.commandFirst]);
+		const u32 second = Rld_ReadLE32(&shadow[4u + now + 4u * (gk.commandFirst + 1u)]);
+
+		RldMk_Test((memcmp(&b.cmdl[4u + at + 4u], &shadow[4u + now + 4u], head) == 0) &&
+		               (memcmp(&b.cmdl[4u + f0], &shadow[4u + f1], RLDCHAR_FRAME_BYTES + 3u * gk.recordFirst) == 0) &&
+		               ((first & RLDCHAR_CMD_NEW_STRIP) != 0u) && ((first & RLDCHAR_CMD_CULL_BITS) == 0x30000000u) && (RLDCHAR_CMD_TEXTURE(first) == 0u) &&
+		               ((second & (RLDCHAR_CMD_NEW_STRIP | RLDCHAR_CMD_CACHED)) == 0u) &&
+		               (Rld_ReadLE32(&shadow[4u + now + 4u * (gk.commandFirst + 3u * n)]) == RLDCHAR_CMD_END),
+		           "game kart: the head (commands before the range, frame head and records) byte for byte; each donor triangle a strip of 3 new records, its cull bits",
+		           "%s", "a byte differs");
+	}
+	why = (shadow != NULL) ? RldChar_SpliceKart(b.cmdl, b.cmdlSize, &gk, tri, n, 0, 0, &again, &againSize, &facts2) : "no splice";
+	RldMk_Test((why == NULL) && (againSize == shadowSize) && (memcmp(again, shadow, shadowSize) == 0), "game kart: the same splice twice, the same bytes", "%s",
+	           (why != NULL) ? why : "the bytes differ");
+	free(again);
+	again = NULL;
+	why = (shadow != NULL) ? RldChar_SpliceKart(b.cmdl, b.cmdlSize, &gk, tri, n, 0, 1, &real, &realSize, &facts2) : "no splice";
+	if ((why == NULL) && (real != NULL))
+	{
+		const u32 now = RldMk_TestListAt(real);
+		const u32 header = Rld_ReadLE32(&real[4u + RLDCHAR_MODEL_HEADERS]);
+		const u32 table = Rld_ReadLE32(&real[4u + header + RLDCHAR_HEADER_TEX_LAYOUT]);
+		const u32 entry = (table != 0u) ? Rld_ReadLE32(&real[4u + table]) : 0u;
+		const enum RldCharVerdict verdict = RldChar_CheckModel(real, realSize, &finding, NULL, NULL, NULL);
+
+		RldMk_Test((facts2.layouts == 1u) && (realSize == shadowSize + 24u) && (table != 0u) && (entry == table + 4u) &&
+		               (Rld_ReadLE32(&real[4u + entry]) == 0x7a400000u) && (Rld_ReadLE32(&real[4u + entry + 8u]) == 0x0f0f000fu) &&
+		               (RLDCHAR_CMD_TEXTURE(Rld_ReadLE32(&real[4u + now + 4u * gk.commandFirst])) == 1u) &&
+		               (RLDCHAR_CMD_TEXTURE(Rld_ReadLE32(&real[4u + now + 4u * (gk.commandFirst + 6u)])) == 0u) && (verdict != RLDCHAR_VERDICT_OK) &&
+		               (finding.rule != NULL) && ((strcmp(finding.rule, "model-map") == 0) || (strcmp(finding.rule, "model-zero") == 0)),
+		           "game kart: with textures - one layout (two triangles share it) behind a pointer table, texture index 1 on the textured; the file format refuses it (model-map: the table is no field of the format)",
+		           "layouts %u, %u bytes (shadow %u), rule %s", facts2.layouts, (unsigned)realSize, (unsigned)shadowSize, (finding.rule != NULL) ? finding.rule : "none");
+	}
+	else
+	{
+		RldMk_Test(0, "game kart: the splice with textures", "%s", (why != NULL) ? why : "no splice");
+	}
+	free(real);
+	real = NULL;
+	// A donor point far outside the frame is clamped and counted; a field that
+	// does not hold makes no model.
+	tri[3].p[0][0] = 500.0;
+	why = ok ? RldChar_SpliceKart(b.cmdl, b.cmdlSize, &gk, tri, n, 0, 0, &again, &againSize, &facts2) : "not built";
+	RldMk_Test((why == NULL) && (facts2.clamped >= 1u), "game kart: a donor point outside the frame is clamped and counted", "%s, clamped %u", (why != NULL) ? why : "",
+	           facts2.clamped);
+	free(again);
+	again = NULL;
+	back = gk;
+	back.triangles++;
+	why = ok ? RldChar_SpliceKart(b.cmdl, b.cmdlSize, &back, tri, n, 0, 0, &again, &againSize, &facts2) : "not built";
+	RldMk_Test((why != NULL) && (again == NULL), "game kart: a range that does not hold makes no model (the stand-in stays)", "%s", (why != NULL) ? why : "made");
+	free(again);
+	free(shadow);
+	free(chri);
+	free(withKart);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
 // --wheels off: (a) a flat square of 2 triangles far off with nearly half
 // the surface of a vehicle does not change its size and is named
 // (ply-stray); (b) on a short vehicle, low front wheels in front of the
@@ -24091,6 +24713,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestStrayAndWheels(mesh);
 	RldMk_SelfTestSplitVehicle(mesh);
 	RldMk_SelfTestFigureOnly(mesh);
+	RldMk_SelfTestGameKart(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
