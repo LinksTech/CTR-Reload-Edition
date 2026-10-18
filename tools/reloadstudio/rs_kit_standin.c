@@ -1,17 +1,17 @@
-// rs_kit_standin.c - a stand-in for blender.exe and for the game-data
-// extractor in the test of the Creator Kit page of Reload Studio
+// rs_kit_standin.c - a stand-in for blender.exe in the test of the Creator Kit
+// page of Reload Studio
 //
 // Built only with the tests (CMakeLists.txt, ctest reloadstudio_kit). It holds
-// no game data and no Blender: every file it writes is made up here. The
-// Studio is pointed at it twice - as the extractor (kit.extract, called as
-// "--game <folder> -o <dir>") and as Blender (kit.blender, called as
-// "--background --factory-startup --python-exit-code 1 --python <script> --
-// --kit <dir> [--vcol <psx|gltf|off>]", or "--version"). The environment says
+// no game data and no Blender: every file it writes is made up here (the game
+// data of the test is rldpack's kit-standin, read by the real kit-extract).
+// The Studio is pointed at it as Blender (kit.blender), called as "--threads 1
+// --background --factory-startup --python-exit-code 1 --python <script> --
+// --kit <dir> [--vcol <psx|gltf|off>]", or "--version". The environment says
 // what it does:
 //
-//   RS_KIT_STANDIN_MODE       unset or ok | noversion | extract-fail | fail4 | hang
+//   RS_KIT_STANDIN_MODE       unset or ok | noversion | fail4 | hang
 //   RS_KIT_STANDIN_VERSION    the first line of --version (default "Blender 5.2.2 LTS")
-//   RS_KIT_STANDIN_DEMO       a file copied to creator-kit-demo.glb
+//   RS_KIT_STANDIN_DEMO       a file copied to creator-kit-demo-local.glb
 //   RS_KIT_STANDIN_LOG        every call appends its arguments here, one line
 //   RS_KIT_STANDIN_ENVFILE    a Blender call writes TEMP, TMP and BLENDER_USER_*
 //
@@ -146,39 +146,24 @@ static int Version(void)
     return 0;
 }
 
-static int Extract(const wchar_t *dir)
-{
-    if (EnvIs(L"RS_KIT_STANDIN_MODE", L"extract-fail")) {
-        Say("@msg\terror\tkit-data\tThe game data could not be read.\tstand-in");
-        return 1;
-    }
-    MakeDirs(dir);
-    Say("@progress\tkit\t1\t2");
-    WriteGlb(dir, L"kit-kart.glb", "stand-in kart");
-    WriteGlb(dir, L"kit-wheel.glb", "stand-in wheel");
-    WriteFileIn(dir, L"kit-info.json", "{\"kit\": 1, \"source\": \"stand-in\"}\n", 33);
-    Say("@progress\tkit\t2\t2");
-    return 0;
-}
-
 static int Blender(int argc, wchar_t **argv)
 {
-    static const wchar_t *fixed[] = { L"--background", L"--factory-startup", L"--python-exit-code", L"1",
-                                      L"--python", NULL, L"--", L"--kit" };
+    static const wchar_t *fixed[] = { L"--threads", L"1", L"--background", L"--factory-startup",
+                                      L"--python-exit-code", L"1", L"--python", NULL, L"--", L"--kit" };
     int i;
     const wchar_t *script, *dir, *vcol = L"psx";
     wchar_t demo[1024], dst[1200];
     char u[2048], line[2300];
     DWORD attr;
-    if (argc != 10 && argc != 12) goto wrong;
-    for (i = 0; i < 8; i++) {
+    if (argc != 12 && argc != 14) goto wrong;
+    for (i = 0; i < 10; i++) {
         if (fixed[i] && wcscmp(argv[i + 1], fixed[i]) != 0) goto wrong;
     }
-    script = argv[6];
-    dir = argv[9];
-    if (argc == 12) {
-        if (wcscmp(argv[10], L"--vcol") != 0) goto wrong;
-        vcol = argv[11];
+    script = argv[8];
+    dir = argv[11];
+    if (argc == 14) {
+        if (wcscmp(argv[12], L"--vcol") != 0) goto wrong;
+        vcol = argv[13];
         if (wcscmp(vcol, L"psx") && wcscmp(vcol, L"gltf") && wcscmp(vcol, L"off")) goto wrong;
     }
     attr = GetFileAttributesW(script);
@@ -201,14 +186,15 @@ static int Blender(int argc, wchar_t **argv)
     MakeDirs(dir);
     WriteFileIn(dir, L"creator-kit.blend", "BLENDER-v502 made-up stand-in file\n", 35);
     if (Env(L"RS_KIT_STANDIN_DEMO", demo, 1024)) {
-        swprintf(dst, 1200, L"%ls\\creator-kit-demo.glb", dir);
+        swprintf(dst, 1200, L"%ls\\creator-kit-demo-local.glb", dir);
         if (!CopyFileW(demo, dst, FALSE)) {
             Say("creator kit: the demo model could not be copied (stand-in)");
             return 3;
         }
     } else {
-        WriteGlb(dir, L"creator-kit-demo.glb", "stand-in demo");
+        WriteGlb(dir, L"creator-kit-demo-local.glb", "stand-in demo");
     }
+    WriteGlb(dir, L"creator-kit-figure.glb", "stand-in figure");
     Utf8(vcol, u, sizeof u);
     snprintf(line, sizeof line, "{\"blender\": \"5.2.2 stand-in\", \"vcol\": \"%s\", \"messages\": []}\n", u);
     WriteFileIn(dir, L"creator-kit-report.json", line, strlen(line));
@@ -228,6 +214,5 @@ int wmain(int argc, wchar_t **argv)
     for (i = 1; i < argc; i++) {
         if (wcscmp(argv[i], L"--version") == 0) return Version();
     }
-    if (argc == 5 && wcscmp(argv[1], L"--game") == 0 && wcscmp(argv[3], L"-o") == 0) return Extract(argv[4]);
     return Blender(argc, argv);
 }

@@ -22,16 +22,20 @@
 //
 // THE CHAIN (Generate): every step a job of the core, in <out>\kit.part:
 //   1 the game data       rldpack kit-extract --game <base> -o <work> --machine
-//                         (the setting kit.extract names a program to run in
-//                         its place, "<exe> --game <base> -o <work>": for
-//                         tests and until rldpack has the verb)
-//   2 the template        Blender: --background --factory-startup
+//                         (tools/rldpack_kit.inc: the kart and the wheel of the
+//                         player's own game data, kit-info.json, kit-extract.txt)
+//   2 the template        Blender: --threads 1 --background --factory-startup
 //                         --python-exit-code 1 --python <scripts>\make_creator_kit.py
 //                         -- --kit <work> --vcol psx (templates/, built into
 //                         this exe and written to <work>\scripts; the setting
-//                         kit.scripts names a folder to take them from instead)
+//                         kit.scripts names a folder to take them from instead).
+//                         --threads 1 first: so the .blend has the same bytes
+//                         every run. It writes creator-kit.blend,
+//                         creator-kit-figure.glb (the figure alone, no kart: the
+//                         file to share) and creator-kit-demo-local.glb (with
+//                         the kit's kart: for this PC only)
 //   3 the demo driver     (on request) the build of the page Character, route
-//                         Hi-Res, from creator-kit-demo.glb: [hires-upscale]
+//                         Hi-Res, from creator-kit-demo-local.glb: [hires-upscale]
 //                         make-char -> hires-add, with the same switches and
 //                         suggestions; START-DEMO-PUPPE.bat with the command of
 //                         "Test in game" (Rs_TestCharacterCommand)
@@ -80,13 +84,13 @@
 // KIT-OUTPUT-NAMES BEGIN
 static const wchar_t *const g_kitFiles[] = {
     L"kit-kart.glb", L"kit-wheel.glb", L"kit-kart-gltf.glb", L"kit-wheel-gltf.glb", L"kit-info.json",
-    L"creator-kit.blend", L"creator-kit-demo.glb", L"creator-kit-report.json",
-    L"demo-puppet.rldchar", L"START-DEMO-PUPPE.bat",
+    L"kit-extract.txt", L"creator-kit.blend", L"creator-kit-figure.glb", L"creator-kit-demo-local.glb",
+    L"creator-kit-report.json", L"demo-puppet.rldchar", L"START-DEMO-PUPPE.bat",
 };
 // KIT-OUTPUT-NAMES END
 #define KIT_WORK      L"kit.part"
 #define KIT_BLEND     L"creator-kit.blend"
-#define KIT_DEMO_GLB  L"creator-kit-demo.glb"
+#define KIT_DEMO_GLB  L"creator-kit-demo-local.glb"
 #define KIT_DEMO      L"demo-puppet.rldchar"
 #define KIT_BAT       L"START-DEMO-PUPPE.bat"
 #define KIT_GUIDE     L"CREATOR_KIT.html"
@@ -599,24 +603,10 @@ static int Kit_StartRldpack(HWND page, int kind, const wchar_t *const *args, int
 
 static int Kit_StartExtract(HWND page)
 {
-    wchar_t tool[KIT_PATH], cmd[KIT_PATH * 3];
+    const wchar_t *args[] = { L"kit-extract", L"--game", g_kit.gameBase, L"-o", g_kit.work, L"--machine" };
     Kit_SetPhase(KIT_PH_EXTRACT, KIT_ST_RUNNING);
     Kit_Copy(g_kit.progressText, KIT_TEXT, L"Reading your game data...");
-    Rs_ConfigGet(L"kit.extract", tool, KIT_PATH);
-    if (tool[0]) {
-        cmd[0] = 0;
-        Rs_AppendArg(cmd, KIT_PATH * 3, L"--game");
-        Rs_AppendArg(cmd, KIT_PATH * 3, g_kit.gameBase);
-        Rs_AppendArg(cmd, KIT_PATH * 3, L"-o");
-        Rs_AppendArg(cmd, KIT_PATH * 3, g_kit.work);
-        g_kit.jobKind = KIT_JOB_EXTRACT;
-        g_kit.resultState[0] = 0;
-        g_kit.job = Rs_RunTool(page, tool, cmd, g_kit.work);
-        return g_kit.job != 0;
-    } else {
-        const wchar_t *args[] = { L"kit-extract", L"--game", g_kit.gameBase, L"-o", g_kit.work, L"--machine" };
-        return Kit_StartRldpack(page, KIT_JOB_EXTRACT, args, 6);
-    }
+    return Kit_StartRldpack(page, KIT_JOB_EXTRACT, args, 6);
 }
 
 static int Kit_StartBlender(HWND page)
@@ -626,6 +616,8 @@ static int Kit_StartBlender(HWND page)
     Kit_Copy(g_kit.progressText, KIT_TEXT, L"Building the template in Blender...");
     Rs_PathJoin(script, KIT_PATH, g_kit.scripts, L"make_creator_kit.py");
     cmd[0] = 0;
+    Rs_AppendArg(cmd, KIT_PATH * 3, L"--threads");
+    Rs_AppendArg(cmd, KIT_PATH * 3, L"1");
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--background");
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--factory-startup");
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--python-exit-code");
@@ -658,6 +650,11 @@ static int Kit_StartDemo(HWND page)
     Rs_PathJoin(glb, KIT_PATH, g_kit.work, KIT_DEMO_GLB);
     memset(&c, 0, sizeof(c));
     RsHires_CheckFile(glb, &c);
+    // As the page Character: the suggested vertex colour mode is the check's
+    // mode before its messages are said (HRG-36 is a finding of glTF mode only).
+    g_kit.demoVcol = c.read ? RsCharHires_SuggestColours(&c, RS_ROUTE_HIRES, NULL) : -1;
+    if (g_kit.demoVcol >= 0)
+        RsHires_SetColourMode(&c, g_kit.demoVcol);
     n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 48);
     for (i = 0; i < n; i++) {
         if (m[i].severity == RS_SEV_ERROR || m[i].severity == RS_SEV_WARNING)
@@ -665,7 +662,6 @@ static int Kit_StartDemo(HWND page)
         errors += m[i].severity == RS_SEV_ERROR;
     }
     g_kit.demoWheelsOff = c.read && c.wheels == 4;
-    g_kit.demoVcol = c.read ? RsCharHires_SuggestColours(&c, RS_ROUTE_HIRES, NULL) : -1;
     g_kit.demoUpscale = c.read && RsCharHires_SuggestUpscale(&c, RS_ROUTE_HIRES, NULL);
     read = c.read;
     RsHires_CheckFree(&c);
@@ -976,9 +972,18 @@ static void Kit_JobLine(int job, wchar_t *line)
     Kit_Copy(copy, 2048, line);
     n = Rs_SplitMachine(copy, f, 8);
     if (n >= 4 && wcscmp(f[0], L"msg") == 0) {
+        // "@msg <severity> <code> <text> <technical>": the fix by the code of
+        // kit-extract (tools/rldpack_kit.inc), the technical field is a path.
         int sev = Rs_SeverityFromText(f[1]);
+        const wchar_t *fix = L"Click Show details to see everything the step printed.";
+        if (wcscmp(f[2], L"kit-no-data") == 0)
+            fix = L"Start the game once so that it has its data, or choose the folder of your game with Choose game.";
+        else if (wcscmp(f[2], L"kit-bad-model") == 0)
+            fix = L"Use the game data of the disc CTR Reload plays (NTSC-U); start the game once with it.";
+        else if (wcscmp(f[2], L"kit-write") == 0)
+            fix = L"Choose a folder you can write to, for example in Documents.";
         if (sev == RS_SEV_ERROR || (sev == RS_SEV_WARNING && g_kit.jobKind == KIT_JOB_EXTRACT))
-            Kit_Msg(sev, f[3], n >= 5 && f[4][0] ? f[4] : L"");
+            Kit_Msg(sev, f[3], fix);
     } else if (n >= 2 && wcscmp(f[0], L"result") == 0) {
         Kit_Copy(g_kit.resultState, 16, f[1]);
     }
@@ -1180,8 +1185,9 @@ static void Kit_Update(void)
         wchar_t list[KIT_PATH * 2];
         swprintf(list, KIT_PATH * 2,
                  L"In %ls:\r\n  creator-kit.blend - the template: the puppet, its skeleton and 12 clips, your kart\r\n"
-                 L"  creator-kit-demo.glb - the template exported as it is\r\n"
-                 L"  kit-kart.glb, kit-wheel.glb, kit-info.json - the kart and its wheels from your game\r\n"
+                 L"  creator-kit-figure.glb - your figure without a kart: safe to share, the game adds its own kart\r\n"
+                 L"  creator-kit-demo-local.glb - your figure with the kart from your game: keep it to yourself\r\n"
+                 L"  kit-kart.glb, kit-wheel.glb, kit-info.json, kit-extract.txt - the kart and its wheels from your game\r\n"
                  L"%ls  CREATOR_KIT.html - the guide; scripts - how the template was made",
                  g_kit.outPath, g_kit.phase[KIT_PH_DEMO] == KIT_ST_OK
                                     ? L"  demo-puppet.rldchar, START-DEMO-PUPPE.bat - the demo driver and its start\r\n"
@@ -1286,8 +1292,7 @@ static void Kit_Create(HWND page)
     g_kit.files = Rs_Label(page, KIT_ID_FILES, L"", RS_FONT_BODY);
     g_kit.nextText = Rs_Label(page, KIT_ID_NEXT_TEXT,
         L"Next: open the template in Blender, make your driver on the puppet (the guide shows how), export it "
-        L"with the stored export, and build it on the page Character, route Hi-Res. Hide the collection Kart "
-        L"to share your driver: the kart is from your game data.",
+        L"with the stored export to creator-kit-figure.glb, and build it on the page Character, route Hi-Res.",
         RS_FONT_BODY);
     g_kit.back = Rs_Button(page, KIT_ID_BACK, L"Back");
     g_kit.main = Rs_PrimaryButton(page, KIT_ID_MAIN, L"Next");
@@ -1369,9 +1374,9 @@ static void Kit_Layout(HWND page, int w, int h)
         MoveWindow(g_kit.details, in.left, y, iw, in.bottom - y > Rs_Px(60) ? in.bottom - y : Rs_Px(60), TRUE);
         break;
     case 4:
-        MoveWindow(g_kit.files, in.left, y, iw, Rs_Px(130), TRUE);
-        y += Rs_Px(140);
-        MoveWindow(g_kit.nextText, in.left, y, iw, Rs_Px(80), TRUE);
+        MoveWindow(g_kit.files, in.left, y, iw, Rs_Px(150), TRUE);
+        y += Rs_Px(158);
+        MoveWindow(g_kit.nextText, in.left, y, iw, Rs_Px(60), TRUE);
         break;
     }
     // The bar: Back on the left; the main action on the right, beside it the others.

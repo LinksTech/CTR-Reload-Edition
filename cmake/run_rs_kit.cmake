@@ -6,8 +6,8 @@
 #         -DSOURCE=<repo root> -DDIR=<folder> -P run_rs_kit.cmake
 #
 # No Blender and no game data are used: rs_kit_standin.exe (made-up files only)
-# stands in for blender.exe and for the extractor (the test-only setting
-# kit.extract), and the "game" is a folder with a made-up assets\BIGFILE.BIG.
+# stands in for blender.exe; the game data is rldpack's kit-standin (a BIGFILE.BIG
+# made in code, no game data), read by the real kit-extract of the page.
 # Everything happens in a folder of this run, <folder>/run-<random>; older run
 # folders are removed where they can be. Every Studio run has its own settings
 # ini (the game program is a Windows program, so no run starts the game; the kit
@@ -67,11 +67,11 @@ function(reset_env)
     endforeach()
 endfunction()
 
-# The kit settings of a settings ini: game, blender, output, extractor (an empty
-# value leaves the setting out).
-function(kit_ini outvar game blender out extract)
+# The kit settings of a settings ini: game, blender, output (an empty value
+# leaves the setting out).
+function(kit_ini outvar game blender out)
     set(text "")
-    foreach(pair "game|${game}" "blender|${blender}" "out|${out}" "extract|${extract}")
+    foreach(pair "game|${game}" "blender|${blender}" "out|${out}")
         string(REGEX MATCH "^([a-z]+)\\|(.*)$" ignored "${pair}")
         set(key "${CMAKE_MATCH_1}")
         set(value "${CMAKE_MATCH_2}")
@@ -150,7 +150,8 @@ endfunction()
 
 # The files of a finished kit; the demo files with demo ON.
 function(check_kit dir reportFile demo)
-    set(names kit-kart.glb kit-wheel.glb kit-info.json creator-kit.blend creator-kit-demo.glb creator-kit-report.json
+    set(names kit-kart.glb kit-kart-gltf.glb kit-wheel.glb kit-wheel-gltf.glb kit-info.json kit-extract.txt
+              creator-kit.blend creator-kit-figure.glb creator-kit-demo-local.glb creator-kit-report.json
               scripts/make_creator_kit.py scripts/creator_kit_puppet.py scripts/creator_kit_clips.py
               scripts/creator_kit_standin.py CREATOR_KIT.html)
     if(demo)
@@ -184,7 +185,11 @@ endfunction()
 
 # --- the stand-in game and the test model -------------------------------------
 file(MAKE_DIRECTORY "${base}/game/assets")
-file(WRITE "${base}/game/assets/BIGFILE.BIG" "made-up stand-in for BIGFILE.BIG\n")
+execute_process(COMMAND "${STUDIO}" --rldpack kit-standin -o "${base}/game/assets"
+                RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
+if(NOT rc EQUAL 0 OR NOT EXISTS "${base}/game/assets/BIGFILE.BIG")
+    message(FATAL_ERROR "FAILED: --rldpack kit-standin wrote no BIGFILE.BIG (exit ${rc})\n${out}")
+endif()
 file(MAKE_DIRECTORY "${base}/nogame")
 file(MAKE_DIRECTORY "${base}/models")
 execute_process(COMMAND "${TEST}" --write "${base}/models"
@@ -198,7 +203,7 @@ endif()
 reset_env()
 set(ENV{RS_KIT_STANDIN_DEMO} "${demoModel}")
 set(ENV{RS_KIT_STANDIN_ENVFILE} "${base}/env.txt")
-kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-a" "${STANDIN}")
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-a")
 studio(k91 0 "${ini}"
        --do "page kit" --do "demo on" --do "generate" --do "report ${base}/k91/report.txt"
        --do "open guide" --do "test-demo" --do "quit")
@@ -232,7 +237,10 @@ endif()
 set(sa "${base}/k91/standin.log")
 expect_lit("${sa}" "--python-exit-code | 1")
 expect_lit("${sa}" "-- | --kit")
-expect_lit("${sa}" "--game | ")
+expect_lit("${sa}" "--threads | 1 | --background | --factory-startup")
+# The game data: the real kit-extract through the Studio's own rldpack.
+expect_lit("${auto}" "rldpack kit-extract --game ")
+expect_lit("${base}/k91/report.txt" "file\tkit-extract.txt\t")
 expect_lit("${sa}" "--version")
 
 # K9.9: Blender's folders and TEMP/TMP are below the folder of the run's settings ini.
@@ -256,7 +264,7 @@ if(NOT envSeen EQUAL 7)
 endif()
 
 # --- K9.2: the demo is what the page Character builds -------------------------------
-studio(k92 0 "" --do "page char" --do "route hires" --do "model ${base}/out-a/creator-kit-demo.glb"
+studio(k92 0 "" --do "page char" --do "route hires" --do "model ${base}/out-a/creator-kit-demo-local.glb"
        --do "name DEMO PUPPET" --do "out ${base}/page-demo.rldchar" --do "build" --do "quit")
 if(NOT EXISTS "${base}/page-demo.rldchar")
     message(FATAL_ERROR "FAILED: the page Character built no page-demo.rldchar from the kit's demo model")
@@ -285,7 +293,7 @@ endif()
 message("kit passed: K9.1-K9.3 end to end, demo equals the page Character (${hashKit}), ${testTail}")
 
 # --- K9.4: no game data ------------------------------------------------------------------
-kit_ini(ini "${base}/nogame" "${STANDIN}" "${base}/out-d" "${STANDIN}")
+kit_ini(ini "${base}/nogame" "${STANDIN}" "${base}/out-d")
 studio(k94 1 "${ini}" --do "page kit" --do "report ${base}/k94/report.txt" --do "generate" --do "quit")
 set(rep "${base}/k94/report.txt")
 expect_lit("${rep}" "game\tmissing-data\t")
@@ -296,12 +304,12 @@ check_no_kit("${base}/out-d")
 message("kit passed: K9.4 no game data")
 
 # --- K9.5: Blender missing, Blender of another version ------------------------------------------
-kit_ini(ini "${base}/game" "${base}/no-blender.exe" "${base}/out-e" "${STANDIN}")
+kit_ini(ini "${base}/game" "${base}/no-blender.exe" "${base}/out-e")
 studio(k95a 0 "${ini}" --do "page kit" --do "wait 1500" --do "report ${base}/k95a/report.txt" --do "quit")
 set(rep "${base}/k95a/report.txt")
 expect_lit("${rep}" "blender\tmissing\t")
 expect_lit("${rep}" "blender-text\tBlender was not found.\tInstall Blender 5.2 from blender.org, or choose blender.exe with Choose Blender.")
-kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-e" "${STANDIN}")
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-e")
 set(ENV{RS_KIT_STANDIN_VERSION} "Blender 3.6.0")
 studio(k95b 0 "${ini}" --do "page kit" --do "wait 1500" --do "report ${base}/k95b/report.txt" --do "quit")
 reset_env()
@@ -312,7 +320,7 @@ message("kit passed: K9.5 Blender missing and Blender 3.6.0")
 
 # --- K9.6: cancel -----------------------------------------------------------------------------------
 # First a good kit (demo off), its Blender file noted.
-kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-c" "${STANDIN}")
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/out-c")
 studio(k96good 0 "${ini}" --do "page kit" --do "demo off" --do "generate" --do "report ${base}/k96good/report.txt" --do "quit")
 expect_lit("${base}/k96good/report.txt" "result\tok")
 check_kit("${base}/out-c" "${base}/k96good/report.txt" OFF)
@@ -359,13 +367,13 @@ message("kit passed: K9.7 Blender fails with its message")
 
 # --- K9.8: the output folder rules ----------------------------------------------------------------------------
 file(MAKE_DIRECTORY "${base}/repo/.git")
-kit_ini(ini "${base}/game" "${STANDIN}" "${base}/repo/sub" "${STANDIN}")
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/repo/sub")
 studio(k98git 1 "${ini}" --do "page kit" --do "report ${base}/k98git/report.txt" --do "generate" --do "quit")
 set(rep "${base}/k98git/report.txt")
 expect_lit("${rep}" "out\tgit\t")
 expect_lit("${rep}" "out-text\tThis folder is inside a git repository. The kit holds data from your game and must stay out of any repository.\tChoose a folder outside it.")
 check_no_kit("${base}/repo/sub")
-kit_ini(ini "${base}/game" "${STANDIN}" "${base}/game/kit" "${STANDIN}")
+kit_ini(ini "${base}/game" "${STANDIN}" "${base}/game/kit")
 studio(k98game 1 "${ini}" --do "page kit" --do "report ${base}/k98game/report.txt" --do "generate" --do "quit")
 set(rep "${base}/k98game/report.txt")
 expect_lit("${rep}" "out\tgame\t")
@@ -374,7 +382,26 @@ check_no_kit("${base}/game/kit")
 message("kit passed: K9.8 output inside a git work tree and inside the game refused")
 
 # --- L.9: the content guard knows every name of the kit --------------------------------------------------------------
-set(guardNames "'kit-kart.glb','kit-wheel.glb','kit-info.json','creator-kit.blend','creator-kit-demo.glb','creator-kit-report.json','demo-puppet.rldchar','START-DEMO-PUPPE.bat','kit.part/x'")
+# The names: those of rs_kit.c between its markers KIT-OUTPUT-NAMES, and the work folder.
+file(STRINGS "${SOURCE}/tools/reloadstudio/rs_kit.c" kitSource)
+set(inNames OFF)
+set(guardNames "'kit.part/x'")
+foreach(line IN LISTS kitSource)
+    if(line MATCHES "KIT-OUTPUT-NAMES BEGIN")
+        set(inNames ON)
+    elseif(line MATCHES "KIT-OUTPUT-NAMES END")
+        set(inNames OFF)
+    elseif(inNames)
+        string(REGEX MATCHALL "L\"[^\"]+\"" found "${line}")
+        foreach(f IN LISTS found)
+            string(REGEX REPLACE "^L\"(.*)\"$" "\\1" f "${f}")
+            string(APPEND guardNames ",'${f}'")
+        endforeach()
+    endif()
+endforeach()
+if(NOT guardNames MATCHES "creator-kit-figure.glb")
+    message(FATAL_ERROR "FAILED: the names between KIT-OUTPUT-NAMES in rs_kit.c were not read (${guardNames})")
+endif()
 execute_process(COMMAND "${PYTHON}" -I -c
                 "import sys; sys.path.insert(0, '${SOURCE}/tools'); import content_guard as g; names=[${guardNames}]; bad=[n for n in names if not g.kit_name(n)]; print('not refused: ' + ' '.join(bad)); sys.exit(1 if bad else 0)"
                 RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 60)

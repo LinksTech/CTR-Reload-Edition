@@ -220,6 +220,7 @@ kit-info.json
 creator-kit*.blend*
 creator-kit*.glb
 creator-kit-report.json
+kit-extract.txt
 demo-puppet*
 START-DEMO-PUPPE.bat
 kit.part/
