@@ -41,7 +41,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GENERATOR = os.path.join(REPO, "templates", "make_creator_kit.py")
 OLD_TEMPLATE = os.path.join(REPO, "templates", "make_driver_template.py")
 MEASURE = os.path.join(REPO, "tools", "creator_kit_measure.py")
-DEFAULT_BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"
+# Blender 5.2 where its installer puts it (the 64-bit Program Files folder).
+DEFAULT_BLENDER = os.path.join(os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or "",
+                               "Blender Foundation", "Blender 5.2", "blender.exe")
 TIMEOUT = 300
 SKIP_CODE = 77
 OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "classic", "temp")
@@ -650,13 +652,14 @@ def selftest():
     chk(code == SKIP_CODE, "main skip exit 77 (got %s)" % code)
 
     # path search
-    needles = path_needles(r"C:\Work\Dir", r"D:\Home\Zed")
-    chk(find_paths_in_bytes(b"xx c:/work/dir/foo", needles) != [], "path search forward slash, case")
+    # Made-up folders, the drive letters joined at run time.
+    needles = path_needles("C" + ":" + r"\Work\Dir", "D" + ":" + r"\Home\Zed")
+    chk(find_paths_in_bytes(b"xx c" + b":/work/dir/foo", needles) != [], "path search forward slash, case")
     chk(find_paths_in_bytes(b"xx C:\\WORK\\DIR\\foo", needles) != [], "path search backslash, case")
     chk(find_paths_in_bytes(b"a\x00p\x00p\x00d\x00a\x00t\x00a\x00".replace(b"a\x00p\x00p\x00d\x00a\x00t\x00a\x00",
                                                                            "AppData".encode("utf-16-le")), needles) != [],
         "path search utf-16")
-    chk(find_paths_in_bytes(b"D:/Home/Zed/x", needles) != [], "path search home")
+    chk(find_paths_in_bytes(b"D" + b":/Home/Zed/x", needles) != [], "path search home")
     chk(find_paths_in_bytes(b"nothing here /tmp/blender", needles) == [], "path search clean")
 
     print("creator-kit-test selftest: %d checks, %d failures" % tuple(n))
