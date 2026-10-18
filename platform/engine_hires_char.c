@@ -99,9 +99,10 @@ int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 // The engine's hard limits are include/rldhires.inc's (HRG-32..35, checked by
 // RldHires_Open as the packer and the Studio check them); the checks here are
 // the second line with the same rule ids.
-#define ENG_HC_MATERIALS_MAX (RLDHIRES_MATERIALS_MAX + 4u) // the file's materials + the default + the standard wheels' + the game's kart (textured, plain)
+#define ENG_HC_MATERIALS_MAX (RLDHIRES_MATERIALS_MAX + 5u) // the file's materials + the default + the standard wheels' + the game's kart (kart, plain, wheel)
 #define ENG_HC_NO_NODE 0xffffffffu // EngHcChar.rigidNode: an entry in the model's own space (the identity)
 #define ENG_HC_IMAGE_KIT (-2)      // EngHcTex.image: the atlas of the game's kart, not an image of the file
+#define ENG_HC_IMAGE_KIT_WHEEL (-3) // EngHcTex.image: the atlas of the game's kart's wheel (the two tyre sprites)
 #define ENG_HC_TEXTURES_MAX RLDHIRES_TEXTURE_SLOTS_MAX
 #define ENG_HC_PALETTE_MAX RLDHIRES_PALETTE_MAX
 #define ENG_HC_VERTICES_MAX RLDHIRES_VERTICES_MAX // an external mesh's frame (engine_mesh.c MESH_VERTICES_TOTAL_MAX)
@@ -1009,7 +1010,8 @@ internal void EngHc_KitPart(const EngHcChar *c, const RldKitMesh *mesh, const fl
 
 // The kit's wheel `wheel` (0 fl, 1 fr, 2 rl, 3 rr) in model units about its
 // middle, axle +x (wheels 1 and 3 turned half about y: their outer side -x),
-// on the palette entry of the wheel (the standard wheels' matrices).
+// on the palette entry of the wheel (the standard wheels' matrices); its UVs
+// into the wheel's atlas when it has one (the tyre sprites, K2b).
 internal void EngHc_KitWheel(const EngHcChar *c, int wheel, EngHcSrc *src, EngineVertex *base, u32 *indices, u32 first, u32 entry)
 {
 	const RldKitMesh *mesh = &c->gkKit->wheel;
@@ -1034,9 +1036,11 @@ internal void EngHc_KitWheel(const EngHcChar *c, int wheel, EngHcSrc *src, Engin
 		s->hasNormal = 1;
 		s->j[0] = (u8)entry;
 		s->w[0] = 1.0f;
+		b->texcoord[0] = mesh->textured ? kv->uv[0] : 0.0f;
+		b->texcoord[1] = mesh->textured ? kv->uv[1] : 0.0f;
 		for (a = 0; a < 3; a++)
 		{
-			b->color[a] = EngHc_KitColour(c->vcolMode, 0, kv->c[a]);
+			b->color[a] = EngHc_KitColour(c->vcolMode, mesh->textured, kv->c[a]);
 		}
 		b->color[3] = 255;
 	}
@@ -1046,17 +1050,19 @@ internal void EngHc_KitWheel(const EngHcChar *c, int wheel, EngHcSrc *src, Engin
 	}
 }
 
-// The two materials of the game's kart after the file's (EngHc_Materials):
+// The three materials of the game's kart after the file's (EngHc_Materials):
 // materials_count + 2 the kart (the atlas, a mask where the atlas has a
-// transparent texel), + 3 the steering wheel and the kit wheels (plain); one
-// sided, factor 1, the file's vertex colour mode - as kit-extract's GLB.
+// transparent texel), + 3 the steering wheel (plain), + 4 the kit wheels (the
+// wheel's atlas, plain without one); one sided, factor 1, the file's vertex
+// colour mode - as kit-extract's GLBs.
 internal void EngHc_KitMaterials(EngHcChar *c, const cgltf_data *gltf)
 {
 	int k;
 
-	c->matCount = (int)gltf->materials_count + 4;
-	for (k = 0; k < 2; k++)
+	c->matCount = (int)gltf->materials_count + 5;
+	for (k = 0; k < 3; k++)
 	{
+		const int textured = (k == 0) || ((k == 2) && c->gkKit->wheel.textured && (c->gkKit->wheelAtlas != NULL));
 		EngHcMat *m = &c->mats[gltf->materials_count + 2u + (u32)k];
 
 		memset(m, 0, sizeof(*m));
@@ -1065,17 +1071,17 @@ internal void EngHc_KitMaterials(EngHcChar *c, const cgltf_data *gltf)
 		m->factor[0] = m->factor[1] = m->factor[2] = m->factor[3] = 1.0f;
 		m->normalScale = 1.0f;
 		m->psxFile = (c->vcolMode == RLDHIRES_VCOL_PSX);
-		m->psxBlend = (RldHiresColor_ModeFor(c->vcolMode, k == 0) == RLDHIRES_VCOL_PSX);
-		if (k == 0)
+		m->psxBlend = (RldHiresColor_ModeFor(c->vcolMode, textured) == RLDHIRES_VCOL_PSX);
+		if (textured)
 		{
-			m->mask = c->gkKit->atlasAlpha ? 1 : 0;
+			m->mask = ((k == 0) && c->gkKit->atlasAlpha) ? 1 : 0;
 			m->cutoff = 0.5f;
 			if (c->texCount < (int)ENG_HC_TEXTURES_MAX)
 			{
 				EngHcTex *t = &c->tex[c->texCount];
 
 				memset(t, 0, sizeof(*t));
-				t->image = ENG_HC_IMAGE_KIT;
+				t->image = (k == 0) ? ENG_HC_IMAGE_KIT : ENG_HC_IMAGE_KIT_WHEEL;
 				t->linear = 0;
 				t->wrapU = NATIVE_GFX_WRAP_CLAMP;
 				t->wrapV = NATIVE_GFX_WRAP_CLAMP;
@@ -1407,7 +1413,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		{
 			vertices += c->gkKit->wheel.vertices;
 			indices += c->gkKit->wheel.indices;
-			matIndices[gltf->materials_count + 3u] += c->gkKit->wheel.indices;
+			matIndices[gltf->materials_count + 4u] += c->gkKit->wheel.indices;
 		}
 		else
 		{
@@ -1485,7 +1491,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 
 		if ((wheel >= 0) && c->kitWheels)
 		{
-			const int mat = (int)gltf->materials_count + 3;
+			const int mat = (int)gltf->materials_count + 4;
 
 			EngHc_KitWheel(c, wheel, &c->src[vfirst], &c->base[vfirst], &c->indices[matCursor[mat]], vfirst, c->wheelFirst + (u32)wheel);
 			matCursor[mat] += c->gkKit->wheel.indices;
@@ -1719,20 +1725,25 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 		int h;
 
 		memset(&png, 0, sizeof(png));
-		if (t->image == ENG_HC_IMAGE_KIT)
+		if ((t->image == ENG_HC_IMAGE_KIT) || (t->image == ENG_HC_IMAGE_KIT_WHEEL))
 		{
-			// THE GAME'S KART: the kit's atlas (RGBA, not the file's); copied, so
-			// that RldPng_Free below frees the copy and the kit keeps its own.
+			// THE GAME'S KART: the kit's atlas or its wheel's (RGBA, not the
+			// file's); copied, so that RldPng_Free below frees the copy and the
+			// kit keeps its own.
+			const int wheelAtlas = (t->image == ENG_HC_IMAGE_KIT_WHEEL);
+			const u8 *from = (c->gkKit == NULL) ? NULL : (wheelAtlas ? c->gkKit->wheelAtlas : c->gkKit->atlas);
+			const u32 fw = (c->gkKit == NULL) ? 0u : (wheelAtlas ? c->gkKit->wheelAtlasW : c->gkKit->atlasW);
+			const u32 fh = (c->gkKit == NULL) ? 0u : (wheelAtlas ? c->gkKit->wheelAtlasH : c->gkKit->atlasH);
+
 			bytes = NULL;
-			if ((c->gkKit == NULL) || (c->gkKit->atlas == NULL) ||
-			    ((png.rgba = (u8 *)malloc((size_t)c->gkKit->atlasW * c->gkKit->atlasH * 4u)) == NULL))
+			if ((from == NULL) || ((png.rgba = (u8 *)malloc((size_t)fw * fh * 4u)) == NULL))
 			{
 				EngHc_Fail(rule, detail, detailSize, "HRG-16", "the atlas of the game's kart is missing (out of memory)");
 				return 0;
 			}
-			memcpy(png.rgba, c->gkKit->atlas, (size_t)c->gkKit->atlasW * c->gkKit->atlasH * 4u);
-			png.width = c->gkKit->atlasW;
-			png.height = c->gkKit->atlasH;
+			memcpy(png.rgba, from, (size_t)fw * fh * 4u);
+			png.width = fw;
+			png.height = fh;
 		}
 		else if (((bytes = RldHires_ImageBytes(m, t->image, &size)) == NULL) || (RldPng_Decode(bytes, size, &png, &pngWhy) != RLDPNG_OK))
 		{
@@ -3826,7 +3837,7 @@ internal int EngHc_SelfTestLoader(int *checks)
 			HL_CHECK(c.kartPart && (c.kartEntries == 6u) && !c.kartEntry[0] && !c.kartEntry[1] && c.kartEntry[2] && c.kartEntry[3] && c.kartEntry[7],
 			         "game kart: its 2 entries and the 4 wheels are the kart (hidden on the podium), the figure's joints not");
 			HL_CHECK((c.vertexCount == 22u) && (c.indexCount == 24u) && (c.triangles == 8u), "game kart: 4 + 4 x 3 + 3 + 3 vertices, 8 triangles");
-			HL_CHECK((c.matCount == (int)mc + 4) && (c.mats[mc + 2u].baseTex >= 0) && (c.tex[c.mats[mc + 2u].baseTex].image == ENG_HC_IMAGE_KIT) &&
+			HL_CHECK((c.matCount == (int)mc + 5) && (c.mats[mc + 2u].baseTex >= 0) && (c.tex[c.mats[mc + 2u].baseTex].image == ENG_HC_IMAGE_KIT) &&
 			             (c.tex[c.mats[mc + 2u].baseTex].wrapU == NATIVE_GFX_WRAP_CLAMP) && (c.mats[mc + 3u].baseTex == -1) && !c.mats[mc + 2u].doubleSided &&
 			             !c.mats[mc + 2u].mask,
 			         "game kart: two materials more, the kart's on the kit's atlas (clamped), the plain one untextured");
@@ -3834,13 +3845,16 @@ internal int EngHc_SelfTestLoader(int *checks)
 				u32 r;
 				int kartRange = 0;
 				int plainRange = 0;
+				int wheelRange = 0;
 
 				for (r = 0; r < c.rangeCount; r++)
 				{
 					kartRange |= (c.ranges[r].material == (u16)(mc + 2u)) && (c.ranges[r].indexCount == 3u);
-					plainRange |= (c.ranges[r].material == (u16)(mc + 3u)) && (c.ranges[r].indexCount == 15u);
+					plainRange |= (c.ranges[r].material == (u16)(mc + 3u)) && (c.ranges[r].indexCount == 3u);
+					wheelRange |= (c.ranges[r].material == (u16)(mc + 4u)) && (c.ranges[r].indexCount == 12u);
 				}
-				HL_CHECK(kartRange && plainRange, "game kart: a range of 3 indices for the kart, 15 for the steering wheel and the 4 wheels");
+				HL_CHECK(kartRange && plainRange && wheelRange && (c.mats[mc + 4u].baseTex == -1),
+				         "game kart: ranges of 3 indices for the kart and the steering wheel, 12 for the 4 wheels (untextured here: no wheel atlas)");
 			}
 			// vertices: body 0..3, wheels 4..15, kart 16..18, steering wheel 19..21
 			HL_CHECK((fabsf(c.src[17].p[0] - 0.2f) < 1e-6f) && (fabsf(c.src[17].p[1] - 0.1f) < 1e-6f) && (fabsf(c.src[17].p[2] - 0.5f) < 1e-6f) &&
@@ -3906,6 +3920,35 @@ internal int EngHc_SelfTestLoader(int *checks)
 		if (ok)
 		{
 			EngHc_FreeCpu(&c);
+		}
+		// K2b: a textured kit wheel draws with the wheel's atlas and its UVs.
+		for (v = 0; v < 3; v++)
+		{
+			wheelV[v].uv[0] = 0.5f;
+			wheelV[v].uv[1] = 0.25f * (float)v;
+			wheelV[v].c[0] = wheelV[v].c[1] = wheelV[v].c[2] = 128;
+		}
+		kit.wheel.textured = 1;
+		kit.wheelAtlas = atlas;
+		kit.wheelAtlasW = 4;
+		kit.wheelAtlasH = 4;
+		memset(&c, 0, sizeof(c));
+		c.indexBuffer = 0xffffffffu;
+		c.gkKit = &kit;
+		ok = (chunk != NULL) && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+		if (ok)
+		{
+			const u32 mc = (u32)model.data->materials_count;
+			const int wt = c.mats[mc + 4u].baseTex;
+
+			HL_CHECK((wt >= 0) && (c.tex[wt].image == ENG_HC_IMAGE_KIT_WHEEL) && (c.texCount == 2) && (c.base[5].texcoord[1] == 0.25f) &&
+			             (c.base[4].texcoord[0] == 0.5f) && (c.base[4].color[0] == 255),
+			         "game kart: the textured kit wheel on its own atlas (the second texture), its UVs, grey 128 neutral");
+			EngHc_FreeCpu(&c);
+		}
+		else
+		{
+			HL_CHECK(0, "game kart: the textured kit wheel builds");
 		}
 		RldHires_Close(&model);
 		free(chunk);

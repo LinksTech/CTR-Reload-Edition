@@ -341,6 +341,24 @@ static u8 *RldKit_WriteGlb(const RldKitResult *r, int wholeKart, int vcolMode, s
 	if (!wholeKart)
 	{
 		RldKitGlb_Mesh(&g, &r->wheel, vcolMode, wheelIds);
+		// K2b: the wheel's own atlas (the two sprites) when it has one.
+		if (r->wheel.textured && (r->wheelAtlas != NULL))
+		{
+			size_t pngSize = 0;
+			u8 *png = RldMk_PngRgbaPacked(r->wheelAtlas, r->wheelAtlasW, r->wheelAtlasH, &pngSize);
+
+			if (png == NULL)
+			{
+				RldKitBuf_Free(&g.bin);
+				RldKitBuf_Free(&g.views);
+				RldKitBuf_Free(&g.accs);
+				return NULL;
+			}
+			RldKitBuf_Align4(&g.bin, 0);
+			imageView = (int)RldKitGlb_View(&g, (u32)g.bin.len, (u32)pngSize);
+			RldKitBuf_Put(&g.bin, png, pngSize);
+			free(png);
+		}
 	}
 
 	RldKitBuf_Printf(&json, "{\"asset\":{\"version\":\"2.0\",\"generator\":\"rldpack kit-extract (CTR Reload %s) - made from your own game data, keep it on this computer\"},",
@@ -376,8 +394,13 @@ static u8 *RldKit_WriteGlb(const RldKitResult *r, int wholeKart, int vcolMode, s
 		RldKitGlb_Primitive(&json, "wheel", "wheel", wheelIds, 0);
 		snprintf(name, sizeof(name), "ctrkit_wheel_%s", suffix);
 		RldKitBuf_Printf(&json, "],\"materials\":[");
-		RldKitGlb_Material(&json, name, "wheel", -1, 0, 0);
+		RldKitGlb_Material(&json, name, "wheel", (imageView >= 0) ? 0 : -1, 0, 0);
 		RldKitBuf_Printf(&json, "],");
+		if (imageView >= 0)
+		{
+			RldKitBuf_Printf(&json, "\"textures\":[{\"source\":0,\"sampler\":0}],\"samplers\":[{\"magFilter\":9729,\"minFilter\":9987,\"wrapS\":33071,\"wrapT\":33071}],");
+			RldKitBuf_Printf(&json, "\"images\":[{\"name\":\"ctrkit_wheel_atlas\",\"bufferView\":%d,\"mimeType\":\"image/png\"}],", imageView);
+		}
 	}
 	RldKitBuf_Printf(&json, "\"buffers\":[{\"byteLength\":%u}],\"bufferViews\":[", (unsigned)((g.bin.len + 3u) & ~(size_t)3u));
 	RldKitBuf_Put(&json, g.views.p, g.views.len);
@@ -402,7 +425,9 @@ struct RldKitChecks
 	double colourMean;
 	double colourMax;
 	u32 triangles;      // the kit part: kart + steering wheel + 4 wheels
-	u64 textureBytes;   // the atlas as the game holds it (RGBA8 level 0)
+	u64 textureBytes;   // the atlas as the game holds it (RGBA8 level 0), the wheel's included
+	int wheelLook;      // 1 = measured (RldKit_WheelLook)
+	RldKitWheelLook look;
 };
 
 static void RldKit_Checks(const RldKitResult *r, struct RldKitChecks *c)
@@ -416,7 +441,8 @@ static void RldKit_Checks(const RldKitResult *r, struct RldKitChecks *c)
 	}
 	RldKit_ColourCheck(r, &c->colourMean, &c->colourMax);
 	c->triangles = (r->kart.indices + r->steer.indices + 4u * r->wheel.indices) / 3u;
-	c->textureBytes = (u64)r->atlasW * r->atlasH * 4u;
+	c->textureBytes = (u64)r->atlasW * r->atlasH * 4u + (u64)r->wheelAtlasW * r->wheelAtlasH * 4u;
+	c->wheelLook = RldKit_WheelLook(r, &c->look);
 }
 
 // THE INFO: kit-info.json in the kit format the generator reads
@@ -496,6 +522,21 @@ static u8 *RldKit_WriteInfo(const RldKitResult *r, const RldKitOptions *opt, con
 	RldKitBuf_Printf(&b, " \"checks\": {\"max_deviation_units\": %.4f, \"iou\": [%.4f, %.4f, %.4f, %.4f], \"colour_mean\": %.3f, \"colour_max\": %.3f, \"open_edges\": %u, "
 	                     "\"retail_triangles\": %u},\n",
 	                 r->maxDeviation, c->iou[0], c->iou[1], c->iou[2], c->iou[3], c->colourMean, c->colourMax, (unsigned)r->openEdges, (unsigned)r->kartTriangles);
+	if (c->wheelLook)
+	{
+		const RldKitWheelLook *l = &c->look;
+
+		RldKitBuf_Printf(&b, " \"wheel_look\": {\"texture\": [%u, %u], \"worst\": %.2f, \"worst_flat\": %.2f, \"limit\": %.1f,\n", (unsigned)r->wheelAtlasW,
+		                 (unsigned)r->wheelAtlasH, l->worst, l->worstFlat, RLDKIT_LOOK_LIMIT);
+		RldKitBuf_Printf(&b, "  \"side\": {\"tyre\": [[%.1f, %.1f, %.1f], [%.1f, %.1f, %.1f]], \"rim\": [[%.1f, %.1f, %.1f], [%.1f, %.1f, %.1f]], "
+		                     "\"hub\": [[%.1f, %.1f, %.1f], [%.1f, %.1f, %.1f]]},\n",
+		                 l->side[0][0][0], l->side[0][0][1], l->side[0][0][2], l->side[0][1][0], l->side[0][1][1], l->side[0][1][2], l->side[1][0][0], l->side[1][0][1],
+		                 l->side[1][0][2], l->side[1][1][0], l->side[1][1][1], l->side[1][1][2], l->side[2][0][0], l->side[2][0][1], l->side[2][0][2], l->side[2][1][0],
+		                 l->side[2][1][1], l->side[2][1][2]);
+		RldKitBuf_Printf(&b, "  \"tread\": {\"upper\": [[%.1f, %.1f, %.1f], [%.1f, %.1f, %.1f]], \"lower\": [[%.1f, %.1f, %.1f], [%.1f, %.1f, %.1f]]}},\n",
+		                 l->tread[0][0][0], l->tread[0][0][1], l->tread[0][0][2], l->tread[0][1][0], l->tread[0][1][1], l->tread[0][1][2], l->tread[1][0][0],
+		                 l->tread[1][0][1], l->tread[1][0][2], l->tread[1][1][0], l->tread[1][1][1], l->tread[1][1][2]);
+	}
 	RldKitBuf_Printf(&b, " \"files\": {");
 	for (k = 0; k < 4; k++)
 	{
@@ -537,6 +578,28 @@ static u8 *RldKit_WriteReport(const RldKitResult *r, const RldKitOptions *opt, c
 	                 r->wheelMeasured ? "from the sprites" : "the defaults", r->wheelRadius, r->wheelWidth, (unsigned)r->tyre[0], (unsigned)r->tyre[1],
 	                 (unsigned)r->tyre[2], (unsigned)r->rim[0], (unsigned)r->rim[1], (unsigned)r->rim[2], (unsigned)r->hub[0], (unsigned)r->hub[1], (unsigned)r->hub[2],
 	                 (unsigned)(r->wheel.indices / 3u));
+	if (c->wheelLook)
+	{
+		const RldKitWheelLook *l = &c->look;
+		static const char *const ring[3] = {"tyre", "rim ", "hub "};
+		int k;
+
+		RldKitBuf_Printf(&b, "wheel texture  the tread sprite round the tread, the hub sprite on the sides: atlas %ux%u (Scale2x x%d)\n", (unsigned)r->wheelAtlasW,
+		                 (unsigned)r->wheelAtlasH, opt->upscale);
+		for (k = 0; k < 3; k++)
+		{
+			RldKitBuf_Printf(&b, "wheel look     hub side %s: render %5.1f %5.1f %5.1f, sprite %5.1f %5.1f %5.1f, flat colour %5.1f %5.1f %5.1f\n", ring[k],
+			                 l->side[k][0][0], l->side[k][0][1], l->side[k][0][2], l->side[k][1][0], l->side[k][1][1], l->side[k][1][2], l->flatSide[k][0],
+			                 l->flatSide[k][1], l->flatSide[k][2]);
+		}
+		for (k = 0; k < 2; k++)
+		{
+			RldKitBuf_Printf(&b, "wheel look     tread %s: render %5.1f %5.1f %5.1f, sprite %5.1f %5.1f %5.1f, flat colour %5.1f %5.1f %5.1f\n", (k == 0) ? "upper" : "lower",
+			                 l->tread[k][0][0], l->tread[k][0][1], l->tread[k][0][2], l->tread[k][1][0], l->tread[k][1][1], l->tread[k][1][2], l->flatTread[0],
+			                 l->flatTread[1], l->flatTread[2]);
+		}
+		RldKitBuf_Printf(&b, "wheel look     largest difference to the sprites %.1f (limit %.1f) - the flat colours %.1f\n", l->worst, RLDKIT_LOOK_LIMIT, l->worstFlat);
+	}
 	RldKitBuf_Printf(&b, "budget         %u triangles of %u, %llu texture bytes of %u\n", (unsigned)c->triangles, (unsigned)RLDHIRES_BUDGET_TRIANGLES,
 	                 (unsigned long long)c->textureBytes, (unsigned)RLDHIRES_BUDGET_TEXTURE_BYTES);
 	if (b.fail)
@@ -1473,7 +1536,27 @@ static int RldKit_SelfTest(void)
 		}
 		KitTest_Check(r.wheelMeasured && (fabs(r.wheelRadius * 64.0 - 15.0) < 0.6) && (fabs(r.wheelWidth * 64.0 - 22.0) < 1e-6) && (r.tyre[0] < 40u) && (r.rim[0] > 120u),
 		              "the wheel from the sprites: radius 15, width 22 (the tread sprite), dark tyre, light rim");
-		KitTest_Check((r.wheel.indices / 3u <= 1500u) && (r.wheel.indices / 3u > 500u), "the wheel: 500..1500 triangles");
+		KitTest_Check((r.wheel.indices / 3u <= 400u) && (r.wheel.indices / 3u >= 200u) && r.wheel.textured && (r.wheelAtlas != NULL) &&
+		                  (r.wheelAtlasW == 4u * r.wheelSourceW) && (r.wheelAtlasH == 4u * r.wheelSourceH),
+		              "the wheel (K2b): 200..400 triangles, textured with its own atlas x4 (the two sprites)");
+		{
+			u32 t;
+			int opaque = 1;
+
+			for (t = 0; (r.wheelAtlasSource != NULL) && (t < r.wheelSourceW * r.wheelSourceH); t++)
+			{
+				opaque &= (r.wheelAtlasSource[t * 4u + 3u] == 255u);
+			}
+			KitTest_Check(opaque && (r.wheelAtlasSource != NULL), "the wheel's atlas: every transparent texel filled from its neighbours");
+		}
+		KitTest_Check(c.wheelLook && (c.look.worst <= RLDKIT_LOOK_LIMIT) && (c.look.worstFlat > c.look.worst),
+		              "the wheel's look: render vs sprites within 12 per channel and ring, closer than the flat colours");
+		if (!c.wheelLook || (c.look.worst > RLDKIT_LOOK_LIMIT) || (c.look.worstFlat <= c.look.worst))
+		{
+			printf("       wheel look: measured %d, worst %.2f, flat %.2f; tyre %.1f/%.1f rim %.1f/%.1f hub %.1f/%.1f upper %.1f/%.1f lower %.1f/%.1f (red, render/sprite)\n",
+			       c.wheelLook, c.look.worst, c.look.worstFlat, c.look.side[0][0][0], c.look.side[0][1][0], c.look.side[1][0][0], c.look.side[1][1][0],
+			       c.look.side[2][0][0], c.look.side[2][1][0], c.look.tread[0][0][0], c.look.tread[0][1][0], c.look.tread[1][0][0], c.look.tread[1][1][0]);
+		}
 		KitTest_Check((fabs(r.wheelPos[0][0] * 64.0 - 36.0) < 1e-9) && (fabs(r.wheelPos[1][0] * 64.0 + 36.0) < 1e-9) && (fabs(r.wheelPos[2][2] * 64.0 + 24.0) < 1e-9),
 		              "the wheel points of the game");
 		KitTest_Check(fabs(r.seat[1] * 64.0 - (6.0 + RLDKIT_SEAT_ABOVE_FLOOR)) < 1e-6, "the seat: 4.4 above the floor found under it (the box bottom at 6; its top at 30 is above the ray)");

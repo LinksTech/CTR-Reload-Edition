@@ -72,8 +72,19 @@
 // twice (EPX, the published rule; the same as tools/rldpack_hires_upscale.inc).
 //
 // THE WHEELS: the retail game has no wheel model, only sprites. A wheel is made
-// here: a tyre with a ribbed tread, a dished rim and a hub, its radius from the
-// side sprite, its colours from the sprites' texels (medians of a band each).
+// here: a tyre turned from a short profile (an inner side, rounded shoulders,
+// the tread, an outer side with a dished rim; RLDKIT_TIRE_SEG around), its
+// radius from the side sprite. Its texture (K2b) are the two sprites
+// themselves: the tread-side sprite (icon 0) stretched round the tread - a
+// point at height y takes the sprite row at y, so the front and the back half
+// show the sprite as the game shows it from the front - and the hub-side
+// sprite (icon 16) laid flat on both sides (rim and hub as the game draws
+// them); transparent texels filled from their opaque neighbours, Scale2x like
+// the kart's atlas, the vertex colour grey 128 (neutral). Without the sprites
+// the wheel has flat colours (medians of bands of the sprites, or defaults).
+// THE WHEEL'S LOOK (RldKit_WheelLook): an unlit render of the wheel from the
+// hub side and from the front against the two sprites, mean colour per ring
+// (tyre, rim, hub) and per half of the tread.
 //
 // DETERMINISM: integer decoding, doubles in a fixed order, sine and cosine as
 // written-out series (RldKit_SinCos), sqrt (exact in IEEE). The same game data
@@ -254,6 +265,19 @@ typedef struct RldKitResult
 	double steerMaxDeg;                 // the game's front wheel at full lock (wheelRotation 64 x 4)
 	u8 tyre[3], rim[3], hub[3], ring[3];// sRGB colours measured
 	int wheelMeasured;                  // 0 = no sprites found: defaults
+	// THE WHEEL'S TEXTURE (K2b): the tread-side sprite and the hub-side sprite
+	// side by side (source atlas, texels; transparent ones filled), upscaled
+	// like the kart's atlas; NULL = no sprites, the wheel has flat colours.
+	u8 *wheelAtlas;                     // RGBA, wheelAtlasW x wheelAtlasH (after the upscale)
+	u32 wheelAtlasW, wheelAtlasH;
+	u8 *wheelAtlasSource;               // RGBA before the upscale, wheelSourceW x wheelSourceH
+	u32 wheelSourceW, wheelSourceH;
+	u8 *wheelSprite[2];                 // the two sprites as decoded (alpha 0 = transparent), for the look
+	u32 wheelSpriteW[2], wheelSpriteH[2];
+	int wheelSpriteAt[2][2];            // their top left in the source atlas
+	double treadBox[4];                 // the tread sprite's opaque extent in the source atlas: x0 y0 x1 y1 (edges)
+	double sideCentre[2];               // the hub sprite's middle and radius in the source atlas (texel edges)
+	double sideRadius;
 	double maxDeviation;                // model units: a smoothed vertex from its retail triangle
 	u32 bulgeLimited;                   // edges and faces whose bulge was limited
 	u32 floorDoubled;                   // cockpit floor triangles given a turned copy (THE COCKPIT FLOOR)
@@ -1899,8 +1923,222 @@ static void RldKit_Shade(const u8 in[3], double f, u8 out[4])
 	out[3] = 255;
 }
 
-// The wheel: a profile turned about X. Positions in model units here, the
-// mesh in metres. 1 = made.
+// One sprite decoded to RGBA (alpha 0 = the transparent word 0), malloc'ed,
+// with its opaque extent ext = x0 y0 x1 y1 (inclusive). NULL when it is empty.
+static u8 *RldKit_SpriteRgba(const u16 *vram, const u8 *written, const u32 layout[3], u32 *w, u32 *h, int ext[4])
+{
+	const u32 clut = layout[0] >> 16;
+	const u32 tpage = layout[1] >> 16;
+	const int u0 = (int)(layout[0] & 0xffu);
+	const int v0 = (int)((layout[0] >> 8) & 0xffu);
+	const int u1 = (int)(layout[1] & 0xffu);
+	const int v2 = (int)((layout[2] >> 8) & 0xffu);
+	const int sw = u1 - u0 + 1;
+	const int sh = v2 - v0 + 1;
+	u8 *out;
+	int x;
+	int y;
+
+	if ((sw <= 0) || (sh <= 0) || (sw > 64) || (sh > 64))
+	{
+		return NULL;
+	}
+	out = (u8 *)calloc((size_t)sw * (size_t)sh, 4u);
+	if (out == NULL)
+	{
+		return NULL;
+	}
+	ext[0] = ext[1] = 1 << 30;
+	ext[2] = ext[3] = -1;
+	for (y = 0; y < sh; y++)
+	{
+		for (x = 0; x < sw; x++)
+		{
+			int ok = 0;
+			const u32 c = RldKit_TexelWord(vram, written, tpage, clut, u0 + x, v0 + y, &ok);
+			u8 *px = &out[((size_t)y * (size_t)sw + (size_t)x) * 4u];
+
+			RldKit_WordRgba(ok ? c : 0u, px);
+			if (px[3] != 0u)
+			{
+				ext[0] = (x < ext[0]) ? x : ext[0];
+				ext[1] = (y < ext[1]) ? y : ext[1];
+				ext[2] = (x > ext[2]) ? x : ext[2];
+				ext[3] = (y > ext[3]) ? y : ext[3];
+			}
+		}
+	}
+	if (ext[2] < 0)
+	{
+		free(out);
+		return NULL;
+	}
+	*w = (u32)sw;
+	*h = (u32)sh;
+	return out;
+}
+
+// THE WHEEL'S ATLAS (K2b): the opaque extent of the tread sprite at the left,
+// the hub sprite's at its right, RLDKIT_TILE_PAD texels apart and from the
+// edges, the edges powers of two; every transparent texel takes the mean of its opaque neighbours, round
+// after round, until none is left (alpha 255 everywhere: the wheel is opaque);
+// then `passes` Scale2x. 1 = made (or no sprites: 1 with no atlas); 0 = out of memory.
+static int RldKit_WheelAtlas(RldKitResult *r, const u16 *vram, const u8 *written, const u32 tread[3], const u32 side[3], int passes)
+{
+	int ext[2][4];
+	u32 W = 16u;
+	u32 H = 16u;
+	u32 x;
+	u32 y;
+	int k;
+	int changed = 1;
+	u8 *cur;
+
+	r->wheelSprite[0] = RldKit_SpriteRgba(vram, written, tread, &r->wheelSpriteW[0], &r->wheelSpriteH[0], ext[0]);
+	r->wheelSprite[1] = RldKit_SpriteRgba(vram, written, side, &r->wheelSpriteW[1], &r->wheelSpriteH[1], ext[1]);
+	if ((r->wheelSprite[0] == NULL) || (r->wheelSprite[1] == NULL))
+	{
+		free(r->wheelSprite[0]);
+		free(r->wheelSprite[1]);
+		r->wheelSprite[0] = r->wheelSprite[1] = NULL;
+		return 1;
+	}
+	// Only the opaque extent of each sprite goes in (wheelSpriteAt: where the
+	// sprite's own texel 0, 0 lands - outside the atlas when it has a margin).
+	{
+		const int ow0 = ext[0][2] - ext[0][0] + 1;
+		const int ow1 = ext[1][2] - ext[1][0] + 1;
+		const int oh0 = ext[0][3] - ext[0][1] + 1;
+		const int oh1 = ext[1][3] - ext[1][1] + 1;
+
+		r->wheelSpriteAt[0][0] = RLDKIT_TILE_PAD - ext[0][0];
+		r->wheelSpriteAt[0][1] = RLDKIT_TILE_PAD - ext[0][1];
+		r->wheelSpriteAt[1][0] = 3 * RLDKIT_TILE_PAD + ow0 - ext[1][0];
+		r->wheelSpriteAt[1][1] = RLDKIT_TILE_PAD - ext[1][1];
+		while (W < (u32)(4 * RLDKIT_TILE_PAD + ow0 + ow1))
+		{
+			W *= 2u;
+		}
+		while (H < (u32)(((oh0 > oh1) ? oh0 : oh1) + 2 * RLDKIT_TILE_PAD))
+		{
+			H *= 2u;
+		}
+	}
+	r->wheelSourceW = W;
+	r->wheelSourceH = H;
+	r->wheelAtlasSource = (u8 *)calloc((size_t)W * H, 4u);
+	if (r->wheelAtlasSource == NULL)
+	{
+		return 0;
+	}
+	for (k = 0; k < 2; k++)
+	{
+		for (y = (u32)ext[k][1]; y <= (u32)ext[k][3]; y++)
+		{
+			memcpy(&r->wheelAtlasSource[((size_t)(r->wheelSpriteAt[k][1] + (int)y) * W + (size_t)(r->wheelSpriteAt[k][0] + ext[k][0])) * 4u],
+			       &r->wheelSprite[k][((size_t)y * r->wheelSpriteW[k] + (size_t)ext[k][0]) * 4u], (size_t)(ext[k][2] - ext[k][0] + 1) * 4u);
+		}
+	}
+	r->treadBox[0] = (double)(r->wheelSpriteAt[0][0] + ext[0][0]);
+	r->treadBox[1] = (double)(r->wheelSpriteAt[0][1] + ext[0][1]);
+	r->treadBox[2] = (double)(r->wheelSpriteAt[0][0] + ext[0][2] + 1);
+	r->treadBox[3] = (double)(r->wheelSpriteAt[0][1] + ext[0][3] + 1);
+	r->sideCentre[0] = (double)r->wheelSpriteAt[1][0] + 0.5 * (double)(ext[1][0] + ext[1][2] + 1);
+	r->sideCentre[1] = (double)r->wheelSpriteAt[1][1] + 0.5 * (double)(ext[1][1] + ext[1][3] + 1);
+	r->sideRadius = 0.5 * (double)(ext[1][3] - ext[1][1] + 1);
+	// The transparent texels filled (a fixed order: the same everywhere).
+	while (changed)
+	{
+		u8 *next = (u8 *)malloc((size_t)W * H * 4u);
+
+		if (next == NULL)
+		{
+			return 0;
+		}
+		memcpy(next, r->wheelAtlasSource, (size_t)W * H * 4u);
+		changed = 0;
+		for (y = 0; y < H; y++)
+		{
+			for (x = 0; x < W; x++)
+			{
+				static const int dx[4] = {-1, 1, 0, 0};
+				static const int dy[4] = {0, 0, -1, 1};
+				u32 sum[3] = {0u, 0u, 0u};
+				u32 n = 0;
+				int d;
+
+				if (r->wheelAtlasSource[((size_t)y * W + x) * 4u + 3u] != 0u)
+				{
+					continue;
+				}
+				for (d = 0; d < 4; d++)
+				{
+					const int nx = (int)x + dx[d];
+					const int ny = (int)y + dy[d];
+					const u8 *q;
+
+					if ((nx < 0) || (ny < 0) || (nx >= (int)W) || (ny >= (int)H))
+					{
+						continue;
+					}
+					q = &r->wheelAtlasSource[((size_t)ny * W + (size_t)nx) * 4u];
+					if (q[3] != 0u)
+					{
+						sum[0] += q[0];
+						sum[1] += q[1];
+						sum[2] += q[2];
+						n++;
+					}
+				}
+				if (n > 0u)
+				{
+					u8 *o = &next[((size_t)y * W + x) * 4u];
+
+					o[0] = (u8)((sum[0] + n / 2u) / n);
+					o[1] = (u8)((sum[1] + n / 2u) / n);
+					o[2] = (u8)((sum[2] + n / 2u) / n);
+					o[3] = 255u;
+					changed = 1;
+				}
+			}
+		}
+		free(r->wheelAtlasSource);
+		r->wheelAtlasSource = next;
+	}
+	cur = (u8 *)malloc((size_t)W * H * 4u);
+	if (cur == NULL)
+	{
+		return 0;
+	}
+	memcpy(cur, r->wheelAtlasSource, (size_t)W * H * 4u);
+	for (k = 0; k < passes; k++)
+	{
+		u8 *next = (u8 *)malloc((size_t)W * H * 16u);
+
+		if (next == NULL)
+		{
+			free(cur);
+			return 0;
+		}
+		RldKit_Scale2x(cur, W, H, next);
+		free(cur);
+		cur = next;
+		W *= 2u;
+		H *= 2u;
+	}
+	r->wheelAtlas = cur;
+	r->wheelAtlasW = W;
+	r->wheelAtlasH = H;
+	return 1;
+}
+
+// The wheel: a profile turned about X (positions in model units here, the mesh
+// in metres): the inner side (x -h, a disc to 0.9 R), a rounded shoulder, the
+// tread (|x| <= 0.8 h, radius R), the outer shoulder, the outer side down to
+// 0.6 R, the rim dished in by one unit to 0.15 R, the hub. With the wheel's
+// atlas: the tread and the shoulders take the tread sprite by height (THE
+// WHEELS), the sides the hub sprite laid flat (z, y); grey 128. Without it
+// flat colours by part. A ring that ends at the axis is a fan. 1 = made.
 static int RldKit_WheelMesh(RldKitResult *r)
 {
 	enum
@@ -1908,155 +2146,124 @@ static int RldKit_WheelMesh(RldKitResult *r)
 		K_SIDE = 0,
 		K_SHOULDER,
 		K_TREAD,
-		K_GROOVE,
 		K_RIMEDGE,
 		K_RIM,
 		K_HUB
 	};
-	double px[64];
-	double pr[64];
-	int pk[64];
-	int np = 0;
 	const double R = r->wheelRadius * RLDKIT_UNITS_PER_METRE;
 	const double h = 0.5 * r->wheelWidth * RLDKIT_UNITS_PER_METRE;
-	const double groove = 0.6;
-	int i;
+	const double px[9] = {-h, -h, -0.8 * h, 0.8 * h, h, h, h - 1.0, h - 1.0, h - 1.0};
+	const double pr[9] = {0.0, 0.9 * R, R, R, 0.9 * R, 0.6 * R, 0.5 * R, 0.15 * R, 0.0};
+	const int pk[9] = {K_SIDE, K_SIDE, K_SHOULDER, K_TREAD, K_SHOULDER, K_SIDE, K_RIMEDGE, K_RIM, K_HUB};
+	const int textured = (r->wheelAtlas != NULL);
+	const u32 segs = 8u;
+	const u32 verts = segs * (RLDKIT_TIRE_SEG + 1u) * 2u;
+	const u32 idx = segs * RLDKIT_TIRE_SEG * 6u;
+	const u8 grey[4] = {128, 128, 128, 255};
+	u32 vi = 0;
+	u32 ii = 0;
+	u32 seg;
 	int s;
 
-#define RLDKIT_P(x, rr, kk) \
-	do                      \
-	{                       \
-		px[np] = (x);       \
-		pr[np] = (rr);      \
-		pk[np] = (kk);      \
-		np++;               \
-	} while (0)
-
-	// From the inner hub out over the tyre and back in to the outer hub.
-	RLDKIT_P(-h + 0.5, 0.0, K_SIDE);
-	RLDKIT_P(-h + 0.5, 0.55 * R, K_SIDE);
-	RLDKIT_P(-h, 0.62 * R, K_SIDE);
-	RLDKIT_P(-h, 0.90 * R, K_SIDE);
-	RLDKIT_P(-h + 0.10 * 2.0 * h, R, K_SHOULDER);
+	if (!RldKit_MeshAlloc(&r->wheel, verts, idx))
 	{
-		const double xs = -h + 0.10 * 2.0 * h;
-		const double xe = h - 0.10 * 2.0 * h;
-		const double unit = (xe - xs) / ((double)RLDKIT_TIRE_RIBS + 0.5 * (double)(RLDKIT_TIRE_RIBS - 1));
-		double x = xs;
-
-		for (i = 0; i < RLDKIT_TIRE_RIBS; i++)
-		{
-			if (i > 0)
-			{
-				RLDKIT_P(x, R, K_TREAD);
-			}
-			x += unit;
-			RLDKIT_P(x, R, K_TREAD);
-			if (i + 1 < RLDKIT_TIRE_RIBS)
-			{
-				RLDKIT_P(x, R - groove, K_GROOVE);
-				x += 0.5 * unit;
-				RLDKIT_P(x, R - groove, K_GROOVE);
-			}
-		}
+		return 0;
 	}
-	RLDKIT_P(h, 0.90 * R, K_SHOULDER);
-	RLDKIT_P(h, 0.60 * R, K_SIDE);
-	RLDKIT_P(h - 0.3, 0.53 * R, K_RIMEDGE);
-	RLDKIT_P(h - 1.5, 0.45 * R, K_RIM);
-	RLDKIT_P(h - 1.5, 0.15 * R, K_RIM);
-	RLDKIT_P(h - 1.5, 0.13 * R, K_HUB);
-	RLDKIT_P(h - 2.5, 0.13 * R, K_HUB);
-	RLDKIT_P(h - 2.5, 0.0, K_HUB);
-#undef RLDKIT_P
-
+	for (seg = 0; seg < segs; seg++)
 	{
-		const u32 segs = (u32)(np - 1);
-		const u32 verts = segs * (RLDKIT_TIRE_SEG + 1u) * 2u;
-		const u32 idx = segs * RLDKIT_TIRE_SEG * 6u;
-		u32 vi = 0;
-		u32 ii = 0;
-		u32 seg;
+		const double dx = px[seg + 1u] - px[seg];
+		const double dr = pr[seg + 1u] - pr[seg];
+		double nx = dr; // the profile's outward normal: (dr, -dx) in (x, r)
+		double nr = -dx;
+		const double l = sqrt(nx * nx + nr * nr);
+		const int kind = pk[seg + 1u];
+		// the tread sprite on the shoulders and the tread, the hub sprite on the sides
+		const int treadMap = (seg >= 1u) && (seg <= 3u);
+		u8 col[4];
+		const u32 base = vi;
 
-		if (!RldKit_MeshAlloc(&r->wheel, verts, idx))
+		if (l > 0.0)
 		{
-			return 0;
+			nx /= l;
+			nr /= l;
 		}
-		for (seg = 0; seg < segs; seg++)
+		switch (kind)
 		{
-			const double dx = px[seg + 1u] - px[seg];
-			const double dr = pr[seg + 1u] - pr[seg];
-			double nx = dr;  // the profile's outward normal: (dr, -dx) in (x, r)
-			double nr = -dx;
-			const double l = sqrt(nx * nx + nr * nr);
-			u8 col[4];
-			const int kind = (pk[seg] == K_GROOVE && pk[seg + 1u] == K_GROOVE) ? K_GROOVE : pk[seg + 1u];
-			const u32 base = vi;
+		case K_SIDE:
+			RldKit_Shade(r->tyre, 0.85, col);
+			break;
+		case K_SHOULDER:
+			RldKit_Shade(r->tyre, 0.92, col);
+			break;
+		case K_RIMEDGE:
+			RldKit_Shade(r->rim, 0.80, col);
+			break;
+		case K_RIM:
+			RldKit_Shade(r->rim, 1.0, col);
+			break;
+		case K_HUB:
+			RldKit_Shade(r->hub, 1.0, col);
+			break;
+		default:
+			RldKit_Shade(r->tyre, 1.0, col);
+			break;
+		}
+		for (s = 0; s <= RLDKIT_TIRE_SEG; s++)
+		{
+			double sn;
+			double cs;
+			int end;
 
-			if (l > 0.0)
+			RldKit_SinCos(360.0 * (double)(s % RLDKIT_TIRE_SEG) / (double)RLDKIT_TIRE_SEG, &sn, &cs);
+			for (end = 0; end < 2; end++)
 			{
-				nx /= l;
-				nr /= l;
-			}
-			switch (kind)
-			{
-			case K_SIDE:
-				RldKit_Shade(r->tyre, 0.85, col);
-				break;
-			case K_SHOULDER:
-				RldKit_Shade(r->tyre, 0.92, col);
-				break;
-			case K_GROOVE:
-				RldKit_Shade(r->tyre, 0.55, col);
-				break;
-			case K_RIMEDGE:
-				RldKit_Shade(r->rim, 0.80, col);
-				break;
-			case K_RIM:
-				RldKit_Shade(r->rim, 1.0, col);
-				break;
-			case K_HUB:
-				RldKit_Shade(r->hub, 1.0, col);
-				break;
-			default:
-				RldKit_Shade(r->tyre, 1.0, col);
-				break;
-			}
-			for (s = 0; s <= RLDKIT_TIRE_SEG; s++)
-			{
-				double sn;
-				double cs;
-				int end;
+				const double p[3] = {px[seg + (u32)end], pr[seg + (u32)end] * cs, pr[seg + (u32)end] * sn};
+				const double n[3] = {nx, nr * cs, nr * sn};
+				double u = 0.0;
+				double v = 0.0;
 
-				RldKit_SinCos(360.0 * (double)(s % RLDKIT_TIRE_SEG) / (double)RLDKIT_TIRE_SEG, &sn, &cs);
-				for (end = 0; end < 2; end++)
+				if (textured && treadMap)
 				{
-					const double p[3] = {px[seg + (u32)end], pr[seg + (u32)end] * cs, pr[seg + (u32)end] * sn};
-					const double n[3] = {nx, nr * cs, nr * sn};
-
-					RldKit_SetVertex(&r->wheel.v[vi++], p, RLDKIT_UNITS_PER_METRE, n, 0.0, 0.0, col);
+					// across the axle -> the sprite's columns, the height -> its rows
+					u = r->treadBox[0] + (p[0] + h) / (2.0 * h) * (r->treadBox[2] - r->treadBox[0]);
+					v = r->treadBox[1] + (R - p[1]) / (2.0 * R) * (r->treadBox[3] - r->treadBox[1]);
 				}
+				else if (textured)
+				{
+					// the hub sprite laid flat: z -> columns, y -> rows (up is the top)
+					u = r->sideCentre[0] + p[2] / R * r->sideRadius;
+					v = r->sideCentre[1] - p[1] / R * r->sideRadius;
+				}
+				RldKit_SetVertex(&r->wheel.v[vi++], p, RLDKIT_UNITS_PER_METRE, n, textured ? (u / (double)r->wheelSourceW) : 0.0,
+				                 textured ? (v / (double)r->wheelSourceH) : 0.0, textured ? grey : col);
 			}
-			for (s = 0; s < RLDKIT_TIRE_SEG; s++)
-			{
-				const u32 a = base + 2u * (u32)s;
-				const u32 b = a + 1u;
-				const u32 c = a + 2u;
-				const u32 d = a + 3u;
+		}
+		for (s = 0; s < RLDKIT_TIRE_SEG; s++)
+		{
+			const u32 a = base + 2u * (u32)s;
+			const u32 b = a + 1u;
+			const u32 c = a + 2u;
+			const u32 d = a + 3u;
 
-				// faces out: (seg start, seg end) along the profile, then around +X
+			// faces out: (seg start, seg end) along the profile, then around +X;
+			// a ring that starts or ends at the axis gives one triangle per step
+			if (pr[seg] > 0.0)
+			{
 				r->wheel.index[ii++] = a;
 				r->wheel.index[ii++] = c;
 				r->wheel.index[ii++] = b;
+			}
+			if (pr[seg + 1u] > 0.0)
+			{
 				r->wheel.index[ii++] = b;
 				r->wheel.index[ii++] = c;
 				r->wheel.index[ii++] = d;
 			}
 		}
-		r->wheel.vertices = vi;
-		r->wheel.indices = ii;
-		r->wheel.textured = 0;
 	}
+	r->wheel.vertices = vi;
+	r->wheel.indices = ii;
+	r->wheel.textured = textured;
 	return 1;
 }
 
@@ -2236,6 +2443,10 @@ static void RldKit_ResultFree(RldKitResult *r)
 	RldKit_MeshFree(&r->flat);
 	RldKit_MeshFree(&r->steer);
 	RldKit_MeshFree(&r->wheel);
+	free(r->wheelAtlas);
+	free(r->wheelAtlasSource);
+	free(r->wheelSprite[0]);
+	free(r->wheelSprite[1]);
 	free(r->atlas);
 	free(r->atlasSource);
 	free(r->tile);
@@ -2282,6 +2493,9 @@ static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKi
 	u32 t;
 	u32 nk = 0;
 	int ok = 0;
+	u32 wheelTread[3];
+	u32 wheelSide[3];
+	int wheelSprites = 0;
 
 	memset(r, 0, sizeof(*r));
 	if ((src == NULL) || (opt == NULL) || (opt->driver < 0) || (opt->driver >= RLDKIT_DRIVERS))
@@ -2987,9 +3201,11 @@ static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKi
 	}
 
 	// THE WHEELS: sizes and colours from the sprites, the game's points.
+	memset(wheelTread, 0, sizeof(wheelTread));
+	memset(wheelSide, 0, sizeof(wheelSide));
 	{
-		u32 tread[3];
-		u32 side[3];
+		u32 *tread = wheelTread;
+		u32 *side = wheelSide;
 		double R = RLDKIT_TIRE_HALF_SIZE - 1.0;
 		double across = 22.0;
 		const double widthMax = RLDKIT_TIRE_WIDTH_MAX;
@@ -3005,6 +3221,7 @@ static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKi
 		memcpy(r->rim, defRim, 3);
 		memcpy(r->hub, defHub, 3);
 		r->wheelMeasured = 0;
+		wheelSprites = okTread && okSide;
 		if (okSide && RldKit_SpriteBand(vram, written, side, 0.62, 0.95, 0, 255, r->tyre, &R, NULL))
 		{
 			r->wheelMeasured = 1;
@@ -3033,7 +3250,7 @@ static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKi
 		}
 		r->steerMaxDeg = 64.0 * 4.0 * 360.0 / 4096.0;
 	}
-	if (!RldKit_WheelMesh(r) || !RldKit_SteerMesh(r))
+	if ((wheelSprites && !RldKit_WheelAtlas(r, vram, written, wheelTread, wheelSide, passes)) || !RldKit_WheelMesh(r) || !RldKit_SteerMesh(r))
 	{
 		RldKit_Fail(why, whySize, "out of memory");
 		goto done;
@@ -3164,6 +3381,278 @@ static double RldKit_Iou(const RldKitMesh *a, const RldKitMesh *b, int view, int
 	}
 	free(mask);
 	return (uni > 0u) ? ((double)inter / (double)uni) : 1.0;
+}
+
+// THE WHEEL'S LOOK (K2b): the wheel rendered unlit and orthographic (size x
+// size pixels over -R..R; the nearest texel of the upscaled atlas times the
+// vertex colour / 128, or the vertex colour without a texture; the nearest
+// surface wins) from the hub side (+x, pixels z y) and from the front (+z,
+// pixels x y), against the sprites as decoded: the mean colour of the rings
+// tyre 0.62-0.95, rim 0.20-0.52 and hub 0-0.12 of the radius (hub side), and
+// of the upper and the lower half (front). The flat colours (the wheel without
+// its texture: tyre x 0.85 on the side, rim, hub, tyre on the tread) against
+// the same sprite means, for comparison. 1 = measured; 0 = no sprites or memory.
+#define RLDKIT_LOOK_SIZE 64
+#define RLDKIT_LOOK_LIMIT 12.0 // the largest mean difference of a channel (0..255), DONE K2b #1/#2
+typedef struct RldKitWheelLook
+{
+	double side[3][2][3];  // ring (tyre, rim, hub) x (render, sprite) x RGB
+	double tread[2][2][3]; // half (upper, lower) x (render, sprite) x RGB
+	double flatSide[3][3];
+	double flatTread[3];
+	double worst;          // the largest |render - sprite| of a channel
+	double worstFlat;      // the largest |flat - sprite|
+} RldKitWheelLook;
+
+static const double s_rldKitLookRing[3][2] = {{0.62, 0.95}, {0.20, 0.52}, {0.0, 0.12}};
+
+static void RldKit_WheelRender(const RldKitResult *r, int view, double *rgb, u8 *cov)
+{
+	const int size = RLDKIT_LOOK_SIZE;
+	const RldKitMesh *m = &r->wheel;
+	const double R = r->wheelRadius;
+	double *depth = (double *)malloc((size_t)size * size * sizeof(double));
+	u32 i;
+	int k;
+
+	memset(cov, 0, (size_t)size * size);
+	memset(rgb, 0, (size_t)size * size * 3u * sizeof(double));
+	if (depth == NULL)
+	{
+		return;
+	}
+	for (k = 0; k < size * size; k++)
+	{
+		depth[k] = -1e30;
+	}
+	for (i = 0; i + 2u < m->indices; i += 3u)
+	{
+		const RldKitVertex *v[3] = {&m->v[m->index[i]], &m->v[m->index[i + 1u]], &m->v[m->index[i + 2u]]};
+		double q[3][3]; // screen x, screen y (pixels), depth
+		double area;
+		int x0;
+		int x1;
+		int y0;
+		int y1;
+		int x;
+		int y;
+
+		for (k = 0; k < 3; k++)
+		{
+			const double su = (view == 0) ? (double)v[k]->p[2] : (double)v[k]->p[0];
+
+			q[k][0] = (su + R) / (2.0 * R) * (double)size;
+			q[k][1] = (R - (double)v[k]->p[1]) / (2.0 * R) * (double)size;
+			q[k][2] = (view == 0) ? (double)v[k]->p[0] : (double)v[k]->p[2];
+		}
+		area = (q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[2][0] - q[0][0]) * (q[1][1] - q[0][1]);
+		if (fabs(area) < 1e-12)
+		{
+			continue;
+		}
+		x0 = (int)floor(fmin(q[0][0], fmin(q[1][0], q[2][0])));
+		x1 = (int)ceil(fmax(q[0][0], fmax(q[1][0], q[2][0])));
+		y0 = (int)floor(fmin(q[0][1], fmin(q[1][1], q[2][1])));
+		y1 = (int)ceil(fmax(q[0][1], fmax(q[1][1], q[2][1])));
+		for (y = (y0 < 0) ? 0 : y0; (y <= y1) && (y < size); y++)
+		{
+			for (x = (x0 < 0) ? 0 : x0; (x <= x1) && (x < size); x++)
+			{
+				const double px = (double)x + 0.5;
+				const double py = (double)y + 0.5;
+				const double w0 = ((q[1][0] - px) * (q[2][1] - py) - (q[2][0] - px) * (q[1][1] - py)) / area;
+				const double w1 = ((q[2][0] - px) * (q[0][1] - py) - (q[0][0] - px) * (q[2][1] - py)) / area;
+				const double w2 = 1.0 - w0 - w1;
+				const double d = w0 * q[0][2] + w1 * q[1][2] + w2 * q[2][2];
+				const size_t at = (size_t)y * (size_t)size + (size_t)x;
+
+				if ((w0 < 0.0) || (w1 < 0.0) || (w2 < 0.0) || (d <= depth[at]))
+				{
+					continue;
+				}
+				depth[at] = d;
+				cov[at] = 1;
+				for (k = 0; k < 3; k++)
+				{
+					const double c = w0 * v[0]->c[k] + w1 * v[1]->c[k] + w2 * v[2]->c[k];
+
+					if (m->textured && (r->wheelAtlas != NULL))
+					{
+						const double u = w0 * v[0]->uv[0] + w1 * v[1]->uv[0] + w2 * v[2]->uv[0];
+						const double vv = w0 * v[0]->uv[1] + w1 * v[1]->uv[1] + w2 * v[2]->uv[1];
+						u32 ax = (u32)fmax(0.0, u * (double)r->wheelAtlasW);
+						u32 ay = (u32)fmax(0.0, vv * (double)r->wheelAtlasH);
+
+						ax = (ax >= r->wheelAtlasW) ? r->wheelAtlasW - 1u : ax;
+						ay = (ay >= r->wheelAtlasH) ? r->wheelAtlasH - 1u : ay;
+						rgb[at * 3u + (u32)k] = fmin(255.0, (double)r->wheelAtlas[((size_t)ay * r->wheelAtlasW + ax) * 4u + (u32)k] * c / 128.0);
+					}
+					else
+					{
+						rgb[at * 3u + (u32)k] = c;
+					}
+				}
+			}
+		}
+	}
+	free(depth);
+}
+
+static int RldKit_WheelLook(const RldKitResult *r, RldKitWheelLook *out)
+{
+	const int size = RLDKIT_LOOK_SIZE;
+	double *rgb = (double *)malloc((size_t)size * size * 3u * sizeof(double));
+	u8 *cov = (u8 *)malloc((size_t)size * size);
+	double n[2][3][2];
+	int view;
+	int k;
+	int a;
+	int c;
+
+	memset(out, 0, sizeof(*out));
+	memset(n, 0, sizeof(n));
+	if ((r->wheelSprite[0] == NULL) || (r->wheelSprite[1] == NULL) || (rgb == NULL) || (cov == NULL))
+	{
+		free(rgb);
+		free(cov);
+		return 0;
+	}
+	for (view = 0; view < 2; view++)
+	{
+		int x;
+		int y;
+		const u8 *sp = r->wheelSprite[view == 0 ? 1 : 0];
+		const u32 sw = r->wheelSpriteW[view == 0 ? 1 : 0];
+		const u32 sh = r->wheelSpriteH[view == 0 ? 1 : 0];
+		const double cx = (view == 0) ? (r->sideCentre[0] - r->wheelSpriteAt[1][0]) : 0.0;
+		const double cy = (view == 0) ? (r->sideCentre[1] - r->wheelSpriteAt[1][1]) : (0.5 * (r->treadBox[1] + r->treadBox[3]) - r->wheelSpriteAt[0][1]);
+
+		RldKit_WheelRender(r, view, rgb, cov);
+		// the render
+		for (y = 0; y < size; y++)
+		{
+			for (x = 0; x < size; x++)
+			{
+				const size_t at = (size_t)y * (size_t)size + (size_t)x;
+				const double u = ((double)x + 0.5) / (double)size * 2.0 - 1.0;
+				const double v = 1.0 - ((double)y + 0.5) / (double)size * 2.0;
+				int region = -1;
+
+				if (!cov[at])
+				{
+					continue;
+				}
+				if (view == 0)
+				{
+					const double d = sqrt(u * u + v * v);
+
+					for (a = 0; a < 3; a++)
+					{
+						region = ((d >= s_rldKitLookRing[a][0]) && (d <= s_rldKitLookRing[a][1])) ? a : region;
+					}
+				}
+				else
+				{
+					region = (v > 0.0) ? 0 : 1;
+				}
+				if (region < 0)
+				{
+					continue;
+				}
+				for (c = 0; c < 3; c++)
+				{
+					if (view == 0)
+					{
+						out->side[region][0][c] += rgb[at * 3u + (u32)c];
+					}
+					else
+					{
+						out->tread[region][0][c] += rgb[at * 3u + (u32)c];
+					}
+				}
+				n[view][region][0] += 1.0;
+			}
+		}
+		// the sprite
+		for (y = 0; y < (int)sh; y++)
+		{
+			for (x = 0; x < (int)sw; x++)
+			{
+				const u8 *t = &sp[((size_t)y * sw + (size_t)x) * 4u];
+				int region = -1;
+
+				if (t[3] == 0u)
+				{
+					continue;
+				}
+				if (view == 0)
+				{
+					const double dx = (double)x + 0.5 - cx;
+					const double dy = (double)y + 0.5 - cy;
+					const double d = sqrt(dx * dx + dy * dy) / ((r->sideRadius > 0.0) ? r->sideRadius : 1.0);
+
+					for (a = 0; a < 3; a++)
+					{
+						region = ((d >= s_rldKitLookRing[a][0]) && (d <= s_rldKitLookRing[a][1])) ? a : region;
+					}
+				}
+				else
+				{
+					region = (((double)y + 0.5) < cy) ? 0 : 1;
+				}
+				if (region < 0)
+				{
+					continue;
+				}
+				for (c = 0; c < 3; c++)
+				{
+					if (view == 0)
+					{
+						out->side[region][1][c] += (double)t[c];
+					}
+					else
+					{
+						out->tread[region][1][c] += (double)t[c];
+					}
+				}
+				n[view][region][1] += 1.0;
+			}
+		}
+	}
+	for (a = 0; a < 3; a++)
+	{
+		for (k = 0; k < 2; k++)
+		{
+			for (c = 0; c < 3; c++)
+			{
+				out->side[a][k][c] /= (n[0][a][k] > 0.0) ? n[0][a][k] : 1.0;
+				if (a < 2)
+				{
+					out->tread[a][k][c] /= (n[1][a][k] > 0.0) ? n[1][a][k] : 1.0;
+				}
+			}
+		}
+	}
+	for (c = 0; c < 3; c++)
+	{
+		out->flatSide[0][c] = fmin(255.0, floor((double)r->tyre[c] * 0.85 + 0.5));
+		out->flatSide[1][c] = (double)r->rim[c];
+		out->flatSide[2][c] = (double)r->hub[c];
+		out->flatTread[c] = (double)r->tyre[c];
+		for (a = 0; a < 3; a++)
+		{
+			out->worst = fmax(out->worst, fabs(out->side[a][0][c] - out->side[a][1][c]));
+			out->worstFlat = fmax(out->worstFlat, fabs(out->flatSide[a][c] - out->side[a][1][c]));
+		}
+		for (a = 0; a < 2; a++)
+		{
+			out->worst = fmax(out->worst, fabs(out->tread[a][0][c] - out->tread[a][1][c]));
+			out->worstFlat = fmax(out->worstFlat, fabs(out->flatTread[c] - out->tread[a][1][c]));
+		}
+	}
+	free(rgb);
+	free(cov);
+	return 1;
 }
 
 // The colour check: at 45 points of every flat triangle (a grid of 9 steps)
