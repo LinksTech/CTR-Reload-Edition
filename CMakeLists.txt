@@ -15,7 +15,7 @@ set(CTR_NATIVE_VERSION "0.7.5 Beta")
 # of both exes. The game keeps CTR_NATIVE_VERSION, the container format its own
 # numbers (RLD_VERSION_MAJOR/MINOR in include/rldtrack.inc). The parts
 # major.minor.patch are taken from this line for the version resources.
-set(CTR_TOOLS_VERSION "0.9.0")
+set(CTR_TOOLS_VERSION "0.9.5")
 if(NOT CTR_TOOLS_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
     message(FATAL_ERROR "CTR_TOOLS_VERSION must be <major>.<minor>.<patch>, not '${CTR_TOOLS_VERSION}'")
 endif()
