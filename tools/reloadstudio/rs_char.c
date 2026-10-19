@@ -208,7 +208,8 @@
 // suggests "Kart: from the player's game data" (Advanced, card Options, below
 // the upscale): the box is ticked, one line below it and one on the step Model
 // with "Change" say so, and the pack gets --game-kart template (the game puts
-// the original kart from the player's own game data under the figure). Any
+// the original kart from the player's own game data under the figure; from
+// 4.3 also under the classic model, make-char --figure-only: CHRI bit 5). Any
 // other model (RS_KART_OWN) has the switch off and is packed as before - the
 // same bytes. A box the author clicked stays with that model (the choices per
 // model); "gamekart auto" in automation forgets it. A finished character
@@ -7381,8 +7382,9 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
             Char_ArgsAdd(a, L"off");
         }
         // THE KART: a figure that gets the game's kart (the kit's joint, or the
-        // switch) - its classic model shows it in a plain grey stand-in kart
-        // made by code (make-char --figure-only, no game data in the file).
+        // switch) - its classic model shows it on a plain stand-in kart made by
+        // code (make-char --figure-only, no game data in the file), which a 4.3
+        // game swaps for the original kart (CHRI bit 5, set by --figure-only).
         if (Char_KartParts() == RS_HIRES_PARTS_GAME_KART)
             Char_ArgsAdd(a, L"--figure-only");
     }
@@ -9265,7 +9267,8 @@ static void Char_ReportFlow(FILE *f)
         {
             const unsigned parts = Char_KartParts();
             Char_Put(f, L"parts: %ls", (parts & RS_HIRES_PARTS_GAME_KART) == RS_HIRES_PARTS_GAME_KART
-                                       ? L"game kart (donor template), classic model: the figure in a grey stand-in kart (--figure-only)"
+                                       ? L"game kart (donor template), classic model: the figure on a stand-in kart that the game swaps for the original kart "
+                                         L"from the player's game data (--figure-only, 4.3); the grey stand-in only in a game before 4.3 or without game data"
                                        : (parts & RS_HIRES_PARTS_KART) ? L"kart part" : L"none");
         }
         // THE JPEG TEXTURES: the box (only ever the author's), what the check

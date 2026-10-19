@@ -79,8 +79,10 @@ enum RsWizPlace {
 #define RS_TEXT_KART_PART L"Your kart is left out on the podium, in the menu and in the driver select."
 #define RS_FIX_KART_PART  L"Nothing to do; in a race it is drawn with your driver."
 #define RS_TEXT_GAME_KART L"The game adds the original kart from the player's game data."
-// ... and the classic model (make-char --figure-only): the figure in a stand-in.
-#define RS_TEXT_GAME_KART_CLASSIC L"The game adds the original kart from the player's game data; the classic model shows your figure in a simple grey kart."
+// ... and the classic model (make-char --figure-only, CHRI bit 5 from container
+// format 4.3): the figure on a stand-in kart that a 4.3 game swaps for the
+// original kart; a game before 4.3 keeps the stand-in.
+#define RS_TEXT_GAME_KART_CLASSIC L"The game adds the original kart from the player's game data, also to the classic model (a game before 4.3 shows a simple grey kart)."
 // The switch's lines (RsCharHires_GameKartLine, RsCharHires_GameKartStepLine):
 // on = the switch, suggested = the model has the kit's kart joint (RS_KART_GAME).
 // The line below the switch under Advanced: what it does and why it is set.

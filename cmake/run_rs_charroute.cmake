@@ -264,7 +264,8 @@ message("charroute passed: jpeg converted to png")
 # part (--kart-part), a figure with the kit's mesh-less "kart" joint with the
 # game's kart (--game-kart template), and so is a plain kart with the switch
 # "Kart: from the player's game data" on (the page's runs below); the classic
-# fallback of both is make-char --figure-only (the figure in a grey stand-in kart).
+# fallback of both is make-char --figure-only (the figure on a stand-in kart,
+# CHRI bit 5: a 4.3 game swaps it for the original kart from the game data).
 set(packExtra --kart-part)
 route(kartpart route-kartpart.glb "${fallbackHires}" "--wheels;off" OFF)
 set(packExtra --game-kart template)
@@ -386,8 +387,8 @@ if(PAGE)
     endif()
     file(READ "${DIR}/page-kartjoint-report.txt" text)
     if(NOT text MATCHES "parts: game kart \\(donor template\\)" OR NOT text MATCHES "game kart: on \\(suggested" OR
-       NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data; the classic model shows your figure in a simple grey kart\.\"" OR
-       NOT text MATCHES "parts: game kart \\(donor template\\), classic model: the figure in a grey stand-in kart")
+       NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data, also to the classic model \\(a game before 4\\.3 shows a simple grey kart\\)\\.\"" OR
+       NOT text MATCHES "parts: game kart \\(donor template\\), classic model: the figure on a stand-in kart that the game swaps for the original kart from the player's game data \\(--figure-only, 4\\.3\\); the grey stand-in only in a game before 4\\.3 or without game data")
         message(FATAL_ERROR "charroute FAILED: the page (kartjoint) does not suggest the game's kart\n${text}")
     endif()
     file(READ "${DIR}/page-gamekart-report.txt" text)
