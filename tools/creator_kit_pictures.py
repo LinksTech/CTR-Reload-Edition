@@ -1,4 +1,4 @@
-# Creator Kit guide pictures: draws the 9 SVG pictures of docs/CREATOR_KIT.md.
+# Creator Kit guide pictures: draws the 10 SVG pictures of docs/CREATOR_KIT.md.
 # Part of CTR Reload's tools (GPL, like the rest of tools/).
 #
 # The pictures are made from the code-made STAND-IN kit only (a made-up kart,
@@ -9,8 +9,14 @@
 #   blender --background --factory-startup --python-exit-code 1 \
 #       --python tools/creator_kit_pictures.py -- --out <dir> --work <dir>
 #
-#   --out <dir>    where the 9 SVG files are written
+#   --out <dir>    where the 10 SVG files are written
 #   --work <dir>   work folder: the stand-in kit and the .blend are built there
+#
+#   python tools/creator_kit_pictures.py --diagrams-only --out <dir>
+#
+#   --diagrams-only  plain Python, no Blender, no --work: draws only the four
+#                    diagram pictures (studio-steps, template-tree, export-path,
+#                    kit-folder); the generator is not run
 #
 # How it works: the generator templates/make_creator_kit.py is run in memory
 # (--stand-in --no-glb); the scene then holds the rig, the puppet, the kart
@@ -38,11 +44,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 GENERATOR = os.path.join(REPO, "templates", "make_creator_kit.py")
 
-USAGE = ("usage: creator_kit_pictures.py -- --out <dir> --work <dir>   "
+USAGE = ("usage: creator_kit_pictures.py -- --out <dir> --work <dir>   or   "
+         "creator_kit_pictures.py --diagrams-only --out <dir>   "
          "(the pictures are made from the stand-in only)")
 
 FILES = ("kit-overview", "studio-steps", "template-tree", "axes-size", "replace-figure",
-         "skeleton", "weights", "clips", "export-path")
+         "skeleton", "weights", "clips", "export-path", "kit-folder")
 
 MAX_BYTES = 300 * 1000          # hard limit per file
 TARGET_BYTES = 288 * 1000       # the budget loop aims below this
@@ -73,8 +80,9 @@ def fail(code, text):
 
 def parse_args():
     argv = sys.argv
-    args = argv[argv.index("--") + 1:] if "--" in argv else []
+    args = argv[argv.index("--") + 1:] if "--" in argv else argv[1:]
     out = work = None
+    diagrams_only = False
     i = 0
     while i < len(args):
         a = args[i]
@@ -84,15 +92,23 @@ def parse_args():
             else:
                 work = args[i + 1]
             i += 2
+        elif a == "--diagrams-only":
+            diagrams_only = True
+            i += 1
         elif a == "--kit" or a.startswith("--kit="):
             fail(2, "creator kit pictures: %s is refused: pictures are made from the stand-in only. %s"
                  % (a.split("=")[0], USAGE))
         else:
             fail(2, "creator kit pictures: unknown argument %s: pictures are made from the stand-in only. %s"
                  % (a, USAGE))
+    if diagrams_only:
+        if not out:
+            fail(2, "creator kit pictures: --out is required. " + USAGE)
+        return os.path.abspath(out), None, True
     if not out or not work:
-        fail(2, "creator kit pictures: --out and --work are required. " + USAGE)
-    return os.path.abspath(out), os.path.abspath(work)
+        fail(2, "creator kit pictures: --out and --work are required (without --diagrams-only the script "
+                "runs inside Blender). " + USAGE)
+    return os.path.abspath(out), os.path.abspath(work), False
 
 
 # ---------------------------------------------------------------- number / text helpers
@@ -651,13 +667,13 @@ def pic_overview(kit, f):
     return svg.done("kit-overview")
 
 
-def box(svg, x, y, w, h, lines, fill, sub=None, size=14, bold_last=True, num=None):
+def box(svg, x, y, w, h, lines, fill, sub=None, size=14, bold_last=True, num=None, small=None):
     svg.rect(x, y, w, h, fill, LINE, 1.4, 8)
     n = len(lines)
     ty = y + h / 2 + size * 0.35 - (n - 1) * size * 0.6
     for k, s in enumerate(lines):
         last = k == n - 1
-        svg.text(x + w / 2, ty + k * size * 1.2, s, size if last else size - 2, "middle",
+        svg.text(x + w / 2, ty + k * size * 1.2, s, size if last else (small or size - 2), "middle",
                  INK if last else GREY, bold=last and bold_last)
     if num is not None:
         svg.circle(x + 2, y + 2, 11, "#fff", INK, 1.4)
@@ -665,30 +681,31 @@ def box(svg, x, y, w, h, lines, fill, sub=None, size=14, bold_last=True, num=Non
 
 
 def pic_studio_steps():
-    svg = Svg(760, 330)
-    w, h, gap = 200, 62, 56
-    x0 = (760 - (3 * w + 2 * gap)) / 2
-    y1, y2 = 62, 196
+    svg = Svg(800, 340)
+    w, h, gap = 236, 62, 34
+    x0 = (800 - (3 * w + 2 * gap)) / 2
+    y1, y2 = 62, 190
     xs = [x0 + k * (w + gap) for k in range(3)]
-    specs1 = [(["Reload Studio: Character", "Creator Kit"], COL_STUDIO), (["Generate demo files"], COL_STUDIO),
-              (["Blender:", "creator-kit.blend"], COL_BLENDER)]
-    specs2 = [(["Export (test on your PC):", "creator-kit-demo-local.glb"], COL_BLENDER), (["Reload Studio:", "Character"], COL_STUDIO),
-              (["Test in game"], COL_GAME)]
-    for k, (ln, fl) in enumerate(specs1):
-        box(svg, xs[k], y1, w, h, ln, fl, num=k + 1)
-    for k, (ln, fl) in enumerate(specs2):
-        box(svg, xs[k], y2, w, h, ln, fl, size=12 if k == 0 else 14, num=k + 4)
+    specs = [(["Reload Studio: Character", "Creator Kit"], COL_STUDIO),
+             (["Choose the ways,", "Generate demo files"], COL_STUDIO),
+             (["Blender, folder of the way:", "creator-kit-<way>.blend"], COL_BLENDER),
+             (["Export with the Figure exporter:", "creator-kit-<way>-figure.glb"], COL_BLENDER),
+             (["Reload Studio: Character,", "the same way"], COL_STUDIO),
+             (["Test in game"], COL_GAME)]
+    for k, (ln, fl) in enumerate(specs):
+        box(svg, xs[k % 3], y1 if k < 3 else y2, w, h, ln, fl, size=12.5, small=12, num=k + 1)
     for k in range(2):
         svg.arrow([(xs[k] + w + 4, y1 + h / 2), (xs[k + 1] - 4, y1 + h / 2)])
         svg.arrow([(xs[k] + w + 4, y2 + h / 2), (xs[k + 1] - 4, y2 + h / 2)])
     ym = (y1 + h + y2) / 2
     svg.arrow([(xs[2] + w / 2, y1 + h + 4), (xs[2] + w / 2, ym), (xs[0] + w / 2, ym), (xs[0] + w / 2, y2 - 4)])
-    svg.text(380, 34, "From the kit files to a test in the game", 16, "middle", INK, True)
+    svg.text(400, 34, "From the kit to a test in the game", 16, "middle", INK, True)
+    svg.text(400, 282, "<way> = vanilla, lowpoly or hires", 12, "middle", GREY)
     # legend
-    lx = 150
+    lx = 185
     for fill, name in ((COL_STUDIO, "Reload Studio"), (COL_BLENDER, "Blender"), (COL_GAME, "the game")):
-        svg.rect(lx, 292, 16, 16, fill, LINE, 1.2, 3)
-        svg.text(lx + 24, 305, name, 13, "start", INK)
+        svg.rect(lx, 300, 16, 16, fill, LINE, 1.2, 3)
+        svg.text(lx + 24, 313, name, 13, "start", INK)
         lx += 170
     return svg.done("studio-steps")
 
@@ -709,7 +726,7 @@ def tree_icon(svg, x, y, kind):
 
 def pic_template_tree():
     rows = [
-        (0, "col", "CreatorKit", "second exporter: demo-local"), (1, "col", "Figure", "exporter: figure"),
+        (0, "col", "CreatorKit", "Hi-Res: exporter of the demo-local file"), (1, "col", "Figure", "exporter: the figure"),
         (2, "arm", "creator_rig", ""), (2, "mesh", "puppet", ""),
         (1, "col", "Kart", ""), (2, "mesh", "kart_body", "kit"),
         (2, "mesh", "kart_steer_wheel", "kit"), (2, "mesh", "wheel_fl", "kit"), (2, "mesh", "wheel_fr", "kit"),
@@ -739,7 +756,7 @@ def pic_template_tree():
         elif note:
             svg.text(x + 22 + len(name) * 8.2 + 12, y, note, 12, "start", "#9aa3ad", italic=True)
     # brackets: what each part is exported into
-    bx = 400
+    bx = 380
 
     def bracket(r0, r1, col, tcol, lines):
         y0, y1 = top + r0 * rh - 14, top + r1 * rh + 6
@@ -748,9 +765,9 @@ def pic_template_tree():
         for q, t in enumerate(lines):
             svg.text(bx + 18, ym + q * 17, t, 13, "start", tcol, q == 0)
 
-    bracket(1, 3, "#6fd08c", "#6fd08c", ["creator-kit-figure.glb", "no game data (share)"])
-    bracket(4, 10, "#ffa94d", "#ffa94d", ["only in creator-kit-demo-local.glb",
-                                          "your game data (keep local)"])
+    bracket(1, 3, "#6fd08c", "#6fd08c", ["creator-kit-<way>-figure.glb", "the figure alone, without the kart"])
+    bracket(4, 10, "#ffa94d", "#ffa94d", ["creator-kit-demo-local.glb (Hi-Res only)",
+                                          "the kart from your game files"])
     bracket(11, 16, "#9aa3ad", "#c3c9d0", ["never exported"])
     return svg, H
 
@@ -1047,7 +1064,7 @@ def pic_clips(kit, f):
 
 def pic_export_path():
     svg = Svg(800, 396)
-    ws = [140, 160, 160, 230]
+    ws = [154, 134, 154, 236]
     gap = 28
     x0 = (800 - (sum(ws) + 3 * gap)) / 2
     xs = [x0]
@@ -1056,26 +1073,84 @@ def pic_export_path():
     h = 62
     svg.text(400, 34, "Where to click in Blender", 16, "middle", INK, True)
     lanes = [
-        (52, "#e6f7ea", "#2f9e44", "#15803d", "(a) the file to share: the figure alone", "select Figure",
-         "creator-kit-figure.glb", "figure alone, no game data", "#b2f2bb"),
-        (196, "#fff0e0", "#e8590c", "#c2410c", "(b) for a test on your own PC", "select CreatorKit",
-         "creator-kit-demo-local.glb", "with your kart, keep it local", "#ffc078"),
+        (52, "#e6f7ea", "#2f9e44", "#15803d", "(a) every way: the figure alone", "select Figure",
+         "creator-kit-<way>-figure.glb", "the figure alone, without the kart", "#b2f2bb"),
+        (196, "#fff0e0", "#e8590c", "#c2410c", "(b) Hi-Res only: the figure with the kart, for a test",
+         "select CreatorKit", "creator-kit-demo-local.glb", "contains the kart from your game files", "#ffc078"),
     ]
     for (T, bg, edge, tcol, title, sel, res, cap, rfill) in lanes:
         svg.rect(6, T, 788, 128, bg, edge, 1.6, 10)
         svg.text(20, T + 22, title, 14, "start", tcol, True)
         by = T + 34
-        specs = [(["Outliner:", sel], 14), (["Properties:", "Collection tab"], 14),
-                 (["Exporters:", "glTF 2.0 > Export"], 14)]
+        specs = [(["Outliner:", sel], 13), (["Properties:", "Collection tab"], 13),
+                 (["Exporters:", "glTF 2.0 > Export"], 13)]
         for k, (ln, sz) in enumerate(specs):
-            box(svg, xs[k], by, ws[k], h, ln, "#fff", size=sz, num=k + 1)
-        box(svg, xs[3], by, ws[3], h, ["Result:", res], rfill, size=13)
+            box(svg, xs[k], by, ws[k], h, ln, "#fff", size=sz, num=k + 1, small=12)
+        box(svg, xs[3], by, ws[3], h, ["Result:", res], rfill, size=12, small=12)
         for k in range(3):
             svg.arrow([(xs[k] + ws[k] + 4, by + h / 2), (xs[k + 1] - 4, by + h / 2)])
-        svg.text(xs[3] + ws[3] / 2, by + h + 18, cap, 12.5, "middle", tcol)
-    svg.rect(200, 342, 400, 40, "#fff", LINE, 1.4, 8, dash="6 4")
-    svg.text(400, 367, "or  File > Export All Collections (writes both)", 14, "middle", INK, True)
+        svg.text(xs[3] + ws[3], by + h + 18, cap, 12.5, "end", tcol)
+    svg.rect(90, 342, 620, 40, "#fff", LINE, 1.4, 8, dash="6 4")
+    svg.text(400, 367, "or  File > Export All Collections (writes every exporter of the file)", 13, "middle", INK, True)
     return svg.done("export-path")
+
+
+GREEN_DOT = "#2f9e44"
+ORANGE_DOT = "#f08c00"
+
+
+def pic_kit_folder():
+    svg = Svg(800, 474)
+    svg.text(400, 30, "Your kit folder", 16, "middle", INK, True)
+    # top box: the files next to the three ways
+    svg.rect(20, 46, 760, 142, "#fff", LINE, 1.4, 8)
+    svg.text(40, 70, "<kit folder>", 14, "start", INK, True)
+    top = [("NOTICE.txt", "", None), ("CREATOR_KIT.html", "this guide", None),
+           ("kit-kart.glb, kit-wheel.glb, kit-*-gltf.glb", "the kart and wheels from your game files",
+            ORANGE_DOT),
+           ("kit-info.json, kit-extract.txt", "sizes and points of the kart, the log", None),
+           ("classic.glb", "only when you start from an old character", None)]
+    for k, (name, note, dot) in enumerate(top):
+        y = 94 + k * 19
+        if dot:
+            svg.circle(48, y - 4, 4, dot, dot, 1)
+        svg.text(60, y, name, 12.5, "start", INK)
+        if note:
+            svg.text(390, y, note, 12, "start", GREY)
+    # the three ways
+    cards = [
+        (20, 224, "vanilla\\", "Vanilla: classic limits, no clips",
+         [("creator-kit-vanilla.blend", ORANGE_DOT), ("creator-kit-vanilla-figure.glb", GREEN_DOT),
+          ("creator-kit-report.json", None), ("NOTICE.txt", None)]),
+        (258, 224, "lowpoly\\", "Low-Poly: 8000 triangles, 512 px",
+         [("creator-kit-lowpoly.blend", ORANGE_DOT), ("creator-kit-lowpoly-figure.glb", GREEN_DOT),
+          ("creator-kit-report.json", None), ("NOTICE.txt", None)]),
+        (496, 284, "hires\\", "Hi-Res: full budget, 12 + 2 clips",
+         [("creator-kit-hires.blend", ORANGE_DOT), ("creator-kit-hires-figure.glb", GREEN_DOT),
+          ("creator-kit-demo-local.glb", ORANGE_DOT), ("creator-kit-report.json", None),
+          ("NOTICE.txt", None), ("demo-puppet.rldchar + .bat (demo driver)", None)]),
+    ]
+    cy, ch = 230, 172
+    for (cx, cw, head, sub, files) in cards:
+        svg.arrow([(cx + cw / 2, 190), (cx + cw / 2, cy - 4)])
+        svg.rect(cx, cy, cw, ch, "#fff", LINE, 1.4, 8)
+        svg.text(cx + 12, cy + 24, head, 14, "start", INK, True)
+        svg.text(cx + 12, cy + 43, sub, 11, "start", GREY)
+        for k, (name, dot) in enumerate(files):
+            y = cy + 68 + k * 18
+            if dot:
+                svg.circle(cx + 16, y - 4, 4, dot, dot, 1)
+            svg.text(cx + 26, y, name, 11, "start", INK)
+    # legend
+    items = [(GREEN_DOT, "the figure alone, without the kart"), (ORANGE_DOT, "contains the kart from your game files")]
+    total = sum(18 + len(t) * 12 * TEXT_W["normal"] for _, t in items) + 40
+    lx = (800 - total) / 2
+    for col, t in items:
+        svg.circle(lx + 5, 427, 5, col, col, 1)
+        svg.text(lx + 18, 432, t, 12, "start", INK)
+        lx += 18 + len(t) * 12 * TEXT_W["normal"] + 40
+    svg.text(400, 458, "Only the ways you choose are written.", 12, "middle", GREY)
+    return svg.done("kit-folder")
 
 
 # ---------------------------------------------------------------- main
@@ -1091,7 +1166,23 @@ def draw_all(kit, out):
         ("weights", lambda f: pic_weights(kit, f)),
         ("clips", lambda f: pic_clips(kit, f)),
         ("export-path", lambda f: pic_export_path()),
+        ("kit-folder", lambda f: pic_kit_folder()),
     ]
+    return write_jobs(jobs, out)
+
+
+def draw_diagrams(out):
+    """The four diagram pictures only: no Blender, no kit."""
+    jobs = [
+        ("studio-steps", lambda f: pic_studio_steps()),
+        ("template-tree", lambda f: pic_template_tree_done()),
+        ("export-path", lambda f: pic_export_path()),
+        ("kit-folder", lambda f: pic_kit_folder()),
+    ]
+    return write_jobs(jobs, out)
+
+
+def write_jobs(jobs, out):
     sizes = {}
     for name, fn in jobs:
         f = 1.0
@@ -1124,16 +1215,20 @@ def build_kit(work):
 
 
 def main():
-    out, work = parse_args()
-    try:
-        import bpy  # noqa: F401
-    except ImportError:
-        fail(2, "creator kit pictures: this script runs inside Blender. " + USAGE)
-    os.makedirs(out, exist_ok=True)
-    os.makedirs(work, exist_ok=True)
-    build_kit(work)
-    kit = Kit()
-    draw_all(kit, out)
+    out, work, diagrams_only = parse_args()
+    if diagrams_only:
+        os.makedirs(out, exist_ok=True)
+        draw_diagrams(out)
+    else:
+        try:
+            import bpy  # noqa: F401
+        except ImportError:
+            fail(2, "creator kit pictures: this script runs inside Blender (or use --diagrams-only). " + USAGE)
+        os.makedirs(out, exist_ok=True)
+        os.makedirs(work, exist_ok=True)
+        build_kit(work)
+        kit = Kit()
+        draw_all(kit, out)
     if ERRORS:
         fail(5, "creator kit pictures: %d layout errors" % len(ERRORS))
     print("creator kit pictures: ok")

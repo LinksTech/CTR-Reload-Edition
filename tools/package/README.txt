@@ -371,11 +371,16 @@ for the game (and for cups).
 
 4.3 Page "Character" - build a character
 The first screen, "Build a character", asks what to build: Vanilla, Low-Poly
-or Hi-Res. "Creator Kit" at its top right opens the Creator Kit there: a ready
-Blender template with a jointed puppet and the kart from your own game data
-(guide: docs/CREATOR_KIT.md). "Back" on the kit's first step returns to the
-three ways. On the step Model of Low-Poly and Hi-Res, while no model is chosen,
-"No model yet? Start with the Creator Kit." opens it too.
+or Hi-Res. "Creator Kit" (Templates to get started) at its top right opens
+the Creator Kit there: ready Blender templates with a jointed puppet and the
+kart made on this PC from your own game files, one per way (guide:
+docs/CREATOR_KIT.md). On "Where the kit goes" choose "All three ways" (the
+default) or one of Vanilla, Low-Poly and Hi-Res; each way gets its own folder
+(vanilla, lowpoly, hires) with its template, the export of the figure alone
+and NOTICE.txt. The demo driver is offered with Hi-Res. "Back" on the kit's
+first step returns to the three ways. On the step Model of every way, while
+no model is chosen, "No model yet? Start with the Creator Kit." opens it too,
+with that way chosen.
 
 The page goes in five steps, one tab each: 1 Model, 2 Driver, 3 In-game look,
 4 Voices, 5 Extras. The preview stays on the right and the bar with the

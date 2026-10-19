@@ -6,10 +6,10 @@
 <rect x="21" y="47" width="718" height="25" fill="#303540"/>
 <rect x="40" y="54" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="64" font-size="14" fill="#e6e8eb">CreatorKit</text>
-<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">second exporter: demo-local</text>
+<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">Hi-Res: exporter of the demo-local file</text>
 <rect x="64" y="79" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="86" y="89" font-size="14" fill="#e6e8eb">Figure</text>
-<text x="147.2" y="89" font-size="12" font-style="italic" fill="#9aa3ad">exporter: figure</text>
+<text x="147.2" y="89" font-size="12" font-style="italic" fill="#9aa3ad">exporter: the figure</text>
 <rect x="21" y="97" width="718" height="25" fill="#303540"/>
 <path d="M94.5 103L101 115 88 115z" fill="#7ed99b" stroke="#3b8f57" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
 <text x="110" y="114" font-size="14" fill="#e6e8eb">creator_rig</text>
@@ -65,12 +65,12 @@
 <rect x="40" y="454" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="464" font-size="14" fill="#e6e8eb">Classic</text>
 <text x="131.4" y="464" font-size="12" font-style="italic" fill="#9aa3ad">only with an old character</text>
-<path d="M400 75L408 75 408 145 400 145" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="418" y="106" font-size="13" font-weight="bold" fill="#6fd08c">creator-kit-figure.glb</text>
-<text x="418" y="123" font-size="13" fill="#6fd08c">no game data (share)</text>
-<path d="M400 150L408 150 408 320 400 320" fill="none" stroke="#ffa94d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="418" y="231" font-size="13" font-weight="bold" fill="#ffa94d">only in creator-kit-demo-local.glb</text>
-<text x="418" y="248" font-size="13" fill="#ffa94d">your game data (keep local)</text>
-<path d="M400 325L408 325 408 470 400 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="418" y="401.5" font-size="13" font-weight="bold" fill="#c3c9d0">never exported</text>
+<path d="M380 75L388 75 388 145 380 145" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="398" y="106" font-size="13" font-weight="bold" fill="#6fd08c">creator-kit-&lt;way&gt;-figure.glb</text>
+<text x="398" y="123" font-size="13" fill="#6fd08c">the figure alone, without the kart</text>
+<path d="M380 150L388 150 388 320 380 320" fill="none" stroke="#ffa94d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="398" y="231" font-size="13" font-weight="bold" fill="#ffa94d">creator-kit-demo-local.glb (Hi-Res only)</text>
+<text x="398" y="248" font-size="13" fill="#ffa94d">the kart from your game files</text>
+<path d="M380 325L388 325 388 470 380 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="398" y="401.5" font-size="13" font-weight="bold" fill="#c3c9d0">never exported</text>
 </svg>

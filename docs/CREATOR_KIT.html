@@ -48,23 +48,32 @@ nav.toc ol { margin: 0; }
 <nav class="toc" aria-label="Contents">
 <strong>Contents</strong>
 <ol>
+<li><a href="#the-notice">The notice</a></li>
 <li><a href="#what-you-get">What you get</a></li>
-<li><a href="#1-generate-the-demo-files">1. Generate the demo files</a></li>
-<li><a href="#2-open-the-template">2. Open the template</a></li>
-<li><a href="#3-put-your-own-figure-in-place-of-the-puppet">3. Put your own figure in place of the puppet</a></li>
-<li><a href="#4-bind-your-figure-to-the-skeleton">4. Bind your figure to the skeleton</a></li>
-<li><a href="#5-the-clips">5. The clips</a></li>
-<li><a href="#6-vertex-colours">6. Vertex colours</a></li>
-<li><a href="#7-export">7. Export</a></li>
-<li><a href="#8-character">8. Character</a></li>
-<li><a href="#9-the-classic-model">9. The classic model</a></li>
-<li><a href="#10-test-in-game">10. Test in game</a></li>
-<li><a href="#11-start-from-an-old-character">11. Start from an old character</a></li>
-<li><a href="#12-sharing">12. Sharing</a></li>
-<li><a href="#13-if-something-is-wrong">13. If something is wrong</a></li>
+<li><a href="#1-where-the-kit-is">1. Where the kit is</a></li>
+<li><a href="#2-generate-the-demo-files">2. Generate the demo files</a></li>
+<li><a href="#3-the-kit-folder">3. The kit folder</a></li>
+<li><a href="#4-the-three-ways">4. The three ways</a></li>
+<li><a href="#5-open-the-template-and-put-your-figure-in-place">5. Open the template and put your figure in place</a></li>
+<li><a href="#6-the-clips">6. The clips</a></li>
+<li><a href="#7-vertex-colours">7. Vertex colours</a></li>
+<li><a href="#8-export">8. Export</a></li>
+<li><a href="#9-character">9. Character</a></li>
+<li><a href="#10-the-classic-model">10. The classic model</a></li>
+<li><a href="#11-test-in-game">11. Test in game</a></li>
+<li><a href="#12-start-from-an-old-character">12. Start from an old character</a></li>
+<li><a href="#13-what-is-in-which-file">13. What is in which file</a></li>
+<li><a href="#14-if-something-is-wrong">14. If something is wrong</a></li>
 </ol>
 </nav>
-<p>The Creator Kit helps you make a custom character with a skeleton and your own animations. You get a Blender file with a kart, a placeholder figure and all clips. You replace the figure, bind it to the skeleton, export it and test it in the game.</p>
+<p>The Creator Kit gives you Blender templates for a character of your own, one for each way of <strong>Build a character</strong>: <strong>Vanilla</strong>, <strong>Low-Poly</strong> and <strong>Hi-Res</strong>. Each template has the kart, a placeholder figure with a skeleton and an export that is already set up. You replace the figure, export it and build it on the page <strong>Character</strong> with the same way.</p>
+<h2 id="the-notice">The notice</h2>
+<p>The kit writes this notice as <code>NOTICE.txt</code> into the kit folder and into the folder of each way. Reload Studio shows it above the button <strong>Generate demo files</strong>.</p>
+<blockquote>
+<p>The kart and wheels are generated on this PC from your own game files. The template exports only your character, and every player gets the kart from their own game.</p>
+<p>CTR Reload is not responsible for files you share.</p>
+<p>Requirements: Blender 5.2 and your own copy of the original game, set up for CTR Reload.</p>
+</blockquote>
 <h2 id="what-you-get">What you get</h2>
 <figure>
 <svg role="img" aria-label="The placeholder puppet sitting in the kart" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 480" font-family="sans-serif">
@@ -87,77 +96,154 @@ nav.toc ol { margin: 0; }
 </svg>
 <figcaption>The placeholder puppet sitting in the kart</figcaption>
 </figure>
-<p>The kit is made from your own copy of the game. It stays on your computer.</p>
+<p>The kit is made on this PC from your own game files.</p>
 <ul>
-<li>A Blender file with the kart, four wheels and a placeholder figure, the <strong>puppet</strong>.</li>
+<li>One Blender template per way you choose, each in its own folder.</li>
+<li>In each template: the kart, four wheels and a placeholder figure, the <strong>puppet</strong>.</li>
 <li>A skeleton called <code>creator_rig</code> that fits the puppet.</li>
-<li>All 14 clips the game can play, two of them optional. They already work with the puppet.</li>
-<li>Export settings that are already stored in the file.</li>
+<li>The clips the way plays (section 6). They already work with the puppet.</li>
+<li>An export that is already stored in the file. It writes your figure alone, without the kart.</li>
 </ul>
 <p>You replace the puppet with your own figure. You keep the skeleton, the clip names and the export settings.</p>
-<h2 id="1-generate-the-demo-files">1. Generate the demo files</h2>
+<h2 id="1-where-the-kit-is">1. Where the kit is</h2>
 <figure>
-<svg role="img" aria-label="The steps in Reload Studio" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 330" font-family="sans-serif">
-<rect width="760" height="330" rx="12" fill="#f2f3f5"/>
-<rect x="24" y="62" width="200" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="124" y="89.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Reload Studio: Character</text>
-<text x="124" y="106.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Creator Kit</text>
-<circle cx="26" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="26" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
-<rect x="280" y="62" width="200" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="380" y="97.9" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Generate demo files</text>
-<circle cx="282" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="282" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
-<rect x="536" y="62" width="200" height="62" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="636" y="89.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Blender:</text>
-<text x="636" y="106.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit.blend</text>
-<circle cx="538" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="538" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
-<rect x="24" y="196" width="200" height="62" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="124" y="224" font-size="10" text-anchor="middle" fill="#5f6b7a">Export (test on your PC):</text>
-<text x="124" y="238.4" font-size="12" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
-<circle cx="26" cy="198" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="26" y="202.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">4</text>
-<rect x="280" y="196" width="200" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="380" y="223.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Reload Studio:</text>
-<text x="380" y="240.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Character</text>
-<circle cx="282" cy="198" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="282" y="202.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">5</text>
-<rect x="536" y="196" width="200" height="62" rx="8" fill="#d3f9d8" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="636" y="231.9" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Test in game</text>
-<circle cx="538" cy="198" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="538" y="202.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">6</text>
-<path d="M228 93L268.8 93" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M276 93L267 96.8L267 89.2z" fill="#5f6b7a"/>
-<path d="M228 227L268.8 227" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M276 227L267 230.8L267 223.2z" fill="#5f6b7a"/>
-<path d="M484 93L524.8 93" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M532 93L523 96.8L523 89.2z" fill="#5f6b7a"/>
-<path d="M484 227L524.8 227" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M532 227L523 230.8L523 223.2z" fill="#5f6b7a"/>
-<path d="M636 128L636 160 124 160 124 184.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M124 192L120.2 183L127.8 183z" fill="#5f6b7a"/>
-<text x="380" y="34" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">From the kit files to a test in the game</text>
-<rect x="150" y="292" width="16" height="16" rx="3" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.2"/>
-<text x="174" y="305" font-size="13" fill="#1f2933">Reload Studio</text>
-<rect x="320" y="292" width="16" height="16" rx="3" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.2"/>
-<text x="344" y="305" font-size="13" fill="#1f2933">Blender</text>
-<rect x="490" y="292" width="16" height="16" rx="3" fill="#d3f9d8" stroke="#8a96a5" stroke-width="1.2"/>
-<text x="514" y="305" font-size="13" fill="#1f2933">the game</text>
+<svg role="img" aria-label="The steps in Reload Studio" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 340" font-family="sans-serif">
+<rect width="800" height="340" rx="12" fill="#f2f3f5"/>
+<rect x="12" y="62" width="236" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="130" y="89.9" font-size="12" text-anchor="middle" fill="#5f6b7a">Reload Studio: Character</text>
+<text x="130" y="104.9" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1f2933">Creator Kit</text>
+<circle cx="14" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="14" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="282" y="62" width="236" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="400" y="89.9" font-size="12" text-anchor="middle" fill="#5f6b7a">Choose the ways,</text>
+<text x="400" y="104.9" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1f2933">Generate demo files</text>
+<circle cx="284" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="284" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="552" y="62" width="236" height="62" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="670" y="89.9" font-size="12" text-anchor="middle" fill="#5f6b7a">Blender, folder of the way:</text>
+<text x="670" y="104.9" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-&lt;way&gt;.blend</text>
+<circle cx="554" cy="64" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="554" y="68.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="12" y="190" width="236" height="62" rx="8" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="130" y="217.9" font-size="12" text-anchor="middle" fill="#5f6b7a">Export with the Figure exporter:</text>
+<text x="130" y="232.9" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-&lt;way&gt;-figure.glb</text>
+<circle cx="14" cy="192" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="14" y="196.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">4</text>
+<rect x="282" y="190" width="236" height="62" rx="8" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="400" y="217.9" font-size="12" text-anchor="middle" fill="#5f6b7a">Reload Studio: Character,</text>
+<text x="400" y="232.9" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1f2933">the same way</text>
+<circle cx="284" cy="192" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="284" y="196.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">5</text>
+<rect x="552" y="190" width="236" height="62" rx="8" fill="#d3f9d8" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="670" y="225.4" font-size="12.5" text-anchor="middle" font-weight="bold" fill="#1f2933">Test in game</text>
+<circle cx="554" cy="192" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="554" y="196.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">6</text>
+<path d="M252 93L270.8 93" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M278 93L269 96.8L269 89.2z" fill="#5f6b7a"/>
+<path d="M252 221L270.8 221" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M278 221L269 224.8L269 217.2z" fill="#5f6b7a"/>
+<path d="M522 93L540.8 93" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M548 93L539 96.8L539 89.2z" fill="#5f6b7a"/>
+<path d="M522 221L540.8 221" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M548 221L539 224.8L539 217.2z" fill="#5f6b7a"/>
+<path d="M670 128L670 157 130 157 130 178.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M130 186L126.2 177L133.8 177z" fill="#5f6b7a"/>
+<text x="400" y="34" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">From the kit to a test in the game</text>
+<text x="400" y="282" font-size="12" text-anchor="middle" fill="#5f6b7a">&lt;way&gt; = vanilla, lowpoly or hires</text>
+<rect x="185" y="300" width="16" height="16" rx="3" fill="#dbeafe" stroke="#8a96a5" stroke-width="1.2"/>
+<text x="209" y="313" font-size="13" fill="#1f2933">Reload Studio</text>
+<rect x="355" y="300" width="16" height="16" rx="3" fill="#ffe8cc" stroke="#8a96a5" stroke-width="1.2"/>
+<text x="379" y="313" font-size="13" fill="#1f2933">Blender</text>
+<rect x="525" y="300" width="16" height="16" rx="3" fill="#d3f9d8" stroke="#8a96a5" stroke-width="1.2"/>
+<text x="549" y="313" font-size="13" fill="#1f2933">the game</text>
 </svg>
 <figcaption>The steps in Reload Studio</figcaption>
 </figure>
 <p>You need <strong>Blender 5.2</strong>. Install Blender 5.2 from <a href="https://www.blender.org/download/" rel="noopener">blender.org</a>. No other version is supported.</p>
-<ol>
-<li>Start <strong>Reload Studio</strong>.</li>
-<li>Open the page <strong>Character</strong>. On <strong>Build a character</strong>, click <strong>Creator Kit</strong> at the top right.</li>
-<li>Choose your game data and the driver whose kart you want to use.</li>
-<li>Choose an empty folder for the files.</li>
-<li>Press the button <strong>Generate demo files</strong>.</li>
-<li>Wait until the Studio says it is done. This takes a short while.</li>
-</ol>
+<p>There are two ways into the kit:</p>
+<ul>
+<li>Open the page <strong>Character</strong>. On <strong>Build a character</strong>, click <strong>Creator Kit</strong> (<em>Templates to get started</em>) at the top right.</li>
+<li>On the step <strong>Model</strong> of any of the three ways, while no model is chosen, click <strong>No model yet? Start with the Creator Kit.</strong> The kit opens with that way chosen. You can change the choice in the kit.</li>
+</ul>
 <p><strong>Back</strong> on the first step of the kit takes you back to the three ways of <strong>Build a character</strong>.</p>
-<p>You find these files in the folder:</p>
+<h2 id="2-generate-the-demo-files">2. Generate the demo files</h2>
+<p>The kit has five steps:</p>
+<ol>
+<li><strong>What you get</strong> says what the kit makes. The button <strong>Guide</strong> opens this guide.</li>
+<li><strong>What the kit needs</strong> checks your game data and Blender 5.2.</li>
+<li><strong>Where the kit goes</strong>:
+<ul>
+<li>Choose a folder for the kit.</li>
+<li>Choose the ways: <strong>All three ways</strong> (the default), or only <strong>Vanilla</strong>, <strong>Low-Poly</strong> or <strong>Hi-Res</strong>.</li>
+<li>With <strong>Hi-Res</strong> chosen you can also build a demo driver to try in the game right away.</li>
+<li>Optional: <strong>Start from an old character</strong> (section 12).</li>
+</ul>
+</li>
+<li><strong>Generate</strong> shows the notice. Press <strong>Generate demo files</strong> and wait until the Studio says it is done. This takes a short while.</li>
+<li><strong>Your kit</strong> lists the files. <strong>Open the template in Blender</strong> opens it, <strong>Show in folder</strong> shows the folder, <strong>Go to Character</strong> goes to the page Character.</li>
+</ol>
+<h2 id="3-the-kit-folder">3. The kit folder</h2>
+<figure>
+<svg role="img" aria-label="The files of the kit folder and of the three ways" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 474" font-family="sans-serif">
+<rect width="800" height="474" rx="12" fill="#f2f3f5"/>
+<text x="400" y="30" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">Your kit folder</text>
+<rect x="20" y="46" width="760" height="142" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="40" y="70" font-size="14" font-weight="bold" fill="#1f2933">&lt;kit folder&gt;</text>
+<text x="60" y="94" font-size="12.5" fill="#1f2933">NOTICE.txt</text>
+<text x="60" y="113" font-size="12.5" fill="#1f2933">CREATOR_KIT.html</text>
+<text x="390" y="113" font-size="12" fill="#5f6b7a">this guide</text>
+<circle cx="48" cy="128" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="60" y="132" font-size="12.5" fill="#1f2933">kit-kart.glb, kit-wheel.glb, kit-*-gltf.glb</text>
+<text x="390" y="132" font-size="12" fill="#5f6b7a">the kart and wheels from your game files</text>
+<text x="60" y="151" font-size="12.5" fill="#1f2933">kit-info.json, kit-extract.txt</text>
+<text x="390" y="151" font-size="12" fill="#5f6b7a">sizes and points of the kart, the log</text>
+<text x="60" y="170" font-size="12.5" fill="#1f2933">classic.glb</text>
+<text x="390" y="170" font-size="12" fill="#5f6b7a">only when you start from an old character</text>
+<path d="M132 190L132 218.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M132 226L128.2 217L135.8 217z" fill="#5f6b7a"/>
+<rect x="20" y="230" width="224" height="172" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="32" y="254" font-size="14" font-weight="bold" fill="#1f2933">vanilla\</text>
+<text x="32" y="273" font-size="11" fill="#5f6b7a">Vanilla: classic limits, no clips</text>
+<circle cx="36" cy="294" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="46" y="298" font-size="11" fill="#1f2933">creator-kit-vanilla.blend</text>
+<circle cx="36" cy="312" r="4" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="46" y="316" font-size="11" fill="#1f2933">creator-kit-vanilla-figure.glb</text>
+<text x="46" y="334" font-size="11" fill="#1f2933">creator-kit-report.json</text>
+<text x="46" y="352" font-size="11" fill="#1f2933">NOTICE.txt</text>
+<path d="M370 190L370 218.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M370 226L366.2 217L373.8 217z" fill="#5f6b7a"/>
+<rect x="258" y="230" width="224" height="172" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="270" y="254" font-size="14" font-weight="bold" fill="#1f2933">lowpoly\</text>
+<text x="270" y="273" font-size="11" fill="#5f6b7a">Low-Poly: 8000 triangles, 512 px</text>
+<circle cx="274" cy="294" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="284" y="298" font-size="11" fill="#1f2933">creator-kit-lowpoly.blend</text>
+<circle cx="274" cy="312" r="4" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="284" y="316" font-size="11" fill="#1f2933">creator-kit-lowpoly-figure.glb</text>
+<text x="284" y="334" font-size="11" fill="#1f2933">creator-kit-report.json</text>
+<text x="284" y="352" font-size="11" fill="#1f2933">NOTICE.txt</text>
+<path d="M638 190L638 218.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M638 226L634.2 217L641.8 217z" fill="#5f6b7a"/>
+<rect x="496" y="230" width="284" height="172" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="508" y="254" font-size="14" font-weight="bold" fill="#1f2933">hires\</text>
+<text x="508" y="273" font-size="11" fill="#5f6b7a">Hi-Res: full budget, 12 + 2 clips</text>
+<circle cx="512" cy="294" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="522" y="298" font-size="11" fill="#1f2933">creator-kit-hires.blend</text>
+<circle cx="512" cy="312" r="4" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="522" y="316" font-size="11" fill="#1f2933">creator-kit-hires-figure.glb</text>
+<circle cx="512" cy="330" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="522" y="334" font-size="11" fill="#1f2933">creator-kit-demo-local.glb</text>
+<text x="522" y="352" font-size="11" fill="#1f2933">creator-kit-report.json</text>
+<text x="522" y="370" font-size="11" fill="#1f2933">NOTICE.txt</text>
+<text x="522" y="388" font-size="11" fill="#1f2933">demo-puppet.rldchar + .bat (demo driver)</text>
+<circle cx="125.1" cy="427" r="5" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="138.1" y="432" font-size="12" fill="#1f2933">the figure alone, without the kart</text>
+<circle cx="411.6" cy="427" r="5" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="424.6" y="432" font-size="12" fill="#1f2933">contains the kart from your game files</text>
+<text x="400" y="458" font-size="12" text-anchor="middle" fill="#5f6b7a">Only the ways you choose are written.</text>
+</svg>
+<figcaption>The files of the kit folder and of the three ways</figcaption>
+</figure>
+<p>Only the ways you choose are written. In the kit folder:</p>
 <table>
 <thead>
 <tr>
@@ -166,17 +252,70 @@ nav.toc ol { margin: 0; }
 </tr>
 </thead>
 <tbody>
-<tr><td><code>creator-kit.blend</code></td><td>The Blender template. Open this one.</td></tr>
-<tr><td><code>creator-kit-figure.glb</code></td><td>The demo export of the figure alone, with the puppet. It holds no game data. This is the file to share.</td></tr>
-<tr><td><code>creator-kit-demo-local.glb</code></td><td>The figure with the kart and the wheels from your game data, for a test on your own computer. Never share it.</td></tr>
-<tr><td><code>creator-kit-report.json</code></td><td>A short report of the run.</td></tr>
-<tr><td><code>kit-kart.glb</code></td><td>The kart, taken from your game data.</td></tr>
-<tr><td><code>kit-wheel.glb</code></td><td>The wheel, taken from your game data.</td></tr>
+<tr><td><code>NOTICE.txt</code></td><td>The notice above.</td></tr>
+<tr><td><code>CREATOR_KIT.html</code></td><td>This guide.</td></tr>
+<tr><td><code>kit-kart.glb</code>, <code>kit-wheel.glb</code>, <code>kit-kart-gltf.glb</code>, <code>kit-wheel-gltf.glb</code></td><td>The kart and the wheel, from your game files.</td></tr>
 <tr><td><code>kit-info.json</code></td><td>Sizes and points of the kart: seat, steering wheel, wheels.</td></tr>
+<tr><td><code>kit-extract.txt</code></td><td>The log of reading the kart from your game files.</td></tr>
+<tr><td><code>classic.glb</code></td><td>Your old character, only when you start from one (section 12).</td></tr>
 </tbody>
 </table>
-<p>The button <strong>Guide</strong> on the same page opens this guide.</p>
-<h2 id="2-open-the-template">2. Open the template</h2>
+<p>In each folder of a way, <code>vanilla</code>, <code>lowpoly</code> and <code>hires</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>What it is</th>
+</tr>
+</thead>
+<tbody>
+<tr><td><code>creator-kit-&lt;way&gt;.blend</code></td><td>The Blender template of the way. Open this one. It contains the kart from your game files.</td></tr>
+<tr><td><code>creator-kit-&lt;way&gt;-figure.glb</code></td><td>The demo export of the figure alone, with the puppet. It has no kart and nothing from your game files.</td></tr>
+<tr><td><code>NOTICE.txt</code></td><td>The notice above.</td></tr>
+<tr><td><code>creator-kit-report.json</code></td><td>A short report of the run.</td></tr>
+</tbody>
+</table>
+<p>The folder <code>hires</code> has one more file, <code>creator-kit-demo-local.glb</code>: the figure with the kart and the wheels from your game files, for a test on your own computer. With the demo driver it also has <code>demo-puppet.rldchar</code> and a .bat file that starts the game with it.</p>
+<h2 id="4-the-three-ways">4. The three ways</h2>
+<p>Each way has its own template. The skeleton and the steps in Blender are the same. The puppet, the limits, the clips and the export differ.</p>
+<h3 id="vanilla">Vanilla</h3>
+<p>The Vanilla way builds a classic character, the kind the original game draws. It runs everywhere, also on the PS1 path.</p>
+<ul>
+<li><strong>Triangles:</strong> the original drivers have up to about <strong>560 triangles</strong>, kart included. The Vanilla puppet has 543. More is possible: the Studio notes it, and from about <strong>7200 triangles</strong> on it reduces the model for you.</li>
+<li><strong>Colours:</strong> at most <strong>96 colours</strong> for the figure. The game keeps the rest of its 128 colours for the kart. The Studio merges more colours and says so in a warning.</li>
+<li><strong>Textures:</strong> the classic model draws no textures. Each triangle takes its colours from the texture at its three corners. Large flat colour fields work best; a detailed texture can make the Studio split triangles.</li>
+<li><strong>Thin parts:</strong> positions are stored coarsely. Very thin parts can collapse; the Studio warns about them.</li>
+<li>Vertex colours in PSX mode (section 7).</li>
+<li>The skeleton is there so that you can pose the figure while you model it. The export has <strong>no skin and no clips</strong>: the classic model makes its steering and jump poses by itself.</li>
+<li>The game puts in the kart from the player&#x27;s game data. On the step <strong>Model</strong> the Studio sets <strong>Kart</strong> to the player&#x27;s game data under <strong>Advanced</strong> and says so in one line on the step. <strong>Change</strong> opens Advanced.</li>
+</ul>
+<h3 id="low-poly">Low-Poly</h3>
+<p>The Low-Poly way builds a modern, stylised character with clear surfaces.</p>
+<ul>
+<li><strong>Limits:</strong> at most <strong>8000 triangles</strong> and textures of at most <strong>512 pixels</strong>. Above that, the Studio warns and suggests Hi-Res.</li>
+<li>Vertex colours in PSX mode (section 7).</li>
+<li>The clips of section 6: the 12 clips the game plays and the 2 optional finish clips.</li>
+</ul>
+<h3 id="hi-res">Hi-Res</h3>
+<p>The Hi-Res way builds a character in full quality with animations.</p>
+<ul>
+<li><strong>Limits:</strong> the full budget of the game (below).</li>
+<li>Vertex colours in PSX mode (section 7), as in the other two templates.</li>
+<li>The material of the puppet has a <strong>normal map</strong>, made by code. Replace it with your own, or remove it.</li>
+<li>All <strong>12 clips</strong> and the 2 finish clips <code>finish_win</code> and <code>finish_lose</code> (section 6).</li>
+<li>A second exporter writes <code>creator-kit-demo-local.glb</code>, the figure with the kart, for a test on your own computer (section 8).</li>
+</ul>
+<h3 id="the-budget-of-the-game">The budget of the game</h3>
+<p>These limits hold for every Low-Poly and Hi-Res file:</p>
+<ul>
+<li>At most <strong>64000 triangles</strong> for the whole file. The kart and the wheels use a part of that.</li>
+<li>At most <strong>62 materials</strong>.</li>
+<li>Texture edge at most <strong>2048</strong> pixels. All textures together should stay under <strong>32 MiB</strong>.</li>
+<li>The whole model is smaller than <strong>4 m</strong> in every direction in every pose.</li>
+<li>At most <strong>4 bone weights</strong> per vertex.</li>
+<li>At most <strong>64 bones</strong> in total.</li>
+</ul>
+<h2 id="5-open-the-template-and-put-your-figure-in-place">5. Open the template and put your figure in place</h2>
 <figure>
 <svg role="img" aria-label="The collections in the template" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 505" font-family="sans-serif">
 <rect width="760" height="505" rx="12" fill="#f2f3f5"/>
@@ -186,10 +325,10 @@ nav.toc ol { margin: 0; }
 <rect x="21" y="47" width="718" height="25" fill="#303540"/>
 <rect x="40" y="54" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="64" font-size="14" fill="#e6e8eb">CreatorKit</text>
-<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">second exporter: demo-local</text>
+<text x="156" y="64" font-size="12" font-style="italic" fill="#9aa3ad">Hi-Res: exporter of the demo-local file</text>
 <rect x="64" y="79" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="86" y="89" font-size="14" fill="#e6e8eb">Figure</text>
-<text x="147.2" y="89" font-size="12" font-style="italic" fill="#9aa3ad">exporter: figure</text>
+<text x="147.2" y="89" font-size="12" font-style="italic" fill="#9aa3ad">exporter: the figure</text>
 <rect x="21" y="97" width="718" height="25" fill="#303540"/>
 <path d="M94.5 103L101 115 88 115z" fill="#7ed99b" stroke="#3b8f57" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
 <text x="110" y="114" font-size="14" fill="#e6e8eb">creator_rig</text>
@@ -245,14 +384,14 @@ nav.toc ol { margin: 0; }
 <rect x="40" y="454" width="13" height="11" rx="2" fill="none" stroke="#e8e8e8" stroke-width="1.6"/>
 <text x="62" y="464" font-size="14" fill="#e6e8eb">Classic</text>
 <text x="131.4" y="464" font-size="12" font-style="italic" fill="#9aa3ad">only with an old character</text>
-<path d="M400 75L408 75 408 145 400 145" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="418" y="106" font-size="13" font-weight="bold" fill="#6fd08c">creator-kit-figure.glb</text>
-<text x="418" y="123" font-size="13" fill="#6fd08c">no game data (share)</text>
-<path d="M400 150L408 150 408 320 400 320" fill="none" stroke="#ffa94d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="418" y="231" font-size="13" font-weight="bold" fill="#ffa94d">only in creator-kit-demo-local.glb</text>
-<text x="418" y="248" font-size="13" fill="#ffa94d">your game data (keep local)</text>
-<path d="M400 325L408 325 408 470 400 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<text x="418" y="401.5" font-size="13" font-weight="bold" fill="#c3c9d0">never exported</text>
+<path d="M380 75L388 75 388 145 380 145" fill="none" stroke="#6fd08c" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="398" y="106" font-size="13" font-weight="bold" fill="#6fd08c">creator-kit-&lt;way&gt;-figure.glb</text>
+<text x="398" y="123" font-size="13" fill="#6fd08c">the figure alone, without the kart</text>
+<path d="M380 150L388 150 388 320 380 320" fill="none" stroke="#ffa94d" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="398" y="231" font-size="13" font-weight="bold" fill="#ffa94d">creator-kit-demo-local.glb (Hi-Res only)</text>
+<text x="398" y="248" font-size="13" fill="#ffa94d">the kart from your game files</text>
+<path d="M380 325L388 325 388 470 380 470" fill="none" stroke="#9aa3ad" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="398" y="401.5" font-size="13" font-weight="bold" fill="#c3c9d0">never exported</text>
 </svg>
 <figcaption>The collections in the template</figcaption>
 </figure>
@@ -326,17 +465,16 @@ nav.toc ol { margin: 0; }
 <figcaption>Axes, ground and size of the kart</figcaption>
 </figure>
 <ol>
-<li>Open <code>creator-kit.blend</code> in Blender 5.2.</li>
+<li>Open <code>creator-kit-&lt;way&gt;.blend</code> of your way in Blender 5.2, for example <code>hires\creator-kit-hires.blend</code>.</li>
 <li>Look at the <strong>Outliner</strong>. It has these collections:
 <ul>
-<li><strong>CreatorKit</strong> holds Figure and Kart. It has the exporter for the local demo file (section 7).</li>
-<li><strong>Figure</strong> holds <code>creator_rig</code> and the puppet. It is inside CreatorKit. It has the exporter for the figure alone (section 7).</li>
+<li><strong>CreatorKit</strong> holds Figure and Kart. In the Hi-Res template it has the exporter for the local demo file (section 8).</li>
+<li><strong>Figure</strong> holds <code>creator_rig</code> and the puppet. It is inside CreatorKit. It has the exporter for the figure alone (section 8).</li>
 <li><strong>Kart</strong> holds the kart body, the steering wheel and the four wheels. It is inside CreatorKit. These parts are marked as kit parts: they have a custom property <code>ctr_kit</code>, and their materials are named <code>ctrkit_...</code>.</li>
 <li><strong>Guides</strong> holds helper objects, for example the size box and the seat point. It is not exported.</li>
-<li><strong>Classic</strong> appears only when you load an old character (section 11). It is not exported.</li>
+<li><strong>Classic</strong> appears only when you load an old character (section 12). It is not exported.</li>
 </ul>
 </li>
-<li>The skeleton <code>creator_rig</code> is inside Figure.</li>
 </ol>
 <p>The axes are fixed:</p>
 <ul>
@@ -345,8 +483,7 @@ nav.toc ol { margin: 0; }
 <li>The ground is at z = 0.</li>
 <li>1 unit is 1 metre. The kart is about 1.76 m long.</li>
 </ul>
-<p>Do not move or scale the kart. The game expects it where it is.</p>
-<h2 id="3-put-your-own-figure-in-place-of-the-puppet">3. Put your own figure in place of the puppet</h2>
+<p>Leave the kart where it is, at its size. The game expects it there.</p>
 <figure>
 <svg role="img" aria-label="The puppet and a new figure in the same seat" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" font-family="sans-serif">
 <rect width="760" height="420" rx="12" fill="#f2f3f5"/>
@@ -366,7 +503,7 @@ nav.toc ol { margin: 0; }
 <figcaption>The puppet and a new figure in the same seat</figcaption>
 </figure>
 <ol>
-<li>In the Outliner, <strong>hide</strong> the object <code>puppet</code>. Do not delete it yet. You need it as a guide until your figure is bound.</li>
+<li>In the Outliner, <strong>hide</strong> the object <code>puppet</code>. Keep it until your figure is bound: it is your guide.</li>
 <li>Bring your figure into Blender and move it into the collection <strong>Figure</strong>.</li>
 <li>Model or move the figure so that it <strong>sits</strong> in the kart:
 <ul>
@@ -378,18 +515,10 @@ nav.toc ol { margin: 0; }
 </li>
 <li>Apply the scale of your figure (Object &gt; Apply &gt; Scale) so that it is 1 on all axes.</li>
 <li>Make sure the figure has UVs and a material with a texture.</li>
+<li>Keep to the limits of your way (section 4).</li>
 </ol>
-<p>Keep the kit parts in the collection <strong>Kart</strong>. Do not move them into <strong>Figure</strong>. Reload Studio warns you about a file that contains them: &quot;This file contains the original kart from your game data. Don&#x27;t share it, or export without the kart.&quot;</p>
-<p>Keep to these limits:</p>
-<ul>
-<li>At most <strong>64000 triangles</strong> for the whole file. The kart and the wheels use a part of that.</li>
-<li>At most <strong>62 materials</strong>.</li>
-<li>Texture edge at most <strong>2048</strong> pixels. All textures together should stay under <strong>32 MiB</strong>.</li>
-<li>The whole model must be smaller than <strong>4 m</strong> in every direction in every pose.</li>
-<li>At most <strong>4 bone weights</strong> per vertex.</li>
-<li>At most <strong>64 bones</strong> in total.</li>
-</ul>
-<h2 id="4-bind-your-figure-to-the-skeleton">4. Bind your figure to the skeleton</h2>
+<p>The kit parts stay in the collection <strong>Kart</strong>, not in <strong>Figure</strong>. For a file that contains them, Reload Studio shows the warning &quot;This file contains the kart from your game files.&quot;</p>
+<h3 id="bind-your-figure-to-the-skeleton">Bind your figure to the skeleton</h3>
 <figure>
 <svg role="img" aria-label="The bones of the skeleton" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 560" font-family="sans-serif">
 <rect width="840" height="560" rx="12" fill="#f2f3f5"/>
@@ -629,17 +758,17 @@ nav.toc ol { margin: 0; }
 <li>Select <code>creator_rig</code> and enter <strong>Edit Mode</strong>.</li>
 <li>Move each bone to the matching joint of your figure. Use the puppet as a guide.</li>
 <li>Leave Edit Mode.</li>
-<li><strong>Keep the skeleton&#x27;s rest pose seated.</strong> Do not make the figure stand. The rest pose is the seated pose in the kart.</li>
+<li><strong>Keep the skeleton&#x27;s rest pose seated.</strong> The rest pose is the seated pose in the kart, not a standing one.</li>
 <li>Select your figure, then <code>creator_rig</code>. Use <strong>Object &gt; Parent &gt; With Automatic Weights</strong>.</li>
 <li>Open <strong>Weight Paint</strong> and check the weights. Fix places where the skin bends badly, for example shoulders and hips.</li>
 <li>Keep at most 4 bones per vertex. Use <strong>Weights &gt; Limit Total</strong> with the value 4.</li>
 <li>Bones end in <code>.L</code> (left) or <code>.R</code> (right). Blender can mirror weights and poses for you, because of these names.</li>
 <li>When your figure moves well, delete the puppet.</li>
 </ol>
-<p>You may add your own bones, for example for ears, hair or a tail. Keep the total at 64 bones or fewer. Do not rename or delete the existing bones. Their names are:</p>
+<p>You may add your own bones, for example for ears, hair or a tail. Keep the total at 64 bones or fewer. Keep the names of the existing bones and keep them all. Their names are:</p>
 <p><code>root</code>, <code>pelvis</code>, <code>spine</code>, <code>chest</code>, <code>neck</code>, <code>head</code>, <code>shoulder</code>, <code>upper_arm</code>, <code>forearm</code>, <code>hand</code>, <code>fingers</code>, <code>thumb</code>, <code>thigh</code>, <code>shin</code>, <code>foot</code>, <code>toe</code>, <code>kart</code> and <code>kart_steer</code>. All but <code>root</code>, <code>pelvis</code>, <code>spine</code>, <code>chest</code>, <code>neck</code>, <code>head</code>, <code>kart</code> and <code>kart_steer</code> come as a <code>.L</code> and a <code>.R</code> bone.</p>
 <p>The bones <code>kart</code> and <code>kart_steer</code> belong to the kart. The kart body and the wheels hang on <code>kart</code>, the steering wheel on <code>kart_steer</code>, which turns it. No vertex of your figure gets weight from them.</p>
-<h2 id="5-the-clips">5. The clips</h2>
+<h2 id="6-the-clips">6. The clips</h2>
 <figure>
 <svg role="img" aria-label="A key pose of each clip" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 860" font-family="sans-serif">
 <rect width="800" height="860" rx="12" fill="#f2f3f5"/>
@@ -716,6 +845,7 @@ nav.toc ol { margin: 0; }
 </svg>
 <figcaption>A key pose of each clip</figcaption>
 </figure>
+<p>This section is for Low-Poly and Hi-Res. A Vanilla export has no skin and no clips.</p>
 <p>The game plays 14 clips. Two of them, <code>finish_win</code> and <code>finish_lose</code>, are optional. Each clip is one <strong>action</strong> in Blender. The game finds a clip by its name, so use the names exactly as written.</p>
 <table>
 <thead>
@@ -757,9 +887,9 @@ nav.toc ol { margin: 0; }
 <p>Follow these rules:</p>
 <ul>
 <li>Use the <strong>exact names</strong> from the table. A misspelled name is not found.</li>
-<li><strong>Loops end as they begin.</strong> The last pose must match the first pose.</li>
+<li><strong>Loops end as they begin.</strong> The last pose matches the first pose.</li>
 <li><strong>Steering clips start at the neutral pose and end at full lock.</strong> The first pose is the same as <code>idle</code> at the start. The last pose is the figure turned fully into the curve. The motion goes in one direction.</li>
-<li><strong>No moving away.</strong> The figure stays over its spot in the kart. Do not move <code>root</code>. A standing clip lifts <code>pelvis</code> up to the standing height, nothing more.</li>
+<li><strong>The figure stays over its spot in the kart.</strong> <code>root</code> stays where it is. A standing clip lifts <code>pelvis</code> up to the standing height, nothing more.</li>
 <li><strong>Hands stay on the wheel</strong> in <code>idle</code>, the steering clips and the drift clips. The steering wheel turns with the bone <code>kart_steer</code>. In <code>finish_win</code> the hands may leave the wheel.</li>
 <li><strong>The finish clips are seated.</strong> The hips stay on the seat, as in the race clips.</li>
 <li>A standing clip puts the feet on the ground at z = 0, where the kart was.</li>
@@ -773,109 +903,108 @@ nav.toc ol { margin: 0; }
 <li><code>finish_win</code> and <code>finish_lose</code> are optional. A file without them is fine. Without them the game plays what earlier versions played after the finish line. Files from this kit keep the seated race clips. An older file without the kart part plays <code>podium_1</code>, <code>podium_2</code> or <code>podium_3</code> (places 1 to 3) or <code>lose</code>.</li>
 </ul>
 <p>You can start with fewer clips and add the rest later.</p>
-<h2 id="6-vertex-colours">6. Vertex colours</h2>
+<h2 id="7-vertex-colours">7. Vertex colours</h2>
 <p>The mode of the vertex colours is written at the end of every material name. There are three modes:</p>
 <ul>
 <li><code>[vcol psx]</code> is the PS1 style. A vertex colour of grey 128 keeps the texture as it is. Darker shades make it darker. Lighter shades make it brighter. The game draws the whole model <strong>without extra light</strong>. The shading is in the colours.</li>
 <li><code>[vcol gltf]</code> is the glTF style. White keeps the texture as it is. The game lights the model.</li>
 <li><code>[vcol off]</code> ignores the vertex colours. The game lights the model.</li>
 </ul>
-<p>All materials of one file must have the same mode. The demo files are made in PSX mode by default. The Studio can make the other two modes.</p>
+<p>All materials of one file have the same mode. All three templates are in PSX mode.</p>
 <p>When your figure is new, choose one of these:</p>
 <ol>
 <li><strong>PSX mode:</strong> give your figure vertex colours. Use grey 128 as the neutral value. Paint lighter colours where light falls and darker colours in the shade. Then the figure matches the kart.</li>
-<li><strong>glTF mode:</strong> keep the vertex colours white or remove them. Then the game lights the figure. The Studio can make the kit in glTF mode.</li>
+<li><strong>glTF mode:</strong> keep the vertex colours white or remove them. Then the game lights the figure.</li>
 </ol>
-<p>To use another mode, make the demo files again in that mode. The colours of the kart are made for one mode, so only renaming the materials is not enough.</p>
-<h2 id="7-export">7. Export</h2>
+<p>The colours of the kart are made for one mode, so renaming the materials alone does not change the mode of a template.</p>
+<h2 id="8-export">8. Export</h2>
 <figure>
 <svg role="img" aria-label="The export path in Blender" width="100%" style="max-width:720px;height:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 396" font-family="sans-serif">
 <rect width="800" height="396" rx="12" fill="#f2f3f5"/>
 <text x="400" y="34" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">Where to click in Blender</text>
 <rect x="6" y="52" width="788" height="128" rx="10" fill="#e6f7ea" stroke="#2f9e44" stroke-width="1.6"/>
-<text x="20" y="74" font-size="14" font-weight="bold" fill="#15803d">(a) the file to share: the figure alone</text>
-<rect x="13" y="86" width="140" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="83" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
-<text x="83" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select Figure</text>
-<circle cx="15" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="15" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
-<rect x="181" y="86" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="261" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
-<text x="261" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
-<circle cx="183" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="183" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
-<rect x="369" y="86" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="449" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
-<text x="449" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
-<circle cx="371" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="371" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
-<rect x="557" y="86" width="230" height="62" rx="8" fill="#b2f2bb" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="672" y="113.8" font-size="11" text-anchor="middle" fill="#5f6b7a">Result:</text>
-<text x="672" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-figure.glb</text>
-<path d="M157 117L169.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M177 117L168 120.8L168 113.2z" fill="#5f6b7a"/>
-<path d="M345 117L357.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M365 117L356 120.8L356 113.2z" fill="#5f6b7a"/>
-<path d="M533 117L545.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M553 117L544 120.8L544 113.2z" fill="#5f6b7a"/>
-<text x="672" y="166" font-size="12.5" text-anchor="middle" fill="#15803d">figure alone, no game data</text>
+<text x="20" y="74" font-size="14" font-weight="bold" fill="#15803d">(a) every way: the figure alone</text>
+<rect x="19" y="86" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="96" y="113.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
+<text x="96" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">select Figure</text>
+<circle cx="21" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="21" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="201" y="86" width="134" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="268" y="113.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
+<text x="268" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
+<circle cx="203" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="203" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="363" y="86" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="440" y="113.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
+<text x="440" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
+<circle cx="365" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="365" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="545" y="86" width="236" height="62" rx="8" fill="#b2f2bb" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="663" y="114" font-size="12" text-anchor="middle" fill="#5f6b7a">Result:</text>
+<text x="663" y="128.4" font-size="12" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-&lt;way&gt;-figure.glb</text>
+<path d="M177 117L189.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M197 117L188 120.8L188 113.2z" fill="#5f6b7a"/>
+<path d="M339 117L351.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M359 117L350 120.8L350 113.2z" fill="#5f6b7a"/>
+<path d="M521 117L533.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M541 117L532 120.8L532 113.2z" fill="#5f6b7a"/>
+<text x="781" y="166" font-size="12.5" text-anchor="end" fill="#15803d">the figure alone, without the kart</text>
 <rect x="6" y="196" width="788" height="128" rx="10" fill="#fff0e0" stroke="#e8590c" stroke-width="1.6"/>
-<text x="20" y="218" font-size="14" font-weight="bold" fill="#c2410c">(b) for a test on your own PC</text>
-<rect x="13" y="230" width="140" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="83" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
-<text x="83" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select CreatorKit</text>
-<circle cx="15" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="15" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
-<rect x="181" y="230" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="261" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
-<text x="261" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
-<circle cx="183" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="183" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
-<rect x="369" y="230" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="449" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
-<text x="449" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
-<circle cx="371" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="371" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
-<rect x="557" y="230" width="230" height="62" rx="8" fill="#ffc078" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="672" y="257.8" font-size="11" text-anchor="middle" fill="#5f6b7a">Result:</text>
-<text x="672" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
-<path d="M157 261L169.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M177 261L168 264.8L168 257.2z" fill="#5f6b7a"/>
-<path d="M345 261L357.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M365 261L356 264.8L356 257.2z" fill="#5f6b7a"/>
-<path d="M533 261L545.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M553 261L544 264.8L544 257.2z" fill="#5f6b7a"/>
-<text x="672" y="310" font-size="12.5" text-anchor="middle" fill="#c2410c">with your kart, keep it local</text>
-<rect x="200" y="342" width="400" height="40" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4" stroke-dasharray="6 4"/>
-<text x="400" y="367" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">or  File &gt; Export All Collections (writes both)</text>
+<text x="20" y="218" font-size="14" font-weight="bold" fill="#c2410c">(b) Hi-Res only: the figure with the kart, for a test</text>
+<rect x="19" y="230" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="96" y="257.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
+<text x="96" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">select CreatorKit</text>
+<circle cx="21" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="21" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="201" y="230" width="134" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="268" y="257.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
+<text x="268" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
+<circle cx="203" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="203" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="363" y="230" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="440" y="257.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
+<text x="440" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
+<circle cx="365" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="365" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="545" y="230" width="236" height="62" rx="8" fill="#ffc078" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="663" y="258" font-size="12" text-anchor="middle" fill="#5f6b7a">Result:</text>
+<text x="663" y="272.4" font-size="12" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
+<path d="M177 261L189.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M197 261L188 264.8L188 257.2z" fill="#5f6b7a"/>
+<path d="M339 261L351.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M359 261L350 264.8L350 257.2z" fill="#5f6b7a"/>
+<path d="M521 261L533.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M541 261L532 264.8L532 257.2z" fill="#5f6b7a"/>
+<text x="781" y="310" font-size="12.5" text-anchor="end" fill="#c2410c">contains the kart from your game files</text>
+<rect x="90" y="342" width="620" height="40" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="400" y="367" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">or  File &gt; Export All Collections (writes every exporter of the file)</text>
 </svg>
 <figcaption>The export path in Blender</figcaption>
 </figure>
 <p>The export settings are already stored in the file.</p>
-<p>There are two exporters:</p>
 <ul>
-<li>The collection <strong>Figure</strong> writes <code>creator-kit-figure.glb</code>. This is the figure alone. It holds no game data. This is the file to share.</li>
-<li>The collection <strong>CreatorKit</strong> writes <code>creator-kit-demo-local.glb</code>. This is the figure with the kart and the wheels from your own game data. Use it for a test on your own computer. Never share it.</li>
+<li>In every template the collection <strong>Figure</strong> writes <code>creator-kit-&lt;way&gt;-figure.glb</code>, for example <code>creator-kit-lowpoly-figure.glb</code>. This is the figure alone, without the kart.</li>
+<li>In the Hi-Res template the collection <strong>CreatorKit</strong> also writes <code>creator-kit-demo-local.glb</code>. This is the figure with the kart and the wheels from your game files, for a test on your own computer.</li>
 </ul>
 <p>To export:</p>
 <ol>
 <li>Select the collection in the Outliner.</li>
-<li>Open its Collection properties &gt; <strong>Exporters</strong> &gt; <strong>glTF 2.0</strong> &gt; <strong>Export</strong>. Or use <strong>File &gt; Export All Collections</strong>. This writes both files next to the .blend file.</li>
+<li>Open its Collection properties &gt; <strong>Exporters</strong> &gt; <strong>glTF 2.0</strong> &gt; <strong>Export</strong>. Or use <strong>File &gt; Export All Collections</strong>. This writes every exporter of the file next to the .blend file.</li>
 <li>You may use other file names.</li>
 </ol>
 <blockquote>
-<p>Do not change the export settings. Especially keep <strong>Animations</strong> on. Without it the file has no clips.</p>
+<p>Leave the export settings as they are. In Low-Poly and Hi-Res, <strong>Animations</strong> is on: without it the file has no clips. In Vanilla the export has no skin and no clips, because the classic model poses by itself.</p>
 </blockquote>
-<h2 id="8-character">8. Character</h2>
+<h2 id="9-character">9. Character</h2>
 <ol>
-<li>Start Reload Studio and open the page <strong>Character</strong>.</li>
-<li>Choose your .glb file as the model. For a test on your own computer, section 10 names the file to use.</li>
-<li>The Studio checks the file. It shows the animations: which clips come from the file and which use a fallback. It also shows the budget: triangles, joints, materials and textures.</li>
-<li>Check the vertex colour mode. It must match the ending of your material names.</li>
+<li>Start Reload Studio and open the page <strong>Character</strong>. On <strong>Build a character</strong>, choose the same way as your template.</li>
+<li>On the step <strong>Model</strong>, choose your <code>creator-kit-&lt;way&gt;-figure.glb</code>.</li>
+<li>The Studio checks the file. For Low-Poly and Hi-Res it shows the animations: which clips come from the file and which use a fallback. It also shows the budget: triangles, joints, materials and textures.</li>
+<li>Check the vertex colour mode. It matches the ending of your material names.</li>
 <li>Fix every error the Studio shows. A warning means that the character works, but something falls back to a standard.</li>
 </ol>
-<h2 id="9-the-classic-model">9. The classic model</h2>
-<p>Older versions of the game and the PS1 path cannot show a skeleton. The Studio builds a <strong>classic model</strong> for them from your file, automatically.</p>
+<h2 id="10-the-classic-model">10. The classic model</h2>
+<p>Older versions of the game and the PS1 path cannot show a skeleton. For a Low-Poly or Hi-Res character the Studio also builds a <strong>classic model</strong> from your file, automatically. On the Vanilla way the classic model is the character.</p>
 <ul>
 <li>The Studio reads your model as it stands in its <strong>bind pose</strong>. It ignores the skeleton and the clips.</li>
 <li>The figure file has no kart of its own. From format 4.3 the game puts the original kart from the player&#x27;s game data under the classic model too. A game before 4.3, or a game without that game data, shows it in a plain grey kart.</li>
@@ -883,12 +1012,12 @@ nav.toc ol { margin: 0; }
 <li>The game makes the classic steering and jump poses itself.</li>
 </ul>
 <p>For advanced users, this is the same step on the command line:</p>
-<p><code>ReloadStudio.exe --rldpack make-char --model creator-kit-figure.glb --reduce auto --rig bind-pose --figure-only</code></p>
+<p><code>ReloadStudio.exe --rldpack make-char --model creator-kit-hires-figure.glb --reduce auto --rig bind-pose --figure-only</code></p>
 <p>You do not need this for normal work.</p>
-<h2 id="10-test-in-game">10. Test in game</h2>
-<p>The figure alone holds no game data. The game adds the original kart to it from the player&#x27;s own game. So you can test <code>creator-kit-figure.glb</code> as it is, and share it as it is.</p>
+<h2 id="11-test-in-game">11. Test in game</h2>
+<p>The figure alone has nothing from your game files. The game adds the kart from the player&#x27;s own game. So you can test <code>creator-kit-&lt;way&gt;-figure.glb</code> as it is.</p>
 <ol>
-<li>On the page <strong>Character</strong>, choose the file named above. Then press the button <strong>Test in game</strong>.</li>
+<li>On the page <strong>Character</strong>, choose that file. Then press the button <strong>Test in game</strong>.</li>
 <li>Start a race with your character.</li>
 <li>Check these things:
 <ul>
@@ -904,33 +1033,47 @@ nav.toc ol { margin: 0; }
 <li>Open the character select. The figure stands there without the kart.</li>
 </ol>
 <p>If something looks wrong, go back to Blender, fix it, export again and test again.</p>
-<h2 id="11-start-from-an-old-character">11. Start from an old character</h2>
+<h2 id="12-start-from-an-old-character">12. Start from an old character</h2>
 <p>You can start from a character you made before (a .rldchar file).</p>
 <ol>
-<li>Open the Creator Kit (page <strong>Character</strong>, <strong>Build a character</strong>, <strong>Creator Kit</strong> at the top right). Choose the old character at <strong>Start from an old character</strong>.</li>
+<li>Open the Creator Kit. On <strong>Where the kit goes</strong>, choose the old character at <strong>Start from an old character</strong>.</li>
 <li>Press <strong>Generate demo files</strong>.</li>
-<li>Open <code>creator-kit.blend</code>. The old model is in the collection <strong>Classic</strong>. Click the eye of Classic in the Outliner to show it.</li>
+<li>Open the template of your way. The old model is in the collection <strong>Classic</strong>. Click the eye of Classic in the Outliner to show it.</li>
 </ol>
 <p>The old model has the right size and sits where the puppet sits. When the file has a native model with textures, you get that one. Else you get the classic model with its vertex colours.</p>
 <ul>
-<li>Use it as a guide, or move parts of it into <strong>Figure</strong> and bind them to the skeleton (section 4).</li>
+<li>Use it as a guide, or move parts of it into <strong>Figure</strong> and bind them to the skeleton (section 5).</li>
 <li>The collection <strong>Classic</strong> itself is never exported.</li>
 <li>Its objects and materials are named <code>classic_...</code>.</li>
 </ul>
-<h2 id="12-sharing">12. Sharing</h2>
-<p>Share only files without the kit kart. The game puts the kart in on the player&#x27;s side.</p>
+<h2 id="13-what-is-in-which-file">13. What is in which file</h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contains the kart from your game files</th>
+</tr>
+</thead>
+<tbody>
+<tr><td><code>creator-kit-&lt;way&gt;-figure.glb</code></td><td>No. It has your figure alone.</td></tr>
+<tr><td><code>creator-kit-demo-local.glb</code></td><td>Yes. It has your figure, the kart and the wheels.</td></tr>
+<tr><td><code>creator-kit-&lt;way&gt;.blend</code></td><td>Yes, in the collection Kart.</td></tr>
+<tr><td><code>kit-kart.glb</code>, <code>kit-wheel.glb</code>, <code>kit-kart-gltf.glb</code>, <code>kit-wheel-gltf.glb</code></td><td>Yes.</td></tr>
+<tr><td>a .rldchar built from a figure file</td><td>No. The game puts in the kart from the player&#x27;s game data.</td></tr>
+</tbody>
+</table>
 <p>From format 4.3 the game puts the original kart from the player&#x27;s game data in for both models: the hi-res figure and the classic model. A game before 4.3 shows the classic model in a plain grey kart.</p>
-<h2 id="13-if-something-is-wrong">13. If something is wrong</h2>
+<h2 id="14-if-something-is-wrong">14. If something is wrong</h2>
 <ul>
-<li><strong>A clip is missing or not found.</strong> The name is misspelled or the action is missing. Open the Action Editor and compare the name with the table in section 5. The names are exact and in lower case.</li>
-<li><strong>The Studio says the file contains the original kart from your game data.</strong> For sharing, export with the exporter of the collection Figure (<code>creator-kit-figure.glb</code>). Keep the other file for yourself. Check that no kit part was moved into Figure.</li>
+<li><strong>A clip is missing or not found.</strong> The name is misspelled or the action is missing. Open the Action Editor and compare the name with the table in section 6. The names are exact and in lower case.</li>
+<li><strong>The Studio says &quot;This file contains the kart from your game files.&quot;</strong> The file was written by the exporter of CreatorKit (<code>creator-kit-demo-local.glb</code>), or a kit part is in the collection Figure. The exporter of Figure writes the figure alone. Check that every kit part is in Kart.</li>
 <li><strong>The wheels are missing.</strong> The wheel objects are not inside the collection Kart, or Kart is not inside CreatorKit. Move them back.</li>
-<li><strong>Too many triangles.</strong> Reduce the figure. Use the Decimate modifier, apply it, and bind the figure again. Remember that the kart and the wheels also use triangles.</li>
+<li><strong>Too many triangles.</strong> Reduce the figure. Use the Decimate modifier, apply it, and bind the figure again. Remember that the kart and the wheels also use triangles. On Low-Poly the target is 8000.</li>
 <li><strong>The figure is too big.</strong> Check the size box in Guides. The figure should fit inside it when it sits. Scale it, then apply the scale.</li>
-<li><strong>The figure looks too dark or too bright.</strong> Check the vertex colour mode in the material names (section 6). In PSX mode the neutral value is grey 128. In glTF mode it is white.</li>
+<li><strong>The figure looks too dark or too bright.</strong> Check the vertex colour mode in the material names (section 7). In PSX mode the neutral value is grey 128. In glTF mode it is white.</li>
 <li><strong>In a race the figure stands inside the kart.</strong> The skeleton&#x27;s rest pose is standing. Make the rest pose seated and bind the figure again.</li>
-<li><strong>On the podium the figure floats or sinks.</strong> In the standing clips, the feet must be on the ground at z = 0. Fix the height of <code>pelvis</code> in the clip.</li>
-<li><strong>The export has no animations.</strong> The setting Animations was turned off. Do not change the export settings. Open the Exporters panel of CreatorKit and turn <strong>Animations</strong> on again.</li>
+<li><strong>On the podium the figure floats or sinks.</strong> In the standing clips, the feet are on the ground at z = 0. Fix the height of <code>pelvis</code> in the clip.</li>
+<li><strong>A Low-Poly or Hi-Res export has no animations.</strong> The setting Animations was turned off. Open the Exporters panel of Figure and turn <strong>Animations</strong> on again.</li>
 </ul>
 </main>
 </body>

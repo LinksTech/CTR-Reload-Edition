@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """Turns the Creator Kit guide (Markdown subset + SVG pictures) into ONE self-contained HTML file.
 
-  python tools/creator_kit_guide.py build [--md docs/CREATOR_KIT.md] [--out docs/CREATOR_KIT.html]
-  python tools/creator_kit_guide.py check [--md ...] [--out ...]
-  python tools/creator_kit_guide.py sharing [dont-share|kart-in-game] [--md ...]
+  python tools/creator_kit_guide.py build  [--md docs/CREATOR_KIT.md] [--out docs/CREATOR_KIT.html] [--notice F]
+  python tools/creator_kit_guide.py check  [--md ...] [--out ...] [--notice F]
+  python tools/creator_kit_guide.py notice [--md ...] [--notice F]
   python tools/creator_kit_guide.py selftest
 
-build     writes the HTML (UTF-8, LF, final newline, no timestamps, no absolute paths).
+build     writes the HTML (UTF-8, LF, final newline, no timestamps, no absolute paths). It stops
+          (exit 2) when the notice of the .md differs from the notice file (see below).
 check     exit 0 if the file on disk equals what build would write, 1 if not (first differing
-          line is printed), 2 on errors. It also exits 1 when the switchable paragraphs
-          (see below) are in mixed modes or one is missing.
-sharing   without a mode: prints the sharing mode the .md is in. With a mode: rewrites the
-          switchable paragraphs of the .md to that mode and prints it.
-selftest   in-memory cases, exit 0 only if all pass.
+          line is printed), 2 on errors. It also exits 1 when the notice of the .md or of the
+          HTML differs from the notice file, or when a user text tells the reader what not to
+          do with the files (PRESCRIBING, below).
+notice    rewrites the notice block of the .md from the notice file (then run build).
+selftest  in-memory cases, exit 0 only if all pass.
 Default paths are relative to the repo root (the folder above tools/). Paths given on the
 command line are relative to the current folder.
+
+The notice: templates/CREATOR_KIT_NOTICE.txt is the one source of the kit's notice (Reload Studio
+shows it, the generator writes it as NOTICE.txt). The guide quotes it verbatim: the first note
+block after the heading NOTICE_HEADING, one "> " line per line of the file, ">" for an empty
+line. Compared after the line ends are made LF and the final line ends are removed.
 
 Markdown subset (anything else is an error with the line number, exit 2):
   headings # .. ####   (id = slug of the text, made unique with -2, -3, ...)
@@ -27,10 +33,6 @@ Markdown subset (anything else is an error with the line number, exit 2):
                        (ids prefixed per image, so they never clash)
   tables               pipe tables with a header separator line
   notes                "> " block
-Sharing switch: a few whole paragraphs of the .md exist in two variants, one per sharing mode
-(SHARING_MODES, SWITCH_TEXTS below). A paragraph is switchable if its text equals one of the
-variants exactly. The "sharing" command swaps all of them at once, so the guide never mixes the
-two modes. The .md ships in mode dont-share. Rebuild the HTML after a switch.
 The HTML has no scripts and no outside files. Standard library only.
 """
 import argparse
@@ -49,23 +51,14 @@ ITEM_RE = re.compile(r"^( {0,3})(?:(-)|(\d+)\.) +(\S.*)$")
 FENCE_RE = re.compile(r"^```[A-Za-z0-9_+-]*\s*$")
 SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
 
-SHARING_MODES = ("dont-share", "kart-in-game")
-SWITCH_TEXTS = {
-    "sharing": {
-        "dont-share": "The kart and the wheels in the kit are made from your own copy of the game. "
-                      "Keep files that contain them for yourself - do not share them.",
-        "kart-in-game": "Share only files without the kit kart. The game puts the kart in on the player's side.",
-    },
-    "test-file": {
-        "dont-share": "The figure alone holds no game data, but this version of the game does not add the "
-                      "original kart to it yet. So for a test on your own computer use "
-                      "`creator-kit-demo-local.glb`, the figure with the kart from your game data. "
-                      "Never share that file.",
-        "kart-in-game": "The figure alone holds no game data. The game adds the original kart to it from "
-                        "the player's own game. So you can test `creator-kit-figure.glb` as it is, "
-                        "and share it as it is.",
-    },
-}
+DEFAULT_NOTICE = os.path.join(ROOT, "templates", "CREATOR_KIT_NOTICE.txt")
+NOTICE_HEADING = "## The notice"
+
+# Kit texts inform and prescribe nothing about the files (no "don't share" said to the reader).
+# Searched in lower case, with every run of white space as one space and curly quotes made straight,
+# in the .md and in the built HTML (the texts of the pictures included).
+PRESCRIBING = ("don't share", "dont share", "do not share", "never share", "not to share",
+               "must not", "only for this pc", "keep it local", "keep local")
 
 CSS = """\
 :root { --bg: #ffffff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --code-bg: #f3f4f6;
@@ -462,16 +455,99 @@ def build_html(md_text, read_svg):
     return "\n".join(doc) + "\n"
 
 
-def build_file(md_path):
+def read_text(path, what):
     try:
-        with open(md_path, "rb") as f:
+        with open(path, "rb") as f:
             raw = f.read()
     except OSError as e:
-        raise GuideError(0, "cannot read %s (%s)" % (md_path, e.strerror))
+        raise GuideError(0, "cannot read %s %s (%s)" % (what, path, e.strerror))
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise GuideError(0, "%s is not UTF-8" % md_path)
+        raise GuideError(0, "%s %s is not UTF-8" % (what, path))
+    return text[1:] if text.startswith("﻿") else text
+
+
+def norm_notice(text):
+    """Line ends made LF, the final line ends removed."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+
+
+def notice_block(md_text):
+    """-> (notice text, line number of its first line) of the first note block after NOTICE_HEADING.
+    Raises GuideError when the heading or the block is missing."""
+    lines = md_text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    try:
+        at = lines.index(NOTICE_HEADING)
+    except ValueError:
+        raise GuideError(0, 'the heading "%s" (the notice) is missing' % NOTICE_HEADING)
+    i = at + 1
+    while i < len(lines) and not lines[i].startswith(">") and not lines[i].startswith("#"):
+        i += 1
+    if i >= len(lines) or not lines[i].startswith(">"):
+        raise GuideError(at + 1, 'no note block ("> " lines) under "%s"' % NOTICE_HEADING)
+    out, j = [], i
+    while j < len(lines) and lines[j].startswith(">"):
+        ln = lines[j]
+        if ln == ">":
+            out.append("")
+        elif ln.startswith("> "):
+            out.append(ln[2:])
+        else:
+            raise GuideError(j + 1, "note lines must start with '> '")
+        j += 1
+    return "\n".join(out), i + 1
+
+
+def notice_md(notice_text):
+    """The note block lines of the notice, as the .md carries them."""
+    return "\n".join("> " + ln if ln else ">" for ln in norm_notice(notice_text).split("\n"))
+
+
+def notice_problem(md_text, notice_text):
+    """None when the .md quotes the notice verbatim, else (line, message)."""
+    try:
+        got, line = notice_block(md_text)
+    except GuideError as e:
+        return e.line, e.msg
+    want = norm_notice(notice_text)
+    got = norm_notice(got)
+    if got == want:
+        return None
+    ga, wa = got.split("\n"), want.split("\n")
+    for k in range(max(len(ga), len(wa))):
+        x = ga[k] if k < len(ga) else "<end of the block>"
+        y = wa[k] if k < len(wa) else "<end of the file>"
+        if x != y:
+            return line + k, ("the notice differs from the notice file (run the command notice): "
+                              "guide '%s', file '%s'" % (x[:120], y[:120]))
+    return line, "the notice differs from the notice file"
+
+
+def notice_html_problem(html_text, notice_text):
+    """None when every paragraph of the notice is a <p> of a note block of the HTML, else a message."""
+    quotes = re.findall(r"<blockquote>\n(.*?)\n</blockquote>", html_text, flags=re.S)
+    for para in norm_notice(notice_text).split("\n\n"):
+        p = "<p>%s</p>" % inline(" ".join(t.strip() for t in para.split("\n")), 0)
+        if not any(p in q.split("\n") for q in quotes):
+            return "the HTML has no note paragraph '%s'" % para.split("\n")[0][:80]
+    return None
+
+
+def prescribing_hits(text):
+    """-> sorted phrases of PRESCRIBING found in text (tags and HTML entities undone first)."""
+    t = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    t = t.replace("’", "'").replace("‘", "'")
+    t = re.sub(r"\s+", " ", t).lower()
+    return sorted(p for p in PRESCRIBING if p in t)
+
+
+def build_file(md_path, notice_path=None):
+    text = read_text(md_path, "the guide")
+    notice = read_text(notice_path or DEFAULT_NOTICE, "the notice file")
+    prob = notice_problem(text, notice)
+    if prob:
+        raise GuideError(prob[0], prob[1])
     base = os.path.dirname(os.path.abspath(md_path))
 
     def read_svg(rel):
@@ -495,8 +571,8 @@ def first_diff(a, b):
     return 0, "", ""
 
 
-def cmd_build(md, out):
-    text = build_file(md)
+def cmd_build(md, out, notice):
+    text = build_file(md, notice)
     with open(out, "wb") as f:
         f.write(text.encode("utf-8"))
     print("creator_kit_guide: wrote %s (%d bytes)" % (os.path.basename(out), len(text.encode("utf-8"))))
@@ -514,12 +590,14 @@ def compare(disk, text, name="file"):
                "  on disk: %s" % a[:200], "  build  : %s" % b[:200]]
 
 
-def cmd_check(md, out):
-    state, msg = switch_state(read_md_text(md))
-    if state is None:
-        print("creator_kit_guide: check FAILED: %s" % msg)
+def cmd_check(md, out, notice):
+    md_text = read_text(md, "the guide")
+    notice_text = read_text(notice or DEFAULT_NOTICE, "the notice file")
+    prob = notice_problem(md_text, notice_text)
+    if prob:
+        print("creator_kit_guide: check FAILED: %s:%d: %s" % (os.path.basename(md), prob[0], prob[1]))
         return 1
-    text = build_file(md)
+    text = build_file(md, notice)
     try:
         with open(out, "rb") as f:
             disk = f.read().decode("utf-8")
@@ -529,89 +607,51 @@ def cmd_check(md, out):
         disk = "<not UTF-8>"
     rc, msg = compare(disk, text, os.path.basename(out))
     print(chr(10).join(msg))
+    if disk is not None:
+        bad = notice_html_problem(disk, notice_text)
+        if bad:
+            print("creator_kit_guide: check FAILED: %s: %s" % (os.path.basename(out), bad))
+            rc = 1
+        else:
+            print("creator_kit_guide: check ok (the notice is quoted verbatim in %s and %s)"
+                  % (os.path.basename(md), os.path.basename(out)))
+    bad_text = 0
+    for name, t in ((os.path.basename(md), md_text), ("the built HTML", text)):
+        hits = prescribing_hits(t)
+        if hits:
+            print("creator_kit_guide: check FAILED: %s tells the reader what not to do: %s"
+                  % (name, ", ".join('"%s"' % h for h in hits)))
+            bad_text += 1
+    if bad_text:
+        rc = 1
+    else:
+        print("creator_kit_guide: check ok (no prescribing user text)")
     return rc
 
 
-def switch_scan(text, texts=None):
-    """-> (modes, problems). modes: key -> mode found; problems: list of messages.
-    A key is found when exactly one paragraph (block between blank lines) equals one variant."""
-    texts = SWITCH_TEXTS if texts is None else texts
-    blocks = text.replace("\r\n", "\n").replace("\r", "\n").split("\n\n")
-    blocks = [bl.strip("\n") for bl in blocks]
-    modes, problems = {}, []
-    for key, variants in texts.items():
-        hits = [mode for bl in blocks for mode, v in variants.items() if bl == v]
-        if len(hits) != 1:
-            problems.append('switchable paragraph "%s" found %d times (must be exactly once)' % (key, len(hits)))
-        else:
-            modes[key] = hits[0]
-    return modes, problems
+def notice_sync(md_text, notice_text):
+    """md_text with its notice block replaced by the notice file's text."""
+    nl = "\r\n" if "\r\n" in md_text else "\n"
+    lines = md_text.replace("\r\n", "\n").split("\n")
+    _, first = notice_block(md_text)
+    j = first - 1
+    while j < len(lines) and lines[j].startswith(">"):
+        j += 1
+    lines[first - 1:j] = notice_md(notice_text).split("\n")
+    return nl.join(lines)
 
 
-def switch_state(text, texts=None):
-    """-> (mode or None, message or None). None + message when missing or mixed."""
-    modes, problems = switch_scan(text, texts)
-    if problems:
-        return None, "; ".join(problems)
-    found = sorted(set(modes.values()))
-    if len(found) != 1:
-        return None, "switchable paragraphs are in mixed modes: " + ", ".join(
-            "%s=%s" % (k, modes[k]) for k in sorted(modes))
-    return found[0], None
-
-
-def switch_apply(text, mode, texts=None):
-    """Rewrites every switchable paragraph to mode. Raises GuideError if one is not found exactly once."""
-    texts = SWITCH_TEXTS if texts is None else texts
-    _, problems = switch_scan(text, texts)
-    if problems:
-        raise GuideError(0, problems[0])
-    parts = text.split("\n\n")
-    for variants in texts.values():
-        for k, bl in enumerate(parts):
-            core = bl.strip("\r\n")
-            if core in variants.values():
-                parts[k] = bl.replace(core, variants[mode])
-    return "\n\n".join(parts)
-
-
-def read_md_text(md_path):
-    try:
-        with open(md_path, "rb") as f:
-            return f.read().decode("utf-8")
-    except OSError as e:
-        raise GuideError(0, "cannot read %s (%s)" % (md_path, e.strerror))
-    except UnicodeDecodeError:
-        raise GuideError(0, "%s is not UTF-8" % md_path)
-
-
-def cmd_sharing(md, mode):
-    text = read_md_text(md)
-    if mode is None:
-        state, msg = switch_state(text)
-        if state is None:
-            print("creator_kit_guide: sharing: %s" % msg, file=sys.stderr)
-            return 2
-        print(state)
-        return 0
-    new = switch_apply(text, mode)
+def cmd_notice(md, notice):
+    text = read_text(md, "the guide")
+    notice_text = read_text(notice or DEFAULT_NOTICE, "the notice file")
+    new = notice_sync(text, notice_text)
     if new != text:
         with open(md, "wb") as f:
             f.write(new.encode("utf-8"))
-    state, msg = switch_state(new)
-    if state != mode:
-        print("creator_kit_guide: sharing: switch failed: %s" % msg, file=sys.stderr)
-        return 2
-    print("creator_kit_guide: sharing mode is now %s (%s)" % (mode, os.path.basename(md)))
+        print("creator_kit_guide: the notice of %s was rewritten from the notice file" % os.path.basename(md))
+    else:
+        print("creator_kit_guide: the notice of %s is up to date" % os.path.basename(md))
     return 0
-
-
-def raises_switch(fn):
-    try:
-        fn()
-    except GuideError:
-        return True
-    return False
 
 
 def selftest():
@@ -692,25 +732,34 @@ def selftest():
          and compare(None, "a")[0] == 1)
     case("determinism of two builds", lambda: b("# T\n\n## A\n\n![p](assets/kit-guide-a.svg)\n\n- x\n") ==
          b("# T\n\n## A\n\n![p](assets/kit-guide-a.svg)\n\n- x\n"))
-    tt = {"a": {"x": "Alpha one.", "y": "Beta one."}, "b": {"x": "Alpha two.", "y": "Beta two."}}
-    doc_x = "# T\n\nAlpha one.\n\nmid\n\nAlpha two.\n"
-    doc_y = "# T\n\nBeta one.\n\nmid\n\nBeta two.\n"
-    doc_mixed = "# T\n\nAlpha one.\n\nmid\n\nBeta two.\n"
-    case("sharing switch: back and forth gives identical text", lambda: switch_apply(doc_x, "y", tt) == doc_y
-         and switch_apply(switch_apply(doc_x, "y", tt), "x", tt) == doc_x and switch_apply(doc_x, "x", tt) == doc_x
-         and switch_state(doc_x, tt) == ("x", None) and switch_state(doc_y, tt) == ("y", None))
-    case("sharing switch: mixed modes are reported", lambda: (lambda r: r[0] is None and "mixed" in r[1])(
-         switch_state(doc_mixed, tt)) and switch_apply(doc_mixed, "x", tt) == doc_x)
-    case("sharing switch: missing, doubled or partial paragraph is an error",
-         lambda: switch_state("# T\n\nAlpha one.\n", tt)[0] is None
-         and raises_switch(lambda: switch_apply("# T\n\nAlpha one.\n", "y", tt))
-         and raises_switch(lambda: switch_apply(doc_x + "\nAlpha one.\n", "y", tt))
-         and raises_switch(lambda: switch_apply("# T\n\nAlpha one. And more.\n\nAlpha two.\n", "y", tt)))
-    case("sharing switch: real texts differ and switch cleanly", lambda: all(
-         len(set(v.values())) == len(SHARING_MODES) and tuple(v) == SHARING_MODES for v in SWITCH_TEXTS.values())
-         and (lambda d: switch_apply(switch_apply(d, "kart-in-game"), "dont-share") == d
-              and switch_state(switch_apply(d, "kart-in-game")) == ("kart-in-game", None))(
-         "# T\n\n" + "\n\n".join(v["dont-share"] for v in SWITCH_TEXTS.values()) + "\n"))
+    notice = "Line one of it.\nLine two.\n\nSecond part.\n"
+    md_ok = "# T\n\n" + NOTICE_HEADING + "\n\nThe kit writes it:\n\n" + notice_md(notice) + "\n\n## Next\n\nText.\n"
+    case("notice: verbatim block passes, CRLF file and missing final newline too", lambda:
+         notice_problem(md_ok, notice) is None and notice_problem(md_ok, notice.replace("\n", "\r\n")) is None
+         and notice_problem(md_ok, notice.rstrip("\n")) is None
+         and notice_block(md_ok) == ("Line one of it.\nLine two.\n\nSecond part.", 7))
+    case("notice: a changed word, line break or missing line is found with its line", lambda:
+         notice_problem(md_ok.replace("Line two.", "Line 2."), notice)[0] == 8
+         and notice_problem(md_ok.replace("of it.\n> Line", "of it. Line"), notice) is not None
+         and notice_problem(md_ok.replace("> Second part.\n", ""), notice) is not None
+         and notice_problem(md_ok, notice + "More.\n") is not None)
+    case("notice: missing heading or block is an error", lambda:
+         "missing" in notice_problem(md_ok.replace(NOTICE_HEADING, "## Other"), notice)[1]
+         and "no note block" in notice_problem("# T\n\n" + NOTICE_HEADING + "\n\ntext\n\n## X\n\n> a\n", notice)[1])
+    case("notice: sync rewrites only the block, then it passes", lambda: (lambda m:
+         notice_problem(m, notice) is None and m.startswith("# T\n\n" + NOTICE_HEADING + "\n\nThe kit writes it:")
+         and m.endswith("\n\n## Next\n\nText.\n"))(notice_sync(md_ok.replace("Line two.", "Old."), notice))
+         and notice_sync(md_ok, notice) == md_ok)
+    case("notice: the HTML quotes every paragraph in a note block", lambda: (lambda h:
+         notice_html_problem(h, notice) is None and "<p>Line one of it. Line two.</p>" in h
+         and notice_html_problem(h.replace("Second part.", "Changed."), notice) is not None
+         and notice_html_problem(h, "Not in it.\n") is not None)(b(md_ok)))
+    case("prescribing text is found across lines, in any case, with curly quotes and entities", lambda:
+         prescribing_hits("Please do not\nshare it.") == ["do not share"]
+         and prescribing_hits("You DON’T SHARE") == ["don't share"]
+         and prescribing_hits("<text>don&#x27;t share</text>") == ["don't share"]
+         and prescribing_hits("This file contains the kart from your game files.") == []
+         and prescribing_hits("Only for this PC.") == ["only for this pc"])
     fails = results.count(False)
     print("creator_kit_guide selftest: %d cases, %d failed" % (len(results), fails))
     return 0 if fails == 0 else 1
@@ -719,13 +768,12 @@ def selftest():
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Creator Kit guide: Markdown + SVG -> one HTML file")
     sub = ap.add_subparsers(dest="cmd")
-    for name in ("build", "check"):
+    for name in ("build", "check", "notice"):
         p = sub.add_parser(name)
         p.add_argument("--md", default=DEFAULT_MD)
-        p.add_argument("--out", default=DEFAULT_OUT)
-    p = sub.add_parser("sharing")
-    p.add_argument("mode", nargs="?", choices=SHARING_MODES)
-    p.add_argument("--md", default=DEFAULT_MD)
+        if name != "notice":
+            p.add_argument("--out", default=DEFAULT_OUT)
+        p.add_argument("--notice", default=DEFAULT_NOTICE)
     sub.add_parser("selftest")
     args = ap.parse_args(argv)
     if args.cmd is None:
@@ -734,11 +782,11 @@ def main(argv=None):
     try:
         if args.cmd == "selftest":
             return selftest()
-        if args.cmd == "sharing":
-            return cmd_sharing(args.md, args.mode)
+        if args.cmd == "notice":
+            return cmd_notice(args.md, args.notice)
         if args.cmd == "build":
-            return cmd_build(args.md, args.out)
-        return cmd_check(args.md, args.out)
+            return cmd_build(args.md, args.out, args.notice)
+        return cmd_check(args.md, args.out, args.notice)
     except GuideError as e:
         where = os.path.basename(args.md) + (":%d" % e.line if e.line else "")
         print("creator_kit_guide: error: %s: %s" % (where, e.msg), file=sys.stderr)
