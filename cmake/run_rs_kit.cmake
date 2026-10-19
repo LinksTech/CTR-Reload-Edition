@@ -346,8 +346,11 @@ file(SHA256 "${base}/out-c/creator-kit.blend" blendAfter)
 if(NOT blendBefore STREQUAL blendAfter)
     message(FATAL_ERROR "FAILED: the cancel changed the old creator-kit.blend")
 endif()
+# Only this build's stand-in counts (its path): a ctest of another build folder
+# may run the same test at the same time, with a stand-in of its own.
+file(TO_NATIVE_PATH "${STANDIN}" standinNative)
 execute_process(COMMAND powershell -NoProfile -Command
-                "(Get-Process -Name ${standinName} -ErrorAction SilentlyContinue | Measure-Object).Count"
+                "(@(Get-CimInstance Win32_Process -Filter \"Name='${standinName}.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq '${standinNative}' })).Count"
                 OUTPUT_VARIABLE leftCount RESULT_VARIABLE rc TIMEOUT 60)
 string(STRIP "${leftCount}" leftCount)
 if(NOT leftCount STREQUAL "0")
