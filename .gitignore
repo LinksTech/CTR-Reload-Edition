@@ -225,3 +225,15 @@ classic.glb
 demo-puppet*
 START-DEMO-PUPPE.bat
 kit.part/
+
+# --- External track PoC ----------------------------------------------------
+# Converted third-party track data lives outside the repository (the game is
+# started with the data folder as a parameter); never commit it.
+*.igb
+*.hke
+*.gob
+*.gfc
+*.vag
+*.VAG
+/external-track*/
+/poc-data/

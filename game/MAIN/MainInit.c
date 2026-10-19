@@ -747,7 +747,19 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 	}
 
 	// copy InstDef to InstancePool
-	INSTANCE_LevInitAll(lev1->ptrInstDefs, lev1->numInstances);
+	{
+		int numInstances = (int)lev1->numInstances;
+
+#ifdef CTR_NATIVE
+		// The external track (--ext-track, platform/engine_exttrack.c): the
+		// donor level's own instances are not made (0); without the switch the
+		// count is the level's.
+		int ExtTrack_LevInstanceCount(int levelID, int count);
+
+		numInstances = ExtTrack_LevInstanceCount(gGT->levelID, numInstances);
+#endif
+		INSTANCE_LevInitAll(lev1->ptrInstDefs, numInstances);
+	}
 
 	// Debug_ToggleNormalSpawn == normal spawn
 	if (gGT->Debug_ToggleNormalSpawn != 0)

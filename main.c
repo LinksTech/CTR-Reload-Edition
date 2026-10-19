@@ -117,6 +117,14 @@
 #include "platform/engine_hires.c"
 #include "platform/engine_static_load.c"
 #include "platform/engine_static.c"
+// The external track (--ext-track, round of 2026-10-19): its parts, then the
+// switch's state, the JSON reader and the dispatcher that calls them.
+#include "platform/native_extcoll.c"
+#include "platform/native_exttrack_race.c"
+#include "platform/native_exttrack_nav.c"
+#include "platform/native_extcrates.c"
+#include "platform/native_extmusic.c"
+#include "platform/engine_exttrack.c"
 // The hi-res drivers of the .rldchar (round of 2026-10-17): the pose maths
 // (header-only, after cgltf), the selftests' GLB builder, the clip state
 // machine, the characters, their selftests.
@@ -455,6 +463,9 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-static-style", "<hires|lowpoly>", "with --engine-static-model: the lit model (switches --engine-static-lit on) in a style - hires: vertex normals and normal maps, the colours as they are; lowpoly: flat shading by the faces, no normal maps, saturation 1.25 and contrast 1.10"},
     {"--engine-static-grade", "<saturation,contrast>", "with --engine-static-lit or --engine-static-style: the colour grade of the lit model instead of the style's (each 0..3, 1 = unchanged)"},
     {"--engine-static-lit-sun", "<x,y,z,ambient,diffuse[,below]>", "with --engine-static-lit: the direction towards the sun (world axes, y up; normalised), the ambient light from above, the sun's strength and the ambient light from below (each 0..2; without below the same as above); default 0.35,0.85,0.40,0.95,0.40,0.80"},
+    {"--ext-track", "<dir>", "with --level, --engine and --engine-track: the external track of <dir> (exttrack.json and the files it names) takes the slot of the level of --level - the donor's geometry, water and sky are not drawn (as --engine-hide sky,water,track) and its level instances are not made; one log line per level load"},
+    {"--dev-ext-respawn", "<frame>", "with --ext-track, measuring only: the player is put back at the respawn point at that race frame (0..1000000)"},
+    {"--ext-selftest", "<json|coll|race|nav|crates|music>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates or the music, then end (ctest ext_selftest_<name>)"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
     {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
     {"--engine-flycam-smooth", "", "with --engine-flycam-auto, for videos: no hold at the stations - one centripetal Catmull-Rom curve through the stations and one through their look points, travelled at a constant speed in <frames> game frames from the first station to the last (no way back), then the camera stays; no snapshot per station (use --shot-series)"},
@@ -609,6 +620,7 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--level-tour-oracle-see", sizeof(g_cfg_levelTourOracleSee), 0},
     {"--engine-hires-dir", sizeof(g_cfg_engineHiresDir), 0},
     {"--engine-static-model", sizeof(g_cfg_engineStaticModel), 0},
+    {"--ext-track", sizeof(g_cfg_extTrackDir), 0},
     {"--engine-flycam-path", sizeof(g_cfg_engineFlycamPath), 0},
     {"--engine-oracle", sizeof(g_cfg_engineOracle), 0},
 };
@@ -1018,7 +1030,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			                                   (strcmp(argv[argIndex], "--engine-flycam-smooth") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-flycam-auto") == 0) || (strcmp(argv[argIndex], "--engine-flycam-path") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
+			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0) || (strcmp(argv[argIndex], "--ext-track") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -1532,6 +1544,80 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		}
 	}
 
+	// --ext-track needs --level (the slot it takes) and --engine-track (it is
+	// drawn by the engine; --engine is checked above); --dev-ext-respawn needs
+	// --ext-track and a frame; --ext-selftest knows six names. Refused here,
+	// before any window.
+	{
+		int extGiven = 0;
+		int levelGiven = 0;
+		int trackGiven = 0;
+		const char *respawnValue = NULL;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			const char *value = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
+
+			if (strcmp(argv[argIndex], "--ext-track") == 0)
+			{
+				extGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--level") == 0)
+			{
+				levelGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--engine-track") == 0)
+			{
+				trackGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-ext-respawn") == 0)
+			{
+				respawnValue = value;
+			}
+			else if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && (strcmp(value, "json") != 0) && (strcmp(value, "coll") != 0) &&
+			         (strcmp(value, "race") != 0) && (strcmp(value, "nav") != 0) && (strcmp(value, "crates") != 0) && (strcmp(value, "music") != 0))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates or music, not '%s'\n", value);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+		}
+		{
+			const char *refusal = NULL;
+
+			if (extGiven && !levelGiven)
+			{
+				refusal = "switch --ext-track requires --level (the slot the track takes)";
+			}
+			else if (extGiven && !trackGiven)
+			{
+				refusal = "switch --ext-track requires --engine-track";
+			}
+			else if ((respawnValue != NULL) && !extGiven)
+			{
+				refusal = "switch --dev-ext-respawn requires --ext-track";
+			}
+			else if (respawnValue != NULL)
+			{
+				char *end = NULL;
+				const long frame = strtol(respawnValue, &end, 10);
+
+				if ((end == respawnValue) || (*end != 0) || (frame < 0) || (frame > 1000000))
+				{
+					refusal = "switch --dev-ext-respawn expects a race frame 0..1000000";
+				}
+			}
+			if (refusal != NULL)
+			{
+				fflush(stdout);
+				fprintf(stderr, "%s\n", refusal);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+		}
+	}
+
 	// --dev-cup: the cup index 0..3, and the cup is the direct start of the run -
 	// no second one beside it. Before the value check of --dev-race-mode, so that
 	// a wrong value behind it is the net of the ctest lines.
@@ -1738,6 +1824,27 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		{
 			g_cfg_engineStaticLit = 1;
 		}
+		else if ((strcmp(argv[argIndex], "--ext-track") == 0) && ((argIndex + 1) < argc))
+		{
+			// The length and --level were checked before any window. The slot is
+			// the level of --level; the donor's geometry, water and sky are not
+			// drawn (the bits of --engine-hide, kept by a later --engine-hide).
+			snprintf(g_cfg_extTrackDir, sizeof(g_cfg_extTrackDir), "%s", argv[++argIndex]);
+			for (int levelIndex = 1; (levelIndex + 1) < argc; levelIndex++)
+			{
+				if (strcmp(argv[levelIndex], "--level") == 0)
+				{
+					g_cfg_extTrackSlot = atoi(argv[levelIndex + 1]);
+				}
+			}
+			g_cfg_engineHide |= ENGINE_HIDE_SKY | ENGINE_HIDE_WATER | ENGINE_HIDE_TRACK;
+			printf("[CTR Native] external track '%s' in the slot of level %d\n", g_cfg_extTrackDir, g_cfg_extTrackSlot);
+		}
+		else if ((strcmp(argv[argIndex], "--dev-ext-respawn") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (0..1000000).
+			g_cfg_extRespawnFrame = atoi(argv[++argIndex]);
+		}
 		else if ((strcmp(argv[argIndex], "--engine-static-style") == 0) && ((argIndex + 1) < argc))
 		{
 			// The value was checked before any window (hires or lowpoly); a style is lit.
@@ -1778,6 +1885,11 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			const int bits = NativeArgs_EngineHideBits(argv[++argIndex]);
 
 			g_cfg_engineHide = (bits > 0) ? bits : 0;
+			if (ExtTrack_Active())
+			{
+				// --ext-track came first: its bits stay.
+				g_cfg_engineHide |= ENGINE_HIDE_SKY | ENGINE_HIDE_WATER | ENGINE_HIDE_TRACK;
+			}
 		}
 		else if ((strcmp(argv[argIndex], "--engine-fail") == 0) && ((argIndex + 1) < argc))
 		{
@@ -3370,6 +3482,16 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--engine-selftest") == 0)
 		{
 			return Engine_SelfTest();
+		}
+
+		// One part of the external track (platform/engine_exttrack.c and the
+		// parts it calls; ctest ext_selftest_<name>). Up here for the same
+		// reason: no window, no data. The name was checked by the gate.
+		if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			const int result = ExtTrack_Selftest(argv[argIndex + 1]);
+
+			return (result < 0) ? 2 : result;
 		}
 
 		// The UV box of the engine program on the GPU (platform/engine_testscene.c,

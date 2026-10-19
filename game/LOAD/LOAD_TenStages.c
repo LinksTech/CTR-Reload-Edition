@@ -55,6 +55,9 @@ void NativeRenderLayer_WarmRace(void);
 // From platform/engine_material.c: the Vulkan pipelines of every draw state the
 // loaded engine materials can reach, built at this loading screen (stage 8).
 void Engine_MaterialsWarmPipelines(void);
+// The external track (--ext-track, platform/engine_exttrack.c): the level now
+// in memory; returns at once without the switch.
+void ExtTrack_OnLevelLoaded(struct Level *lev);
 
 #ifdef CTR_NATIVE
 // Stage 8 of a level the engine draws: the turbo flame models are in
@@ -841,6 +844,10 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 #endif
 
 		gGT->level1 = lev;
+#ifdef CTR_NATIVE
+		// The external track's parts read the level now in memory (only with --ext-track).
+		ExtTrack_OnLevelLoaded(lev);
+#endif
 		gGT->visMem1 = lev->visMem;
 
 		if (lev != 0)

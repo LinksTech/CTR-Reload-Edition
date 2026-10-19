@@ -1448,6 +1448,122 @@ int Engine_StaticBoxVisible(const EngineCamera *cam, const float boxMin[3], cons
 int Engine_SelfTestStatic(int *checks);
 
 // --------------------------------------------------------------------------
+// EXTERNAL TRACK (round of 2026-10-19; platform/engine_exttrack.c)
+//
+// --ext-track <dir> (needs --dev, --level, --engine and --engine-track): a
+// track from a folder of its own - exttrack.json plus the files it names -
+// takes the slot of the level of --level (the donor). The donor's geometry,
+// water and sky are not drawn (the switch sets the bits of --engine-hide
+// sky,water,track) and its own level instances are not made; the parts of
+// the track (collision, race, CPU paths, crates, music) hang off the
+// dispatcher below. Without the switch every hook returns after one compare
+// and nothing differs from a run without it.
+//
+// THE RULE OF RECOGNITION: never by the level number. ExtTrack_ActiveForLevel
+// asks the loaded external track whether it holds that slot.
+#define ENGINE_EXTTRACK_PATH_MAX 512
+extern char g_cfg_extTrackDir[ENGINE_EXTTRACK_PATH_MAX]; // --ext-track; "" = off
+extern int g_cfg_extTrackSlot;                            // the level of --level the track takes; -1 = none
+extern int g_cfg_extRespawnFrame;                         // --dev-ext-respawn <frame>; -1 = off (read by the race part)
+
+int ExtTrack_Active(void);                 // 1 = --ext-track was given (cheap; every hook asks it first)
+int ExtTrack_ActiveForLevel(int levelID);  // 1 = the external track holds this level slot (not the main menu)
+const char *ExtTrack_Dir(void);            // the folder of --ext-track ("" when off)
+// dir/name into out (size bytes); 0 when it does not fit.
+int ExtTrack_FilePath(const char *name, char *out, int size);
+
+// THE DISPATCHER: the hooks of the game call these, these call the parts.
+struct Level;
+void ExtTrack_OnLevelLoaded(struct Level *lev);        // game/LOAD/LOAD_TenStages.c, right after gGT->level1 = lev
+int ExtTrack_LevInstanceCount(int levelID, int count); // game/MAIN/MainInit.c: the count for INSTANCE_LevInitAll (0 = none of the donor's)
+void ExtTrack_OnRaceStart(void);                       // game/MAIN/MainMain.c, the build after a load or a restart
+void ExtTrack_OnRestart(void);                         // game/MAIN/MainMain.c, the race lets go of its state
+void ExtTrack_OnLogicFrame(void);                      // game/MAIN/MainMain.c, after the game logic of a frame
+
+// THE JSON READER (one for every part): a parsed document as a node table.
+// Node 0 is the root. Objects and arrays chain their children (first, next);
+// an object's child carries its key. A missing node is -1, and every getter
+// takes -1 and answers with its fallback, so lookups can be chained.
+typedef enum
+{
+	EXT_JSON_NULL = 0,
+	EXT_JSON_FALSE,
+	EXT_JSON_TRUE,
+	EXT_JSON_NUMBER,
+	EXT_JSON_STRING,
+	EXT_JSON_ARRAY,
+	EXT_JSON_OBJECT
+} ExtJsonType;
+
+typedef struct
+{
+	u8 type;          // ExtJsonType
+	int first;        // first child, -1 none
+	int last;         // last child (building only), -1 none
+	int next;         // next sibling, -1 none
+	int count;        // children (array / object)
+	const char *key;  // the key of an object's child, else NULL
+	const char *text; // a string's value (UTF-8, unescaped, NUL-terminated), else NULL
+	double number;
+} ExtJsonNode;
+
+typedef struct
+{
+	ExtJsonNode *nodes;
+	int nodeCount;
+	int nodeCap;
+	char *strings; // one block: the unescaped keys and strings
+} ExtJsonDoc;
+
+#define EXT_JSON_TEXT_MAX (32u * 1024u * 1024u) // a larger text is refused
+#define EXT_JSON_DEPTH_MAX 64
+
+// Parses text[0..length) (no NUL needed). 1 = done; 0 with why (line and
+// column of the first error) and nothing kept.
+int ExtJson_Parse(ExtJsonDoc *doc, const char *text, size_t length, char *why, int whySize);
+// Reads and parses a file. 1 = done; 0 with why.
+int ExtJson_ParseFile(ExtJsonDoc *doc, const char *path, char *why, int whySize);
+void ExtJson_Free(ExtJsonDoc *doc);
+int ExtJson_Type(const ExtJsonDoc *doc, int node);                  // ExtJsonType, EXT_JSON_NULL for -1
+int ExtJson_Get(const ExtJsonDoc *doc, int object, const char *key); // the child of an object by key, -1 none
+int ExtJson_Count(const ExtJsonDoc *doc, int node);                 // children of an array / object, 0 else
+int ExtJson_First(const ExtJsonDoc *doc, int node);                 // first child, -1 none
+int ExtJson_Next(const ExtJsonDoc *doc, int node);                  // next sibling, -1 none
+int ExtJson_At(const ExtJsonDoc *doc, int array, int index);        // the index-th child, -1 none (walks the chain)
+double ExtJson_Number(const ExtJsonDoc *doc, int node, double fallback);
+const char *ExtJson_String(const ExtJsonDoc *doc, int node, const char *fallback);
+int ExtJson_Bool(const ExtJsonDoc *doc, int node, int fallback);
+// Up to count numbers of an array into out; returns how many were numbers.
+int ExtJson_Numbers(const ExtJsonDoc *doc, int array, double *out, int count);
+
+// The document of the active external track (exttrack.json): NULL before the
+// first level load of the track or when it did not parse; a top-level section
+// by name, -1 none.
+const ExtJsonDoc *ExtTrack_Json(void);
+int ExtTrack_Section(const char *name);
+
+// THE PARTS' ENTRY POINTS (each part owns its file).
+void ExtColl_OnLevelLoaded(struct Level *lev); // platform/native_extcoll.c
+int ExtColl_Selftest(void);
+void ExtRace_OnLevelLoaded(struct Level *lev); // platform/native_exttrack_race.c
+void ExtRace_OnLogicFrame(void);
+int ExtRace_Selftest(void);
+void ExtNav_OnLevelLoaded(struct Level *lev); // platform/native_exttrack_nav.c
+int ExtNav_Selftest(void);
+void ExtCrates_OnRaceStart(void); // platform/native_extcrates.c
+void ExtCrates_OnLogicFrame(void);
+void ExtCrates_OnRestart(void);
+int ExtCrates_Selftest(void);
+void ExtMusic_OnLevelLoaded(struct Level *lev); // platform/native_extmusic.c
+void ExtMusic_OnLogicFrame(void);
+int ExtMusic_Selftest(void);
+
+// --ext-selftest <json|coll|race|nav|crates|music>: one part's selftest, no
+// window, no data. Returns the exit code (0 passed); -1 for an unknown name.
+int ExtTrack_Selftest(const char *name);
+int ExtJson_Selftest(void);
+
+// --------------------------------------------------------------------------
 // FLY CAMERA (round of 2026-10-16; platform/engine_flycam.c)
 //
 // --engine-flycam (needs --engine): view 0 is taken off the game's camera

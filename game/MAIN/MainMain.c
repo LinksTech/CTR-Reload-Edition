@@ -5,6 +5,12 @@
 // camera of view 0, after the game logic of a frame. Returns at once without
 // --engine-flycam / --engine-flycam-auto.
 void Engine_FlycamTick(struct GameTracker *gGT);
+// From platform/engine_exttrack.c: the external track's dispatcher (the race
+// is built, the race lets go of its state, one logic frame). Each returns at
+// once without --ext-track.
+void ExtTrack_OnRaceStart(void);
+void ExtTrack_OnRestart(void);
+void ExtTrack_OnLogicFrame(void);
 #endif
 
 #ifdef CTR_NATIVE
@@ -176,6 +182,10 @@ u32 main(void)
 			// The module decides itself whether this track needs it;
 			// game/native_trackmod.c says how it recognises the track.
 			NativeTrackMod_Reset();
+#ifdef CTR_NATIVE
+			// The external track's parts after the build (only with --ext-track).
+			ExtTrack_OnRaceStart();
+#endif
 
 			// The memory measurement records here how full the pools are after
 			// the build (game/native_budget.c). It only reads.
@@ -224,6 +234,10 @@ u32 main(void)
 			// the module still holds points to foreign ground from here
 			// on. It is built again right away, in state 1 above.
 			NativeTrackMod_Release();
+#ifdef CTR_NATIVE
+			// The external track's parts let go as well (only with --ext-track).
+			ExtTrack_OnRestart();
+#endif
 
 			NativeBudget_Mark("after release");
 
@@ -482,6 +496,10 @@ u32 main(void)
 				NativeBudget_ScopeBegin(1);
 				NativeTrackMod_PostLogic();
 				NativeBudget_ScopeEnd(1);
+#ifdef CTR_NATIVE
+				// The external track's parts after the game logic (only with --ext-track).
+				ExtTrack_OnLogicFrame();
+#endif
 				// Continue the preview recording (only with --record-preview).
 				NativeFlyIn_Tick();
 #ifdef CTR_NATIVE
