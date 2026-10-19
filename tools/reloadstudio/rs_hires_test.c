@@ -1078,7 +1078,7 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         c.rowCount = 1;
         n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
         Check(Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_BUILD, L"HRG-41",
-                     L"This file contains the original kart from your game data. Don't share it, or export without the kart.", NULL),
+                     L"This file contains the kart from your game files.", L""),
               "HRG-41 (the Creator Kit's kart): a warning at the step Build, word for word");
         // THE KART: the three cases from real checks (rs_hires_model.h).
         {
@@ -1327,6 +1327,10 @@ static int Kt_Write(const wchar_t *folder)
         { L"route-kit.glb", { 2, 1, 12, 4, 16, 0, 0, 0, 1 } }, // as route-wheels, its material ctrkit_paint: HRG-41 (the kit's kart)
         { L"route-kartpart.glb", { 2, 1, 12, 4, 16, 0, 0, 0, 0, 1 } }, // as route-wheels with a node "kart" holding a mesh: --kart-part
         { L"route-kartjoint.glb", { 2, 1, 12, 0, 16, 0, 0, 0, 0, 2 } }, // a figure with the kit's mesh-less "kart" joint: --game-kart template
+        // Vanilla (K6): the kit's figure exported without its skin and clips
+        // (the export of the Vanilla template), and a plain figure without a skin.
+        { L"route-kartjoint-noskin.glb", { 2, 0, 0, 0, 16, 0, 0, 0, 0, 2 } },
+        { L"route-noskin.glb", { 2, 0, 0, 0, 16, 0 } },
     };
     int i, route, ok = 1;
     for (i = 0; i < (int)(sizeof(karts) / sizeof(karts[0])); i++) {

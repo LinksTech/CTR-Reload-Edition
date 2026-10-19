@@ -315,6 +315,13 @@ unsigned RsHires_PartsFor(int kartCase, int gameKart);
 // A .glb checked with this parts field (the page's choice: the game's kart on
 // a model without the kit's joint); kartCase stays what the model is.
 int RsHires_CheckFileParts(const wchar_t *path, unsigned parts, struct RsHiresCheck *out);
+// The kart case of a .glb alone (RS_KART_*, the rule of kartCase above),
+// without the rest of the check: the page Character asks it for a model of
+// the route Vanilla ("Kart: from the player's game data", make-char
+// --figure-only). -1 when the file cannot be read or is no .glb. skins: when
+// not NULL, the number of skins of the file (make-char takes a model with one
+// only with --rig bind-pose).
+int RsHires_KartCaseFile(const wchar_t *path, int *skins);
 
 // THE OPTION "Upscale small textures": before packing, rldpack hires-upscale
 // <model> -o <derived> --machine writes a new model (the source is only read;

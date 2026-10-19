@@ -153,12 +153,12 @@ static const struct RsHrgSay s_say[] = {
     { L"HRG-39", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Nothing to do; the kart is drawn as before." },
     { L"HRG-40", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Nothing to do; build the character again to write the field anew." },
     // The kart of the Creator Kit (glTF extras "ctr_kit" or a material ctrkit_*):
-    // it is made from the user's game data. The fixed warning, at the build.
+    // it is made from the user's game data. The fixed warning, at the build: it
+    // informs and prescribes nothing, so it has no "How to fix" (K3).
     // A model without wheel nodes that gets the game's kart: its wheels come with it.
     { L"HRG-42", RS_WIZ_PLACE_MODEL, TEXT_OWN, L"Your model has no wheels of its own - the game adds them with its kart.",
       L"Nothing to do." },
-    { L"HRG-41", RS_WIZ_PLACE_BUILD, TEXT_OWN, RS_TEXT_KIT_KART,
-      L"Keep this file to yourself. To share your driver, export it again with the collection Kart switched off." },
+    { L"HRG-41", RS_WIZ_PLACE_BUILD, TEXT_OWN, RS_TEXT_KIT_KART, L"" },
 };
 
 #define RS_SAY_COUNT ((int)(sizeof(s_say) / sizeof(s_say[0])))
@@ -232,10 +232,10 @@ void RsCharHires_GameKartLine(int on, int suggested, wchar_t *out, int cap)
         swprintf(out, cap, L"For a figure without a kart: the game adds the original kart from the player's game data.");
 }
 
-void RsCharHires_GameKartStepLine(int on, int suggested, wchar_t *out, int cap)
+void RsCharHires_GameKartStepLine(int on, int suggested, int route, wchar_t *out, int cap)
 {
     if (on)
-        swprintf(out, cap, L"%ls", RS_TEXT_GAME_KART_CLASSIC);
+        swprintf(out, cap, L"%ls", route == RS_ROUTE_VANILLA ? RS_TEXT_GAME_KART_VANILLA : RS_TEXT_GAME_KART_CLASSIC);
     else if (suggested)
         swprintf(out, cap, L"The game will not add a kart - your model is drawn as it is.");
     else if (cap > 0)

@@ -27,8 +27,9 @@
 #      step returns to Build a character; "kit" on Build a character opens it
 #   e  the line "No model yet? Start with the Creator Kit." of the step Model:
 #      Vanilla, Low-Poly and Hi-Res, each without and with a model (shown on
-#      Low-Poly and Hi-Res without a model only), "kit" through its button,
-#      Back to Build a character with the route kept
+#      every route without a model only), "kit" through its button opens the
+#      kit with that route's way chosen (3/3), Back to Build a character with
+#      the route kept; "kit" there opens it with all three ways
 #
 # Output: "modules passed: ..." or "FAILED: ...".
 
@@ -214,7 +215,7 @@ expect("${d}/back.tsv" "\npage\tchar\t")
 expect("${d}/back.tsv" "\nsidemark\tchar\n")
 expect("${d}/char0.txt" "\nstep: 0 choose")
 expect("${d}/char0.txt" "\nkit option: shown")
-expect("${d}/auto.log" "  kit: Creator Kit \\(Build a character\\)\n")
+expect("${d}/auto.log" "  kit: Creator Kit \\(Build a character\\) - all three ways\n")
 expect("${d}/kit2.tsv" "\npage\tkit\t")
 expect("${d}/auto.log" "automation finished, 0 step\\(s\\) failed")
 
@@ -222,32 +223,44 @@ expect("${d}/auto.log" "automation finished, 0 step\\(s\\) failed")
 set(e "${base}/e")
 file(MAKE_DIRECTORY "${e}")
 file(WRITE "${e}/tri.obj" "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
-studio(e 0 --no-modules --do "page char"
-       --do "route vanilla" --do "report ${e}/vanilla-0.txt" --do "model ${e}/tri.obj" --do "report ${e}/vanilla-1.txt"
-       --do "model none" --do "route lowpoly" --do "report ${e}/lowpoly-0.txt" --do "model ${e}/tri.obj"
-       --do "report ${e}/lowpoly-1.txt"
-       --do "model none" --do "route hires" --do "report ${e}/hires-0.txt" --do "model ${e}/tri.obj"
-       --do "report ${e}/hires-1.txt"
-       --do "model none" --do "kit" --do "controls ${e}/kit.tsv" --do "back" --do "report ${e}/back.txt" --do "quit")
+# Each route: without a model the line, with one none; "kit" through its
+# button opens the kit with that route's way chosen (its report: ways), Back
+# returns to Build a character; at the end the step 0 button: all three ways.
+set(eArgs --no-modules --do "page char")
+foreach(route vanilla lowpoly hires)
+    list(APPEND eArgs --do "route ${route}" --do "report ${e}/${route}-0.txt" --do "model ${e}/tri.obj"
+                      --do "report ${e}/${route}-1.txt" --do "model none" --do "kit" --do "controls ${e}/kit-${route}.tsv"
+                      --do "report ${e}/kit-${route}.txt" --do "back")
+endforeach()
+list(APPEND eArgs --do "report ${e}/back.txt" --do "kit" --do "report ${e}/kit-all.txt" --do "quit")
+studio(e 0 ${eArgs})
 set(kitCases 0)
+set(kitWays 0)
+set(routeTitles "Vanilla;Low-Poly;Hi-Res")
+set(r 0)
 foreach(route vanilla lowpoly hires)
     foreach(m 0 1)
         set(rep "${e}/${route}-${m}.txt")
         expect("${rep}" "\nstep: 1 model")
-        if(m EQUAL 0 AND NOT route STREQUAL "vanilla")
+        if(m EQUAL 0)
             expect("${rep}" "\nkit step line: No model yet\\? Start with the Creator Kit\\.\n")
         else()
             expect("${rep}" "\nkit step line: \\(none\\)\n")
         endif()
         math(EXPR kitCases "${kitCases} + 1")
     endforeach()
+    list(GET routeTitles ${r} title)
+    expect("${e}/auto.log" "  kit: Open Creator Kit \\(step Model\\) - the way ${title}\n")
+    expect("${e}/kit-${route}.tsv" "\npage\tkit\t")
+    expect("${e}/kit-${route}.tsv" "\nsidemark\tchar\n")
+    expect("${e}/kit-${route}.txt" "(^|\n)ways\t${route}\t${route}\n")
+    math(EXPR kitWays "${kitWays} + 1")
+    math(EXPR r "${r} + 1")
 endforeach()
-expect("${e}/auto.log" "  kit: Open Creator Kit \\(step Model\\)\n")
-expect("${e}/kit.tsv" "\npage\tkit\t")
-expect("${e}/kit.tsv" "\nsidemark\tchar\n")
 expect("${e}/back.txt" "\nroute: hires \\(step 0 shown")
+expect("${e}/kit-all.txt" "(^|\n)ways\tall\tvanilla,lowpoly,hires\n")
 expect("${e}/auto.log" "automation finished, 0 step\\(s\\) failed")
 
 message("modules passed: ${fileCount} files, 4 loaded, 9 not loaded, 2 crashes caught, --no-modules and no folder; "
         "sidebar track cups char test | expansions theme, tooltip and page of Expansions, page kit inside Character, "
-        "the kit line ${kitCases}/6")
+        "the kit line ${kitCases}/6, the kit opened with the route's way ${kitWays}/3")

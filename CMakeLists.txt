@@ -301,7 +301,8 @@ target_compile_options(rldpack PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
 
 # The files of the Creator Kit that Reload Studio carries inside (the Creator
 # Kit in the page Character, tools/reloadstudio/rs_kit.c): its Blender
-# scripts and its guide, as RCDATA (ids RS_RES_KIT_* in reloadstudio.h). A
+# scripts, its guide and its notice, as RCDATA (ids RS_RES_KIT_* in
+# reloadstudio.h, from 201 in this order). A
 # resource script of their full paths in the build folder; a change of one of
 # the files builds it again.
 set(CTR_KIT_RESOURCES
@@ -310,7 +311,8 @@ set(CTR_KIT_RESOURCES
     templates/creator_kit_clips.py
     templates/creator_kit_standin.py
     docs/CREATOR_KIT.html
-    templates/creator_kit_classic.py)
+    templates/creator_kit_classic.py
+    templates/CREATOR_KIT_NOTICE.txt)
 set(ctr_kit_rc "// Made by CMakeLists.txt: the files of the Creator Kit (rs_kit.c).
 ")
 set(ctr_kit_id 201)

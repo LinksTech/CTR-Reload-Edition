@@ -817,6 +817,16 @@ enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_
 #define RS_RES_KIT_STANDIN 204
 #define RS_RES_KIT_GUIDE   205
 #define RS_RES_KIT_CLASSIC 206
+#define RS_RES_KIT_NOTICE  207   // templates/CREATOR_KIT_NOTICE.txt: shown on the step Generate, written beside the scripts
+
+// THE WAYS OF THE CREATOR KIT (rs_kit.c): which templates Generate makes -
+// RS_KIT_WAYS_ALL (all three, the default) or the template of one route
+// (RS_ROUTE_VANILLA, RS_ROUTE_LOWPOLY, RS_ROUTE_HIRES of rs_charroute.h). The
+// page Character calls it before it opens the kit from the step Model of a
+// route ("No model yet? Start with the Creator Kit."): the kit opens with that
+// way chosen; the author can change it on the step Where the kit goes.
+#define RS_KIT_WAYS_ALL (-1)
+void Rs_KitChooseWay(int way);
 
 // The registry of the modules (rs_module.c). Rs_ModulesInit once, before the
 // pages are made: the built-in modules, then (loadDlls = 1) the module DLLs
@@ -870,6 +880,10 @@ int Rs_Metric(HWND h, int index);
 
 // The fonts: enum RsFont (RS_FONT_*) in rs_module.h.
 HFONT Rs_Font(int font);
+// The icon font of the sidebar (Segoe MDL2 Assets): large = 0 its size there
+// (12 pt), 1 the size of an icon beside a card title (16 pt). Made anew with
+// the other fonts (a change of dpi); never delete it.
+HFONT Rs_IconFont(int large);
 
 // Colours (COLORREF) from the active palette: light (white cards on a
 // light grey background) or dark. The values are in rs_shell.c (g_rsPalettes).

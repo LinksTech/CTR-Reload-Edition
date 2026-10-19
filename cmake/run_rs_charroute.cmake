@@ -21,7 +21,9 @@
 #      wheel nodes, a 16 x 16 texture), route-tex64.glb (route-bare with a
 #      64 x 64 texture), route-wheels.glb (an armature, 12 clips, its own 4
 #      wheels), route-vcol.glb (route-bare with PS1-like COLOR_0, grey 128)
-#      and route-jpeg.glb (route-bare with its 16 x 16 texture a JPEG), and
+#      and route-jpeg.glb (route-bare with its 16 x 16 texture a JPEG), and for
+#      Vanilla route-kartjoint-noskin.glb (the kit's mesh-less kart joint, no
+#      skin, no clips) and route-noskin.glb (no skin, no kart), and
 #      the fallback's switches per route as RsCharHires_FallbackArgs gives them
 #      (fallback-<route>.txt, a CMake list).
 #   2. Hi-Res: route-bare.glb without and with hires-upscale; Low-Poly:
@@ -408,6 +410,72 @@ if(PAGE)
         message(FATAL_ERROR "charroute FAILED: the plain kart is not packed as before (hires-off)\n${text}")
     endif()
     message("charroute page passed: the kart (kart part, the kit's joint, the switch)")
+
+    # THE KART on Vanilla (K6): a .glb with the kit's kart joint and no kart
+    # gets "Kart: from the player's game data" as on a CHRG route - suggested,
+    # its line on the step Model with "Change" (which opens Advanced at the
+    # box), make-char --figure-only (CHRI bit 5); every build byte for byte
+    # rldpack's with the same switches:
+    #   van-kitfigure  the kit's figure without a skin (the export of the
+    #                  Vanilla template): ${page} --figure-only
+    #   van-kartjoint  the same with its skin: ${page} --rig bind-pose
+    #                  --figure-only (make-char takes a skin only so)
+    #   van-noskin     a plain figure without a skin: ${page} alone - the
+    #                  switches and bytes of before
+    # A plain .glb with a skin has the box off and no line; the author's off
+    # is kept and said.
+    run("rldpack make-char (vanilla, the kit's figure)" "${PACKER}" make-char --model "${DIR}/route-kartjoint-noskin.glb" ${page}
+        --figure-only --out "${DIR}/p-van-kitfigure.rldchar")
+    run("rldpack make-char (vanilla, the kit's joint, skinned)" "${PACKER}" make-char --model "${DIR}/route-kartjoint.glb" ${page}
+        --rig bind-pose --figure-only --out "${DIR}/p-van-kartjoint.rldchar")
+    run("rldpack make-char (vanilla, no skin)" "${PACKER}" make-char --model "${DIR}/route-noskin.glb" ${page}
+        --out "${DIR}/p-van-noskin.rldchar")
+    set(pageDo --do "report ${DIR}/page-van-kitfigure-report.txt" --do "gamekart change")
+    page_route(van-kitfigure vanilla route-kartjoint-noskin.glb p-van-kitfigure.rldchar)
+    set(pageDo --do "report ${DIR}/page-van-kartjoint-report.txt")
+    page_route(van-kartjoint vanilla route-kartjoint.glb p-van-kartjoint.rldchar)
+    set(pageDo --do "report ${DIR}/page-van-noskin-report.txt")
+    page_route(van-noskin vanilla route-noskin.glb p-van-noskin.rldchar)
+    set(pageDo "")
+    page_says(van-kitfigure "make-char [^\n]*--figure-only" "the page did not pass --figure-only on Vanilla")
+    page_says(van-kitfigure "gamekart change: advanced open, card Options, \"Kart: from the player's game data\" shown, in view, focus on the box"
+              "\"Change\" did not open Advanced at the box on Vanilla")
+    foreach(name van-kitfigure van-kartjoint)
+        file(READ "${DIR}/page-${name}-report.txt" text)
+        if(NOT text MATCHES "game kart: on \\(suggested\\), suggested on" OR
+           NOT text MATCHES "vanilla kart: the kit's kart joint, no kart, make-char --figure-only: yes" OR
+           NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data \\(a game before 4\\.3 shows a simple grey kart\\)\\.\" \\(shown, with \"Change\"\\)")
+            message(FATAL_ERROR "charroute FAILED: the page (${name}) does not suggest the game's kart with its line\n${text}")
+        endif()
+    endforeach()
+    file(READ "${DIR}/page-van-kitfigure-report.txt" text)
+    if(NOT text MATCHES "--rig bind-pose: no \\(skins 0\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (van-kitfigure) takes a figure without a skin as rigged\n${text}")
+    endif()
+    file(READ "${DIR}/page-van-kartjoint-report.txt" text)
+    if(NOT text MATCHES "--rig bind-pose: yes \\(skins 1\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (van-kartjoint) does not take the skin in its bind pose\n${text}")
+    endif()
+    file(READ "${DIR}/page-van-noskin-report.txt" text)
+    if(NOT text MATCHES "game kart: off \\(suggested\\), suggested off" OR NOT text MATCHES "game kart step line: \"\"[\r\n]" OR
+       NOT text MATCHES "vanilla kart: own \\(no kit joint\\), make-char --figure-only: no, --rig bind-pose: no \\(skins 0\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (van-noskin) does not build a plain figure as before\n${text}")
+    endif()
+    page_check(van-bare vanilla route-bare.glb "")
+    file(READ "${DIR}/page-van-bare-report.txt" text)
+    if(NOT text MATCHES "game kart: off \\(suggested\\), suggested off" OR NOT text MATCHES "game kart step line: \"\"[\r\n]" OR
+       NOT text MATCHES "vanilla kart: own \\(no kit joint\\), make-char --figure-only: no, --rig bind-pose: yes \\(skins 1\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (Vanilla, a plain skinned kart) has the game's kart or its line\n${text}")
+    endif()
+    page_check(van-off vanilla route-kartjoint-noskin.glb "--do;gamekart off")
+    file(READ "${DIR}/page-van-off-report.txt" text)
+    if(NOT text MATCHES "game kart: off \\(chosen\\), suggested on" OR
+       NOT text MATCHES "game kart step line: \"The game will not add a kart - your model is drawn as it is\\.\" \\(shown, with \"Change\"\\)" OR
+       NOT text MATCHES "make-char --figure-only: no")
+        message(FATAL_ERROR "charroute FAILED: the page (Vanilla, the author's off) does not keep and say the choice\n${text}")
+    endif()
+    message("charroute page passed: Vanilla and the game's kart (the kit's figure with and without a skin, a plain figure "
+            "with its bytes of before, a plain skinned one, the author's off)")
     message("charroute page passed: vertex colours psx off gltf")
 
     # The JPEG kart without the click: refused, the button offered, the

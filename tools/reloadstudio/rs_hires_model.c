@@ -1330,19 +1330,24 @@ static int RsHires_SubtreeMesh(const cgltf_node *n, int depth)
 }
 
 // THE KART of a .glb (rs_hires_model.h, RsHiresCheck.kartCase): opened as
-// rldpack opens it for --kart-part, then the node names.
-static int RsHires_KartCase(const unsigned char *glb, size_t size)
+// rldpack opens it for --kart-part, then the node names. skins: when not
+// NULL, the number of skins of the file (0 when it cannot be opened).
+static int RsHires_KartCase(const unsigned char *glb, size_t size, int *skins)
 {
     static RldHiresReport rep;   // the findings are not used: the check says them
     RldHiresModel m;
     int kase = RS_KART_OWN;
     cgltf_size i;
 
+    if (skins)
+        *skins = 0;
     if (size > (size_t)(RLDHIRES_CHUNK_LIMIT - RLDHIRES_CHUNK_HEADER_BYTES))
         return RS_KART_OWN;
     RldHires_ReportClear(&rep);
     memset(&m, 0, sizeof(m));
     RldHires_OpenParts(glb, (u32)size, RLDHIRES_VCOL_GLTF, RLDHIRES_PART_KART, &m, &rep);
+    if (skins && m.data)
+        *skins = (int)m.data->skins_count;
     if (m.data && m.kartNode >= 0 && (cgltf_size)m.kartNode < m.data->nodes_count) {
         if (RsHires_SubtreeMesh(&m.data->nodes[m.kartNode], 0)) {
             if (m.kartPart)
@@ -1374,7 +1379,7 @@ unsigned RsHires_PartsFor(int kartCase, int gameKart)
 // A .glb: its kart decided, then checked with the parts it is packed with.
 static int RsHires_CheckGlbParts(const unsigned char *glb, size_t size, int useParts, unsigned parts, struct RsHiresCheck *out)
 {
-    int kase = RsHires_KartCase(glb, size), r;
+    int kase = RsHires_KartCase(glb, size, NULL), r;
     if (!useParts)
         parts = RsHires_PartsFor(kase, 0);
     r = RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, parts, out);
@@ -1413,6 +1418,22 @@ static unsigned char *RsHires_ReadAll(const wchar_t *path, size_t limit, size_t 
     fclose(f);
     *size = (size_t)n;
     return bytes;
+}
+
+int RsHires_KartCaseFile(const wchar_t *path, int *skins)
+{
+    wchar_t why[RS_HIRES_TEXT_MAX];
+    size_t size = 0;
+    unsigned char *bytes = RsHires_ReadAll(path, RS_HIRES_FILE_MAX, &size, why, RS_HIRES_TEXT_MAX);
+    int kase = -1;
+    if (skins)
+        *skins = 0;
+    if (!bytes)
+        return -1;
+    if (size >= 12 && memcmp(bytes, "glTF", 4) == 0)
+        kase = RsHires_KartCase(bytes, size, skins);
+    free(bytes);
+    return kase;
 }
 
 int RsHires_CharLook(const wchar_t *path, struct RsCharLook *out, wchar_t *why, int whyCap)

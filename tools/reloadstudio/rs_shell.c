@@ -187,6 +187,7 @@ static int g_current = -1;
 static int g_dpi = 96;
 static HFONT g_fonts[RS_FONT_COUNT];
 static HFONT g_iconFont;
+static HFONT g_iconFontLarge;           // the icon beside a card title (Rs_IconFont(1))
 static HBRUSH g_brPage;
 static HBRUSH g_brCard;
 static HBRUSH g_brInput;
@@ -1194,6 +1195,11 @@ HFONT Rs_Font(int font)
     return g_fonts[font];
 }
 
+HFONT Rs_IconFont(int large)
+{
+    return large ? g_iconFontLarge : g_iconFont;
+}
+
 static HFONT Rs_MakeFont(const wchar_t *face, int points, int weight)
 {
     return CreateFontW(-MulDiv(points, g_dpi, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
@@ -1209,6 +1215,8 @@ static void Rs_MakeFonts(void)
             DeleteObject(g_fonts[i]);
     if (g_iconFont)
         DeleteObject(g_iconFont);
+    if (g_iconFontLarge)
+        DeleteObject(g_iconFontLarge);
     g_fonts[RS_FONT_BODY] = Rs_MakeFont(L"Segoe UI", 10, FW_NORMAL);
     g_fonts[RS_FONT_BOLD] = Rs_MakeFont(L"Segoe UI", 10, FW_SEMIBOLD);
     g_fonts[RS_FONT_SMALL] = Rs_MakeFont(L"Segoe UI", 9, FW_NORMAL);
@@ -1216,6 +1224,7 @@ static void Rs_MakeFonts(void)
     g_fonts[RS_FONT_TITLE] = Rs_MakeFont(L"Segoe UI", 20, FW_SEMIBOLD);
     g_fonts[RS_FONT_MONO] = Rs_MakeFont(L"Consolas", 9, FW_NORMAL);
     g_iconFont = Rs_MakeFont(L"Segoe MDL2 Assets", 12, FW_NORMAL);
+    g_iconFontLarge = Rs_MakeFont(L"Segoe MDL2 Assets", 16, FW_NORMAL);
 }
 
 COLORREF Rs_SeverityColor(int severity)
@@ -1454,6 +1463,108 @@ static BOOL CALLBACK Rs_ThemeChild(HWND child, LPARAM unused)
     return TRUE;
 }
 
+// The tooltips in the look of the Studio in both schemes: card colour, its border, the
+// text colour, the small font. No visual style (SetWindowTheme "", "") so that the
+// control does not paint with the system theme; Rs_TipSub paints it. The colours are
+// read from RS_COL_* at paint time, so a change of scheme needs only a redraw; the font
+// and the margins are sent again after a change of dpi (Rs_TipsRestyle).
+#define RS_TIP_STYLE (WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX | TTS_NOFADE | TTS_NOANIMATE)
+
+// The text shown: the text of the current tool, or - for a tool with a callback text
+// (g_tips) and when that gives nothing - the window text, which a tooltip sets to the
+// text it shows.
+static void Rs_TipText(HWND tip, wchar_t *buf, int cap)
+{
+    TOOLINFOW ti;
+    buf[0] = 0;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    if (SendMessageW(tip, TTM_GETCURRENTTOOLW, 0, (LPARAM)&ti)) {
+        ti.lpszText = buf;
+        SendMessageW(tip, TTM_GETTEXTW, (WPARAM)cap, (LPARAM)&ti);
+        if (ti.lpszText != buf)
+            buf[0] = 0;
+    }
+    if (!buf[0])
+        GetWindowTextW(tip, buf, cap);
+    buf[cap - 1] = 0;
+}
+
+static void Rs_TipDraw(HWND tip, HDC dc)
+{
+    RECT rc;
+    wchar_t text[512];
+    HBRUSH bg = CreateSolidBrush(RS_COL_CARD), bd = CreateSolidBrush(RS_COL_BORDER);
+    HGDIOBJ oldFont;
+    GetClientRect(tip, &rc);
+    FillRect(dc, &rc, bg);
+    FrameRect(dc, &rc, bd);
+    Rs_TipText(tip, text, 512);
+    rc.left += Rs_Px(8);
+    rc.right -= Rs_Px(8);
+    rc.top += Rs_Px(5);
+    rc.bottom -= Rs_Px(5);
+    oldFont = SelectObject(dc, Rs_Font(RS_FONT_SMALL));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RS_COL_TEXT);
+    DrawTextW(dc, text, -1, &rc, DT_LEFT | DT_TOP | DT_NOPREFIX | DT_WORDBREAK);
+    SelectObject(dc, oldFont);
+    DeleteObject(bg);
+    DeleteObject(bd);
+}
+
+static LRESULT CALLBACK Rs_TipSub(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR ref)
+{
+    (void)id;
+    (void)ref;
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        Rs_TipDraw(hwnd, dc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_PRINTCLIENT:
+        Rs_TipDraw(hwnd, (HDC)wParam);
+        return 0;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, Rs_TipSub, 1);
+        break;
+    }
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+static void Rs_TipStyle(HWND tip)
+{
+    RECT m;
+    if (!tip)
+        return;
+    SetWindowTheme(tip, L"", L"");
+    SendMessageW(tip, WM_SETFONT, (WPARAM)Rs_Font(RS_FONT_SMALL), FALSE);
+    m.left = m.right = Rs_Px(8);
+    m.top = m.bottom = Rs_Px(5);
+    SendMessageW(tip, TTM_SETMARGIN, 0, (LPARAM)&m);
+    SetWindowSubclass(tip, Rs_TipSub, 1, 0);
+}
+
+// After a change of scheme or dpi: style again and redraw the three tooltips.
+static void Rs_TipsRestyle(void)
+{
+    HWND t[3];
+    int i;
+    t[0] = g_tips;
+    t[1] = g_navTip;
+    t[2] = g_pageTips;
+    for (i = 0; i < 3; i++)
+        if (t[i]) {
+            Rs_TipStyle(t[i]);
+            InvalidateRect(t[i], NULL, TRUE);
+        }
+}
+
 // Switch scheme: palette, brushes, title bar, all controls, redraw.
 // save = 1 writes the choice into the ini (never in automation).
 static void Rs_ApplyTheme(int dark, int save)
@@ -1463,12 +1574,7 @@ static void Rs_ApplyTheme(int dark, int save)
         Rs_TitleBarTheme(g_main);
         EnumChildWindows(g_main, Rs_ThemeChild, 0);
         // The tooltips are popups, not children: EnumChildWindows misses them.
-        if (g_tips)
-            SetWindowTheme(g_tips, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
-        if (g_navTip)
-            SetWindowTheme(g_navTip, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
-        if (g_pageTips)
-            SetWindowTheme(g_pageTips, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        Rs_TipsRestyle();
         SetWindowPos(g_main, NULL, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         RedrawWindow(g_main, NULL, NULL,
@@ -2026,14 +2132,13 @@ static void Rs_PageTipsCreate(void)
 {
     if (g_pageTips || !g_main)
         return;
-    g_pageTips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+    g_pageTips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, RS_TIP_STYLE,
                                  CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                                  g_main, NULL, g_inst, NULL);
     if (!g_pageTips)
         return;
     SendMessageW(g_pageTips, TTM_SETMAXTIPWIDTH, 0, Rs_Px(320));
-    if (g_dark)
-        SetWindowTheme(g_pageTips, L"DarkMode_Explorer", NULL);
+    Rs_TipStyle(g_pageTips);
 }
 
 static void Rs_PageTipTools(const struct RsPageTip *t, TOOLINFOW *onPage, TOOLINFOW *onControl)
@@ -3984,15 +4089,14 @@ static void Rs_TipsCreate(void)
 {
     TOOLINFOW ti;
     int i;
-    g_tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+    g_tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, RS_TIP_STYLE,
                              CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                              g_main, NULL, g_inst, NULL);
-    g_navTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+    g_navTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, RS_TIP_STYLE,
                                CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                                g_main, NULL, g_inst, NULL);
     if (g_navTip) {
-        if (g_dark)
-            SetWindowTheme(g_navTip, L"DarkMode_Explorer", NULL);
+        Rs_TipStyle(g_navTip);
         memset(&ti, 0, sizeof(ti));
         ti.cbSize = sizeof(ti);
         ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
@@ -4004,8 +4108,7 @@ static void Rs_TipsCreate(void)
     Rs_PageTipsCreate();
     if (!g_tips)
         return;
-    if (g_dark)
-        SetWindowTheme(g_tips, L"DarkMode_Explorer", NULL);
+    Rs_TipStyle(g_tips);
     for (i = 0; i <= RS_NAV_THEME; i++) {
         memset(&ti, 0, sizeof(ti));
         ti.cbSize = sizeof(ti);
@@ -4978,6 +5081,7 @@ static LRESULT CALLBACK Rs_MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
             Rs_MakeFonts();
             EnumChildWindows(hwnd, Rs_RefontChild, 0);
+            Rs_TipsRestyle();
             SetWindowPos(hwnd, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
         }
