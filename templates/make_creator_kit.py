@@ -1,35 +1,48 @@
-# Creator Kit generator: builds creator-kit.blend (the template) and its two
-# exports from the kit files: creator-kit-figure.glb (the figure alone, no
-# game data - the file to share) and creator-kit-demo-local.glb (the figure
-# with the kit kart and wheels, for a test on the user's own PC; never to
-# share: every kit part in it is marked). Everything the
-# template shows is made by code in this folder (templates/creator_kit_*.py)
-# or comes from the kit files you give it - this script holds no game data. It
-# is released under CC0 (templates/LICENSE).
+# Creator Kit generator: builds a template for each way of Reload Studio's page
+# Character - Vanilla (the classic model), Low-Poly and Hi-Res - from the kit
+# files, each in a folder of its own with its .blend and its figure export
+# (the figure alone, no kart: creator-kit-<way>-figure.glb). The way Hi-Res
+# also exports creator-kit-demo-local.glb (the figure with the kit kart and
+# wheels, for a test in the user's own game; every kit part in it is marked).
+# Everything the templates show is made by code in this folder
+# (templates/creator_kit_*.py) or comes from the kit files you give it - this
+# script holds no game data. It is released under CC0 (templates/LICENSE).
 #
 #   blender --threads 1 --background --factory-startup --python-exit-code 1 \
-#       --python templates/make_creator_kit.py -- --kit <folder> [options]
+#       --python templates/make_creator_kit.py -- --kit <folder> [--routes <list>] [options]
 #
 # <folder> must hold kit-info.json, kit-kart.glb and kit-wheel.glb (and
 # kit-kart-gltf.glb and kit-wheel-gltf.glb for --vcol gltf). Without game data use --stand-in: it
 # writes made-up kit files into <folder> first and then goes the same way.
+# CREATOR_KIT_NOTICE.txt must lie next to this script (Reload Studio writes it
+# there with the other scripts); it is copied as NOTICE.txt into <folder> and
+# into every way's folder.
 #
 # Options:
 #   --kit <folder>            kit folder, also the output folder (required)
+#   --routes <list>           the ways to write, comma separated: vanilla,
+#                             lowpoly, hires (default: all three); one Blender
+#                             start writes them all, each into <folder>\<way>\
 #   --stand-in                write the code-made stand-in kit files first
-#   --vcol psx|gltf|off       vertex colour mode of the file (default psx)
-#   --no-blend                do not write creator-kit.blend
-#   --no-glb                  do not write the two .glb files
+#   --vcol psx|gltf|off       vertex colour mode of every way (default: each
+#                             way's own, WAYS - psx for all three)
+#   --no-blend                do not write the .blend files
+#   --no-glb                  do not write the .glb files
 #   --classic <glb>           an old character as a starting point: the GLB that
 #                             rldpack char-export wrote from its .rldchar goes into the
-#                             collection Classic (never exported)
+#                             collection Classic of every way (never exported)
 #   --test-fake-version X.Y.Z test switch: pretend this Blender version
 #
-# Output in <folder>: creator-kit.blend, creator-kit-figure.glb,
-# creator-kit-demo-local.glb, creator-kit-report.json. Exit codes: 0 good, 2 wrong call, 3 wrong Blender
-# version, 4 input missing or invalid, 5 the self check failed or an internal
-# error. Needs Blender 5.2; same Blender and same input give the same bytes
-# (the .blend only with --threads 1, see THREADS_NOTE).
+# Output: <folder>\NOTICE.txt and for each way <folder>\<way>\ with
+# creator-kit-<way>.blend, creator-kit-<way>-figure.glb, NOTICE.txt and
+# creator-kit-report.json (hires also creator-kit-demo-local.glb). Each .blend
+# stores its exporters: on the collection Figure the export preset of its way,
+# target creator-kit-<way>-figure.glb next to the .blend (hires also one on the
+# collection CreatorKit for creator-kit-demo-local.glb). Exit codes: 0 good, 2
+# wrong call, 3 wrong Blender version, 4 input missing or invalid, 5 the self
+# check failed or an internal error. Needs Blender 5.2; same Blender and same
+# input give the same bytes (the .blend files only with --threads 1, see
+# THREADS_NOTE).
 #
 # Units and axes. Kit files use model units "u" (64 u = 1 m) with glTF axes:
 # x = kart left, y = up, z = kart front. Blender: X = x / 64, Y = -z / 64,
@@ -92,16 +105,41 @@ GLTF_SETTINGS = {
     "export_hierarchy_flatten_bones": False,
 }
 
+# The ways (Reload Studio's routes) in the order they are written, and what each one's figure export
+# changes in GLTF_SETTINGS. Vanilla is read by make-char (the classic model): no skin and no clips - the
+# classic model poses by itself; the skeleton stays in its .blend to pose the figure while modelling.
+ROUTES = ("vanilla", "lowpoly", "hires")
+WAY_SETTINGS = {
+    "vanilla": {"export_animations": False, "export_skins": False},
+    "lowpoly": {},
+    "hires": {},
+}
+# per way: the puppet style (creator_kit_puppet.STYLES), the vertex colour mode, clips, the local demo
+WAYS = {
+    "vanilla": {"title": "Vanilla", "vcol": "psx", "clips": False, "local": False},
+    "lowpoly": {"title": "Low-Poly", "vcol": "psx", "clips": True, "local": False},
+    "hires": {"title": "Hi-Res", "vcol": "psx", "clips": True, "local": True},
+}
+
 # glTF importer shading for the kit files. SMOOTH keeps every vertex of the file as one vertex;
 # NORMALS (custom normals) makes Blender's exporter split a few vertices again (+4 on the stand-in kart).
 IMPORT_SHADING = "SMOOTH"
 
 CRASH_BOX = (-33.8, 5.6, -54.1, 34.3, 88.3, 58.3)   # u, the size a driver may fill
 WHEEL_NAMES = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
-# Two exporters: the figure alone (no game data, the file to share) on the collection Figure, and the
-# local demo with the kit kart and wheels (never to share) on the collection CreatorKit.
-FIGURE_GLB = "creator-kit-figure.glb"
+# The exporters: the figure alone (no kart) on the collection Figure of every way, and in the way hires the
+# local demo with the kit kart and wheels on the collection CreatorKit.
 LOCAL_GLB = "creator-kit-demo-local.glb"
+NOTICE_SOURCE = "CREATOR_KIT_NOTICE.txt"   # next to this script (templates/, or the Studio's scripts folder)
+NOTICE_NAME = "NOTICE.txt"
+
+
+def figure_name(way):
+    return "creator-kit-%s-figure.glb" % way
+
+
+def blend_name(way):
+    return "creator-kit-%s.blend" % way
 # The kit marker: every node and mesh made from the kit folder gets the custom property ctr_kit (glTF
 # extras), every kit material the name prefix ctrkit_, so a check can find game data in a file.
 KIT_PROP = "ctr_kit"
@@ -110,15 +148,14 @@ KIT_PROP = "ctr_kit"
 # the allocator hands out while other threads allocate - under CPU load about 2 runs in 100 wrote other
 # addresses
 # (same data, other bytes). The GLB exports are byte-identical either way.
-THREADS_NOTE = ("Blender ran with more than one thread: creator-kit.blend has the same content, but its bytes "
+THREADS_NOTE = ("Blender ran with more than one thread: the .blend has the same content, but its bytes "
                 "may differ between runs. Start Blender with --threads 1 for byte-identical files.")
 KIT_MAT_PREFIX = "ctrkit_"
 CLASSIC_PREFIX = "classic_"   # the names of an imported old character (creator_kit_classic.py)
-BLEND_NAME = "creator-kit.blend"
 REPORT_NAME = "creator-kit-report.json"
 
-USAGE = ("usage: make_creator_kit.py -- --kit <folder> [--stand-in] [--vcol psx|gltf|off] "
-         "[--no-blend] [--no-glb] [--classic <glb>] [--test-fake-version X.Y.Z]")
+USAGE = ("usage: make_creator_kit.py -- --kit <folder> [--routes vanilla,lowpoly,hires] [--stand-in] "
+         "[--vcol psx|gltf|off] [--no-blend] [--no-glb] [--classic <glb>] [--test-fake-version X.Y.Z]")
 
 
 def fail(code, text):
@@ -137,18 +174,24 @@ def parse_args(argv):
     if "--" not in argv:
         fail(2, "creator kit: no arguments after '--'. " + USAGE)
     args = argv[argv.index("--") + 1:]
-    opt = {"kit": None, "stand_in": False, "vcol": "psx", "blend": True, "glb": True,
-           "classic": None, "fake": None}
+    opt = {"kit": None, "stand_in": False, "vcol": None, "blend": True, "glb": True,
+           "classic": None, "fake": None, "routes": list(ROUTES)}
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--kit", "--vcol", "--classic", "--test-fake-version"):
+        if a in ("--kit", "--vcol", "--classic", "--test-fake-version", "--routes"):
             if i + 1 >= len(args):
                 fail(2, "creator kit: %s needs a value. %s" % (a, USAGE))
             v = args[i + 1]
             i += 2
             if a == "--kit":
                 opt["kit"] = v
+            elif a == "--routes":
+                words = [w.strip() for w in v.split(",")]
+                if not words or any(w not in ROUTES for w in words) or len(set(words)) != len(words):
+                    fail(2, "creator kit: --routes takes vanilla, lowpoly and hires, comma separated, each once. "
+                         + USAGE)
+                opt["routes"] = [w for w in ROUTES if w in words]
             elif a == "--vcol":
                 if v not in ("psx", "gltf", "off"):
                     fail(2, "creator kit: --vcol must be psx, gltf or off. " + USAGE)
@@ -430,31 +473,94 @@ def import_wheels(path, info, collection, rig, vcol):
     return objs
 
 
-HOW_TO_EXPORT = [
-    "Creator Kit - how to export",
+HOW_TO_EXPORT_HEAD = [
+    "Creator Kit - {title} - how to export",
     "",
-    "Figure: your character and creator_rig. The grey puppet is only an example; replace it and bind it to creator_rig.",
-    "Kart: the kart parts and the four wheels from YOUR game data. They are fixed to the bones kart and kart_steer.",
+    "The kart and wheels are generated on this PC from your own game files (NOTICE.txt in the kit folder).",
+    "",
+]
+HOW_TO_EXPORT_WAY = {
+    "vanilla": [
+        "Figure: your character and creator_rig. The grey puppet is only an example; replace it with your model.",
+        "This template is for the way Vanilla of Reload Studio (page Character): the classic model, the look of the "
+        "original game.",
+        "The puppet has {triangles} triangles; the original drivers have up to 564, a driver can have up to 7200.",
+        "Colours: the texture and the vertex colours (Vertex Paint) are read at the corners of every triangle. Grey "
+        "128 in the vertex colours shows the texture as it is (as on the PS1). A figure keeps up to 96 colours.",
+        "Very thin parts (thinner than about 4 cm, 2.5 model units) can lose triangles in the classic model.",
+        "creator_rig is there to pose the figure while you model. The export holds no skeleton and no clips: the "
+        "classic model moves by itself.",
+        "Kart: the kart parts and the four wheels from your game files, fixed to the bones kart and kart_steer. They "
+        "stay out of the export; every player gets the kart from their own game.",
+        "Guides: size box, seat point, stand spot and front arrow. They are never exported.",
+        "",
+        "The exporter: Collection properties of the collection Figure > Exporters > glTF 2.0 > Export writes",
+        "{figure} next to this .blend (File > Export All Collections does the same).",
+        "Keep the settings of the exporter as they are, and keep objects unscaled and unmirrored.",
+    ],
+    "lowpoly": [
+        "Figure: your character and creator_rig. The grey puppet is only an example; replace it and bind it to "
+        "creator_rig.",
+        "This template is for the way Low-Poly of Reload Studio (page Character): it aims for up to 8000 triangles "
+        "and textures up to 512 pixels (the puppet: {triangles} triangles, {textures}).",
+    ],
+    "hires": [
+        "Figure: your character and creator_rig. The grey puppet is only an example; replace it and bind it to "
+        "creator_rig.",
+        "This template is for the way Hi-Res of Reload Studio (page Character): up to 64000 triangles and textures up "
+        "to 2048 pixels (the puppet: {triangles} triangles, {textures}). Its material has a normal map "
+        "(puppet_normal).",
+    ],
+}
+HOW_TO_EXPORT_CLIPS = [
+    "Kart: the kart parts and the four wheels from your game files. They are fixed to the bones kart and "
+    "kart_steer and stay out of the figure export; every player gets the kart from their own game.",
     "Guides: size box, seat point, stand spot and front arrow. They are never exported.",
     "Keep the rest pose of creator_rig as it is: the figure sits in the kart.",
-    "There are 12 actions: {clips}.",
-    "Every action has a fake user, so none is lost. Do not rename them.",
+    "There are {count} actions: {clips}.",
+    "finish_win and finish_lose are optional (seated, after the finish line). Without them the game plays its "
+    "other clips there.",
+    "Every action has a fake user, so none is lost. The game finds them by their names.",
     "Standing actions (podium_1, podium_2, podium_3, lose, menu) have a marker: hide the collection Kart for them.",
     "",
-    "Two exporters, both under Collection properties > Exporters > glTF 2.0 > Export:",
-    "- on the collection Figure: creator-kit-figure.glb, the figure alone. It holds no game data.",
-    "- on the collection CreatorKit: creator-kit-demo-local.glb, the figure WITH the kart and wheels of",
-    "  your game data, for a test on your own computer. Never share it.",
-    "File > Export All Collections writes both, next to this .blend.",
-    "Kit parts are marked (custom property ctr_kit, materials named ctrkit_...); keep them in the collection Kart.",
-    "Do not change the export settings of the exporters.",
-    "Do not apply the Armature modifier and do not use scaled or mirrored objects.",
-    "Keep the model under 64000 triangles.",
-    "The full guide is docs/CREATOR_KIT.md (in Reload Studio: page Creator Kit, button Guide).",
 ]
+HOW_TO_EXPORT_EXPORTERS = {
+    "lowpoly": [
+        "The exporter: Collection properties of the collection Figure > Exporters > glTF 2.0 > Export writes",
+        "{figure} next to this .blend, the figure alone (File > Export All Collections does the same).",
+    ],
+    "hires": [
+        "Two exporters, both under Collection properties > Exporters > glTF 2.0 > Export:",
+        "- on the collection Figure: {figure}, the figure alone.",
+        "- on the collection CreatorKit: creator-kit-demo-local.glb, the figure with the kart and wheels from your",
+        "  game files, for a test in your own game (Reload Studio builds the demo driver from it).",
+        "File > Export All Collections writes both, next to this .blend.",
+        "Kit parts are marked (custom property ctr_kit, materials named ctrkit_...); keep them in the collection Kart.",
+    ],
+}
+HOW_TO_EXPORT_TAIL = [
+    "Keep the settings of the exporters as they are, the Armature modifier unapplied, and objects unscaled and "
+    "unmirrored.",
+]
+HOW_TO_EXPORT_GUIDE = ("The full guide is docs/CREATOR_KIT.md (in Reload Studio: page Character, Build a "
+                       "character, Creator Kit, button Guide).")
 
 
-def add_exporter(collection, filepath):
+def how_to_export(way, figure, triangles, textures, clip_names):
+    lines = list(HOW_TO_EXPORT_HEAD) + list(HOW_TO_EXPORT_WAY[way])
+    if WAYS[way]["clips"]:
+        lines += HOW_TO_EXPORT_CLIPS + HOW_TO_EXPORT_EXPORTERS[way] + HOW_TO_EXPORT_TAIL
+    lines.append(HOW_TO_EXPORT_GUIDE)
+    tex = ", ".join("%d x %d px" % (w, h) for _n, w, h in textures) or "no texture"
+    text = "\n".join(lines) + "\n"
+    for key, value in (("{title}", WAYS[way]["title"]), ("{figure}", figure), ("{triangles}", str(triangles)),
+                       ("{textures}", "textures " + tex), ("{count}", str(len(clip_names))),
+                       ("{clips}", ", ".join(clip_names))):
+        text = text.replace(key, value)
+    return text
+
+
+def add_exporter(collection, filepath, way):
     import bpy
     def find(layer):
         if layer.collection == collection:
@@ -470,17 +576,100 @@ def add_exporter(collection, filepath):
         bpy.ops.collection.exporter_add(name="IO_FH_gltf2")
     exporter = collection.exporters[0]
     props = exporter.export_properties
-    for key in GLTF_SETTINGS:
+    settings = dict(GLTF_SETTINGS)
+    settings.update(WAY_SETTINGS[way])
+    for key in settings:
         if not hasattr(props, key):
             print("creator kit: the glTF exporter has no setting '%s' (this Blender is not as tested)." % key)
             sys.exit(5)
-    for key, value in GLTF_SETTINGS.items():
+    for key, value in settings.items():
         setattr(props, key, value)
     exporter.filepath = filepath
     return exporter
 
 
 # ---------------------------------------------------------------- stable bytes
+
+ATTRIBUTE_BASE = 0x00007E5A00000000   # the first file address stabilize_attributes hands out (16 bytes apart)
+
+
+def stabilize_attributes(data, blocks, layout, types, sizes, offset):
+    """The attribute arrays of the meshes (struct Attribute, its AttributeArray / AttributeSingle, their data and
+    their names) get file addresses made by the walk below instead of the ones Blender wrote. Blender writes
+    them while it converts the mesh's attributes for the file, in small memory blocks it frees again, and the
+    file address it gives one of them depends on which freed block the heap hands out next - the heap of
+    Windows does not always hand out the same (2026-10-19: one ctest in six wrote other addresses for the
+    attributes of the vanilla puppet: same content, other bytes). The addresses are only names. The walk
+    visits every pointer of these structs in file order; each value gets the next new address (equal values
+    the same one, so whatever was equal stays equal), and the blocks they point to - found among the data
+    blocks of the same datablock (an old address names a block only there), else among those before -
+    get the new address in their header. Nothing else in the file is touched."""
+    attr, attr_name_at = offset("Attribute", "*name")
+    _, attr_data_at = offset("Attribute", "*data")
+    arr, arr_data_at = offset("AttributeArray", "*data")
+    _, arr_share_at = offset("AttributeArray", "*sharing_info")
+    single, single_data_at = offset("AttributeSingle", "*data")
+    _, single_share_at = offset("AttributeSingle", "*sharing_info")
+    attr_size = sizes[types.index("Attribute")]
+    scope = 0
+    scopes = []
+    local = {}      # (scope, old address) -> the block's start
+    first = {}      # old address -> the start of the first block with it
+    every = set()
+    for start, code, sdna, length in blocks:
+        if code != b"DATA":
+            scope += 1
+        scopes.append(scope)
+        old = struct.unpack_from("<Q", data, start - 24)[0]
+        local.setdefault((scope, old), start)
+        first.setdefault(old, start)
+        every.add(old)
+    remap = {}
+    fields = []
+    headers = []
+
+    def take(at, here, shared=None):
+        # the key of a value: its datablock's (here) - an old address names a block only among the data blocks
+        # of its datablock, and Blender gives the same addresses again in the next one - unless it names a
+        # block only of a datablock before (data two meshes share): then the file's (0). shared: a
+        # sharing_info (no block, a name of the shared data) goes with its data.
+        value = struct.unpack_from("<Q", data, at)[0]
+        if not value:
+            return None, False
+        target = local.get((here, value))
+        cross = shared if shared is not None else (target is None and value in first)
+        if cross:
+            target = first.get(value, target)
+        key = (0 if cross else here, value)
+        if key not in remap:
+            remap[key] = ATTRIBUTE_BASE + 16 * len(remap)
+        if at not in [f for f, _ in fields]:    # a block two attributes share is walked twice
+            fields.append((at, remap[key]))
+        if shared is None and target is not None and target not in [h for h, _ in headers]:
+            headers.append((target, remap[key]))
+        return target, cross
+
+    for (start, code, sdna, length), here in zip(blocks, scopes):
+        if sdna != attr or code != b"DATA":
+            continue
+        for k in range(length // attr_size):
+            entry = start + k * attr_size
+            take(entry + attr_name_at, here)
+            target, _cross = take(entry + attr_data_at, here)
+            if target is None:
+                continue
+            kind = struct.unpack_from("<i", data, target - 28)[0]
+            for kind_, data_at, share_at in ((arr, arr_data_at, arr_share_at), (single, single_data_at, single_share_at)):
+                if kind == kind_:
+                    _t, cross = take(target + data_at, here)
+                    take(target + share_at, here, cross)
+    if any(new in every for new in remap.values()):
+        raise RuntimeError("an attribute address of the file is already used")
+    for at, new in fields:
+        struct.pack_into("<Q", data, at, new)
+    for start, new in headers:
+        struct.pack_into("<Q", data, start - 24, new)
+
 
 def stabilize(path, out):
     # The .blend is written uncompressed and then made the same on every run
@@ -493,6 +682,8 @@ def stabilize(path, out):
     #     sorts them again when it reads the file)
     #   - the file browsers of the default layout hold the folder of whoever
     #     ran this (and a file name): cleared
+    #   - the attribute arrays of the meshes carry file addresses that depend on
+    #     the heap: new ones, the same every run (stabilize_attributes)
     # Afterwards neither a home folder nor the output folder may be left in the file.
     data = bytearray(open(path, "rb").read())
     if data[:9] != b"BLENDER17":
@@ -561,6 +752,7 @@ def stabilize(path, out):
             data[start + dir_at:start + dir_at + 1282] = bytes(1282)
             data[start + file_at:start + file_at + 256] = bytes(256)
             data[start + rename_at:start + rename_at + 256] = bytes(256)
+    stabilize_attributes(data, blocks, layout, types, sizes, offset)
     found = re.search(rb"[A-Za-z]:[\\/]Users[\\/]|/Users/|/home/|AppData", data)
     if found:
         raise RuntimeError("a local path is left in the file at byte %d" % found.start())
@@ -603,9 +795,9 @@ def kit_marks(j):
     return out
 
 
-def check_glb(path, clip_names, vcol, local):
+def check_glb(path, clip_names, vcol, local, skins=1):
     """local: the demo with the kit kart (wheels, kart nodes, every kit part marked); else the figure alone
-    (no wheel node, no kart node, no kit marker)."""
+    (no wheel node, no kart node, no kit marker). skins: the skins the file must have (vanilla: 0)."""
     j = read_glb_json(path)
     what = os.path.basename(path)
     anims = sorted(a.get("name", "") for a in j.get("animations", []))
@@ -649,8 +841,8 @@ def check_glb(path, clip_names, vcol, local):
     if classic:
         fail(5, "creator kit: self check failed: %s holds the classic model (%s) - it must stay out of every "
                 "export." % (what, ", ".join(sorted(classic))))
-    if len(j.get("skins", [])) != 1:
-        fail(5, "creator kit: self check failed: %s has %d skins (expected 1)." % (what, len(j.get("skins", []))))
+    if len(j.get("skins", [])) != skins:
+        fail(5, "creator kit: self check failed: %s has %d skins (expected %d)." % (what, len(j.get("skins", [])), skins))
     tag = " [vcol %s]" % vcol
     bad = [m.get("name", "") for m in j.get("materials", []) if not m.get("name", "").endswith(tag)]
     if bad or not j.get("materials"):
@@ -660,33 +852,33 @@ def check_glb(path, clip_names, vcol, local):
 
 # ---------------------------------------------------------------- main
 
-def build(opt, started):
-    import bpy
+def read_notice(here):
+    path = os.path.join(here, NOTICE_SOURCE)
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError:
+        fail(4, "creator kit: %s is missing next to make_creator_kit.py. How to fix: copy the whole templates "
+                "folder (Reload Studio writes it with the other scripts)." % NOTICE_SOURCE)
 
-    here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, here)
+
+def write_bytes(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def build_way(opt, way, out, notice, classic_path):
+    """One way: a fresh scene, the puppet of its style, the kit kart, its clips, its exporters; the .blend,
+    the exports and the report into <out>\\<way>\\."""
+    import bpy
     import creator_kit_puppet
-    import creator_kit_standin
     import creator_kit_clips
 
-    out = os.path.abspath(opt["kit"])
-    vcol = opt["vcol"]
-    os.makedirs(out, exist_ok=True)
-    if opt["stand_in"]:
-        creator_kit_standin.write_standin(out)
+    started = time.time()
+    vcol = opt["vcol"] or WAYS[way]["vcol"]
     info, kart_file, wheel_file = read_kit_info(out, vcol)
-    classic_path = None
-    if opt["classic"] is not None:
-        classic_path = os.path.abspath(opt["classic"])
-        try:
-            with open(classic_path, "rb") as f:
-                head = f.read(4)
-        except OSError:
-            fail(4, "creator kit: the classic model %s cannot be read. How to fix: export the old character "
-                    "again (rldpack char-export <file.rldchar> -o <file.glb>)." % classic_path)
-        if head != b"glTF":
-            fail(4, "creator kit: the classic model %s is no glTF binary (.glb). How to fix: export the old "
-                    "character with rldpack char-export <file.rldchar> -o <file.glb>." % classic_path)
+    wdir = os.path.join(out, way)
+    os.makedirs(wdir, exist_ok=True)
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
@@ -709,13 +901,16 @@ def build(opt, started):
 
     bones = creator_kit_puppet.bone_table(info)
     rig = creator_kit_puppet.build_rig(figure_col, bones)
-    puppet = creator_kit_puppet.build_puppet(figure_col, rig, bones, vcol)
+    puppet = creator_kit_puppet.build_puppet(figure_col, rig, bones, vcol, way)
 
     kart_objs = import_kart(os.path.join(out, kart_file), kart_col, rig, vcol)
     wheel_objs = import_wheels(os.path.join(out, wheel_file), info, kart_col, rig, vcol)
     drop_import_collections({"CreatorKit", "Figure", "Kart", "Guides", "Classic"})
 
-    creator_kit_clips.build_actions(rig, bones, info)
+    clip_names = []
+    if WAYS[way]["clips"]:
+        creator_kit_clips.build_actions(rig, bones, info)
+        clip_names = list(creator_kit_clips.CLIP_NAMES)
 
     classic_objs = []
     if classic_path is not None:
@@ -724,7 +919,6 @@ def build(opt, started):
             _col, classic_objs = creator_kit_classic.import_classic(classic_path, vcol)
         except RuntimeError as e:
             fail(4, "creator kit: the classic model %s cannot be used: %s." % (os.path.basename(classic_path), e))
-    clip_names = list(creator_kit_clips.CLIP_NAMES)
 
     # guides (not exported)
     box = CRASH_BOX
@@ -736,11 +930,13 @@ def build(opt, started):
     nose = info["kart_box"][5]
     make_empty("Front", guide_col, "SINGLE_ARROW", 0.3, Bv((0.0, 0.0, nose)), rotation=(math.pi / 2, 0.0, 0.0))
 
+    figure = figure_name(way)
+    numbers = creator_kit_puppet.style_numbers(puppet)
     text = bpy.data.texts.new("HOW_TO_EXPORT")
-    text.from_string("\n".join(HOW_TO_EXPORT).replace("{clips}", ", ".join(clip_names)) + "\n")
+    text.from_string(how_to_export(way, figure, numbers["triangles"], numbers["textures"], clip_names))
 
-    figure_exporter = add_exporter(figure_col, "//" + FIGURE_GLB)
-    local_exporter = add_exporter(kit_col, "//" + LOCAL_GLB)
+    figure_exporter = add_exporter(figure_col, "//" + figure, way)
+    local_exporter = add_exporter(kit_col, "//" + LOCAL_GLB, way) if WAYS[way]["local"] else None
 
     for obj in bpy.data.objects:
         obj.select_set(False)
@@ -752,9 +948,9 @@ def build(opt, started):
             rig.animation_data.action = bpy.data.actions["idle"]
     scene.frame_set(0)
 
-    blend_path = os.path.join(out, BLEND_NAME)
-    figure_path = os.path.join(out, FIGURE_GLB)
-    local_path = os.path.join(out, LOCAL_GLB)
+    blend_path = os.path.join(wdir, blend_name(way))
+    figure_path = os.path.join(wdir, figure)
+    local_path = os.path.join(wdir, LOCAL_GLB)
 
     if opt["blend"]:
         for old in (blend_path, blend_path + "1"):
@@ -765,8 +961,10 @@ def build(opt, started):
 
     figure_json = local_json = None
     if opt["glb"]:
-        for exporter, collection, path in ((figure_exporter, figure_col, figure_path),
-                                           (local_exporter, kit_col, local_path)):
+        jobs = [(figure_exporter, figure_col, figure_path)]
+        if local_exporter is not None:
+            jobs.append((local_exporter, kit_col, local_path))
+        for exporter, collection, path in jobs:
             if os.path.exists(path):
                 os.remove(path)
             exporter.filepath = path
@@ -774,37 +972,83 @@ def build(opt, started):
                 bpy.ops.collection.exporter_export(index=0)
             if not os.path.isfile(path):
                 fail(5, "creator kit: self check failed: the exporter wrote no %s." % os.path.basename(path))
-        figure_json = check_glb(figure_path, clip_names, vcol, local=False)
-        local_json = check_glb(local_path, clip_names, vcol, local=True)
+        skins = 0 if WAY_SETTINGS[way].get("export_skins") is False else 1
+        figure_json = check_glb(figure_path, clip_names, vcol, local=False, skins=skins)
+        if local_exporter is not None:
+            local_json = check_glb(local_path, clip_names, vcol, local=True)
+
+    write_bytes(os.path.join(wdir, NOTICE_NAME), notice)
 
     puppet_tris = tri_count(puppet.data)
     kart_tris = sum(tri_count(o.data) for o in kart_objs)
     wheel_tris = sum(tri_count(o.data) for o in wheel_objs)
+
+    def joints(j):
+        return len(j["skins"][0]["joints"]) if j and j.get("skins") else (0 if j else None)
+
+    files = {figure: sha256_file(figure_path) if opt["glb"] else None,
+             blend_name(way): sha256_file(blend_path) if opt["blend"] else None,
+             NOTICE_NAME: sha256_file(os.path.join(wdir, NOTICE_NAME))}
+    if WAYS[way]["local"]:
+        files[LOCAL_GLB] = sha256_file(local_path) if opt["glb"] else None
     report = {
+        "way": way,
         "blender": bpy.app.version_string,
         "vcol": vcol,
         "source": info.get("source"),
+        "puppet": numbers,
         "triangles": {"puppet": puppet_tris, "kart": kart_tris, "wheels": wheel_tris,
                       "total": puppet_tris + kart_tris + wheel_tris},
-        "skin_joints": {FIGURE_GLB: len(figure_json["skins"][0]["joints"]) if figure_json else None,
-                        LOCAL_GLB: len(local_json["skins"][0]["joints"]) if local_json else None},
-        "clips": sorted(a.get("name", "") for a in figure_json.get("animations", [])) if figure_json else None,
-        "sha256": {BLEND_NAME: sha256_file(blend_path) if opt["blend"] else None,
-                   FIGURE_GLB: sha256_file(figure_path) if opt["glb"] else None,
-                   LOCAL_GLB: sha256_file(local_path) if opt["glb"] else None},
+        "exporters": {"Figure": figure, "CreatorKit": LOCAL_GLB if WAYS[way]["local"] else None},
+        "skin_joints": {figure: joints(figure_json), LOCAL_GLB: joints(local_json)} if WAYS[way]["local"]
+        else {figure: joints(figure_json)},
+        "clips": sorted(clip_names),
+        "sha256": files,
         "seconds": round(time.time() - started, 1),
         "messages": [] if single_thread(sys.argv) else [THREADS_NOTE],
         "classic": ({"file": os.path.basename(classic_path), "objects": len(classic_objs),
                      "triangles": sum(tri_count(o.data) for o in classic_objs)} if classic_path else None),
     }
-    with open(os.path.join(out, REPORT_NAME), "w", encoding="utf-8", newline="\n") as f:
+    with open(os.path.join(wdir, REPORT_NAME), "w", encoding="utf-8", newline="\n") as f:
         json.dump(report, f, indent=1, sort_keys=True)
         f.write("\n")
-    print("creator kit: ok vcol=%s source=%s triangles=%d joints=%s clips=%s blend=%s glb=%s %.1fs"
-          % (vcol, report["source"], report["triangles"]["total"],
-             "/".join(str(report["skin_joints"][k]) for k in (FIGURE_GLB, LOCAL_GLB)),
-             len(report["clips"]) if report["clips"] is not None else "-",
-             "yes" if opt["blend"] else "no", "yes" if opt["glb"] else "no", report["seconds"]))
+    print("creator kit: way %s vcol=%s triangles=%d puppet=%d textures=%s joints=%s clips=%d %.1fs"
+          % (way, vcol, report["triangles"]["total"], puppet_tris,
+             "+".join("%dx%d" % (w, h) for _n, w, h in numbers["textures"]) or "-",
+             "/".join(str(v) for v in report["skin_joints"].values()), len(clip_names), report["seconds"]))
+    return report
+
+
+def build(opt, started):
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, here)
+    import creator_kit_standin
+
+    out = os.path.abspath(opt["kit"])
+    os.makedirs(out, exist_ok=True)
+    notice = read_notice(here)
+    if opt["stand_in"]:
+        creator_kit_standin.write_standin(out)
+    for vcol in sorted(set(opt["vcol"] or WAYS[w]["vcol"] for w in opt["routes"])):
+        read_kit_info(out, vcol)    # every input is checked before anything is written
+    classic_path = None
+    if opt["classic"] is not None:
+        classic_path = os.path.abspath(opt["classic"])
+        try:
+            with open(classic_path, "rb") as f:
+                head = f.read(4)
+        except OSError:
+            fail(4, "creator kit: the classic model %s cannot be read. How to fix: export the old character "
+                    "again (rldpack char-export <file.rldchar> -o <file.glb>)." % classic_path)
+        if head != b"glTF":
+            fail(4, "creator kit: the classic model %s is no glTF binary (.glb). How to fix: export the old "
+                    "character with rldpack char-export <file.rldchar> -o <file.glb>." % classic_path)
+
+    write_bytes(os.path.join(out, NOTICE_NAME), notice)
+    reports = [build_way(opt, way, out, notice, classic_path) for way in opt["routes"]]
+    print("creator kit: ok routes=%s source=%s blend=%s glb=%s %.1fs"
+          % (",".join(opt["routes"]), reports[0]["source"], "yes" if opt["blend"] else "no",
+             "yes" if opt["glb"] else "no", time.time() - started))
 
 
 def single_thread(argv):

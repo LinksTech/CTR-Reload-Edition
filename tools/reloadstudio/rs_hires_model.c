@@ -38,17 +38,72 @@ typedef signed long long s64;
 typedef char RsHires_VcolGltfSame[(RS_HIRES_VCOL_GLTF == RLDHIRES_VCOL_GLTF) ? 1 : -1];
 typedef char RsHires_VcolPsxSame[(RS_HIRES_VCOL_PSX == RLDHIRES_VCOL_PSX) ? 1 : -1];
 typedef char RsHires_VcolOffSame[(RS_HIRES_VCOL_OFF == RLDHIRES_VCOL_OFF) ? 1 : -1];
+// The page's clip numbers are those of the format (THE CLIPS of rldhires.inc).
+typedef char RsHires_ClipsSame[(RS_HIRES_CLIPS == RLDHIRES_CLIP_COUNT) ? 1 : -1];
+typedef char RsHires_ClipsBaseSame[(RS_HIRES_CLIPS_BASE == RLDHIRES_CLIP_BASE) ? 1 : -1];
+typedef char RsHires_FinishWinSame[(RS_HIRES_CLIP_FINISH_WIN == RLDHIRES_CLIP_FINISH_WIN) ? 1 : -1];
+typedef char RsHires_FinishLoseSame[(RS_HIRES_CLIP_FINISH_LOSE == RLDHIRES_CLIP_FINISH_LOSE) ? 1 : -1];
 
 #define RS_HIRES_FILE_MAX (64u * 1024u * 1024u + 4096u)   // a .glb as large as CHRG may hold, and some
 #define RS_HIRES_UNITS 1024.0f                            // file units per metre: 64 model units x 16
 
-static const wchar_t *const s_rsHiresClipNames[RS_HIRES_CLIPS] = {
-    L"idle", L"steer_left", L"steer_right", L"jump", L"drift_left", L"drift_right",
-    L"hit", L"podium_1", L"podium_2", L"podium_3", L"lose", L"menu"};
+// The names are rldhires.inc's (s_rldHiresClipName, plain ASCII), widened
+// once. Every caller writes the same characters, so two threads at the first
+// call cannot make a wrong name.
+#define RS_HIRES_CLIP_NAME_MAX 24
+static wchar_t s_rsHiresClipNames[RS_HIRES_CLIPS][RS_HIRES_CLIP_NAME_MAX];
 
 const wchar_t *RsHires_ClipName(int clip)
 {
-    return (clip >= 0 && clip < RS_HIRES_CLIPS) ? s_rsHiresClipNames[clip] : L"?";
+    wchar_t *w;
+    const char *s;
+    int k;
+    if (clip < 0 || clip >= RS_HIRES_CLIPS)
+        return L"?";
+    w = s_rsHiresClipNames[clip];
+    if (!w[0]) {
+        s = RldHires_ClipName(clip);
+        for (k = 0; s[k] && k < RS_HIRES_CLIP_NAME_MAX - 1; k++)
+            w[k] = (wchar_t)(unsigned char)s[k];
+        w[k] = 0;
+    }
+    return w;
+}
+
+int RsHires_ClipOptional(int clip)
+{
+    return RldHires_ClipOptional(clip);
+}
+
+// A missing finish clip (RS_HIRES_CLIP_FINISH): what the game plays after the
+// finish line instead - what it played before 4.3 (platform/engine_hires_pose.c):
+// with a kart - the kart part (parts bit 0) or the game's kart put in from the
+// player's game data (bit 1; the engine gives it the kart part,
+// platform/engine_hires_char.c) - the seated race clips (the preview shows idle
+// as its chain resolves), without one podium_1..3 by place for finish_win and
+// lose for finish_lose (the chain of rldhires.inc). *seated 1 = the race clips.
+static int RsHires_FinishVia(const RldHiresModel *m, int clip, int *seated)
+{
+    *seated = (m->parts & (RLDHIRES_PART_KART | RLDHIRES_PART_GAME_KART)) != 0u;
+    return RldHires_ClipResolve(m, *seated ? RLDHIRES_CLIP_IDLE : RldHires_ClipFallback(clip), NULL, NULL);
+}
+
+void RsHires_FinishText(const struct RsHiresCheck *c, int clip, wchar_t *out, int cap)
+{
+    const int via = c && clip >= 0 && clip < RS_HIRES_CLIPS ? c->clipVia[clip] : -1;
+    if (cap <= 0)
+        return;
+    out[0] = 0;
+    if (!c || clip < 0 || clip >= RS_HIRES_CLIPS || c->clipState[clip] != RS_HIRES_CLIP_FINISH)
+        return;
+    if (c->clipSeated[clip])
+        swprintf(out, cap, L"the seated race clips");
+    else if (clip == RS_HIRES_CLIP_FINISH_WIN && via == RLDHIRES_CLIP_PODIUM_1)
+        swprintf(out, cap, L"podium_1..3 by place");
+    else if (via >= 0)
+        swprintf(out, cap, L"%ls", RsHires_ClipName(via));
+    else
+        swprintf(out, cap, L"the rest pose");
 }
 
 static void RsHires_Widen(wchar_t *dst, int cap, const char *src)
@@ -1142,13 +1197,23 @@ static void RsHires_Fill(const RldHiresReport *rep, const RldHiresModel *m, stru
     if (!m)
         return;
     for (i = 0; i < RS_HIRES_CLIPS; i++) {
-        int via = 0, lock = 0;
+        int via = 0, lock = 0, seated = 0;
         int got = RldHires_ClipResolve(m, i, &via, &lock);
         out->clipState[i] = m->clipAnim[i] >= 0 ? RS_HIRES_CLIP_PRESENT : got >= 0 ? RS_HIRES_CLIP_FALLBACK : RS_HIRES_CLIP_REST;
+        if (m->clipAnim[i] < 0 && RldHires_ClipOptional(i)) {
+            // Optional and missing: what the game plays after the finish line.
+            got = RsHires_FinishVia(m, i, &seated);
+            lock = 0;
+            out->clipState[i] = RS_HIRES_CLIP_FINISH;
+        }
         out->clipVia[i] = got;
         out->clipFullLock[i] = lock;
+        out->clipSeated[i] = seated;
         out->clipSeconds[i] = m->clipSeconds[i];
-        out->clips += m->clipAnim[i] >= 0;
+        if (RldHires_ClipOptional(i))
+            out->finishClips += m->clipAnim[i] >= 0;
+        else
+            out->clips += m->clipAnim[i] >= 0;
     }
     out->wheels = m->wheelsFound;
     out->joints = m->joints;
@@ -1265,19 +1330,24 @@ static int RsHires_SubtreeMesh(const cgltf_node *n, int depth)
 }
 
 // THE KART of a .glb (rs_hires_model.h, RsHiresCheck.kartCase): opened as
-// rldpack opens it for --kart-part, then the node names.
-static int RsHires_KartCase(const unsigned char *glb, size_t size)
+// rldpack opens it for --kart-part, then the node names. skins: when not
+// NULL, the number of skins of the file (0 when it cannot be opened).
+static int RsHires_KartCase(const unsigned char *glb, size_t size, int *skins)
 {
     static RldHiresReport rep;   // the findings are not used: the check says them
     RldHiresModel m;
     int kase = RS_KART_OWN;
     cgltf_size i;
 
+    if (skins)
+        *skins = 0;
     if (size > (size_t)(RLDHIRES_CHUNK_LIMIT - RLDHIRES_CHUNK_HEADER_BYTES))
         return RS_KART_OWN;
     RldHires_ReportClear(&rep);
     memset(&m, 0, sizeof(m));
     RldHires_OpenParts(glb, (u32)size, RLDHIRES_VCOL_GLTF, RLDHIRES_PART_KART, &m, &rep);
+    if (skins && m.data)
+        *skins = (int)m.data->skins_count;
     if (m.data && m.kartNode >= 0 && (cgltf_size)m.kartNode < m.data->nodes_count) {
         if (RsHires_SubtreeMesh(&m.data->nodes[m.kartNode], 0)) {
             if (m.kartPart)
@@ -1309,7 +1379,7 @@ unsigned RsHires_PartsFor(int kartCase, int gameKart)
 // A .glb: its kart decided, then checked with the parts it is packed with.
 static int RsHires_CheckGlbParts(const unsigned char *glb, size_t size, int useParts, unsigned parts, struct RsHiresCheck *out)
 {
-    int kase = RsHires_KartCase(glb, size), r;
+    int kase = RsHires_KartCase(glb, size, NULL), r;
     if (!useParts)
         parts = RsHires_PartsFor(kase, 0);
     r = RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, parts, out);
@@ -1348,6 +1418,22 @@ static unsigned char *RsHires_ReadAll(const wchar_t *path, size_t limit, size_t 
     fclose(f);
     *size = (size_t)n;
     return bytes;
+}
+
+int RsHires_KartCaseFile(const wchar_t *path, int *skins)
+{
+    wchar_t why[RS_HIRES_TEXT_MAX];
+    size_t size = 0;
+    unsigned char *bytes = RsHires_ReadAll(path, RS_HIRES_FILE_MAX, &size, why, RS_HIRES_TEXT_MAX);
+    int kase = -1;
+    if (skins)
+        *skins = 0;
+    if (!bytes)
+        return -1;
+    if (size >= 12 && memcmp(bytes, "glTF", 4) == 0)
+        kase = RsHires_KartCase(bytes, size, skins);
+    free(bytes);
+    return kase;
 }
 
 int RsHires_CharLook(const wchar_t *path, struct RsCharLook *out, wchar_t *why, int whyCap)
@@ -1586,6 +1672,25 @@ int RsHires_SetColourMode(struct RsHiresCheck *c, int mode)
     c->previewKeepAt = keepAt;
     c->previewKeepBytes = keepBytes;
     return 1;
+}
+
+int RsHires_RowInMode(const struct RsHiresCheck *c, int i)
+{
+    if (!c || i < 0 || i >= c->rowCount)
+        return 0;
+    return !(c->vcolChecked == RS_HIRES_VCOL_GLTF && c->vcolMode != RS_HIRES_VCOL_GLTF &&
+             wcscmp(c->rows[i].rule, L"HRG-36") == 0);
+}
+
+int RsHires_WarningsInMode(const struct RsHiresCheck *c)
+{
+    int i, n;
+    if (!c)
+        return 0;
+    n = c->warnings;
+    for (i = 0; i < c->rowCount; i++)
+        n -= c->rows[i].severity == RS_SEV_WARNING && !RsHires_RowInMode(c, i);
+    return n < 0 ? 0 : n;
 }
 
 int RsHires_UpscaleArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args)

@@ -30,7 +30,7 @@
 //       Every node, mesh and material carries the kit mark (extras "ctr_kit",
 //       material names "ctrkit_*"): rldpack hires-check, the game and Reload
 //       Studio say HRG-41 for any model made from them. The files are made from
-//       the player's game data: they stay on this computer (never share them).
+//       the player's game data on this computer.
 //       Exit 0 = written, 1 = an error (nothing half written: each file goes
 //       through a .part file), 2 = usage.
 //   kit-standin -o <folder>
@@ -481,7 +481,7 @@ static u8 *RldKit_WriteInfo(const RldKitResult *r, const RldKitOptions *opt, con
 
 	memset(&b, 0, sizeof(b));
 	RldKitBuf_Printf(&b, "{\n \"kit\": 1,\n \"source\": \"game data\",\n \"driver\": %d,\n \"model\": \"%s\",\n \"units_per_metre\": 64,\n", opt->driver, r->model);
-	RldKitBuf_Printf(&b, " \"note\": \"made from your own game data - keep these files on this computer, never share them\",\n");
+	RldKitBuf_Printf(&b, " \"note\": \"made on this PC from your own game files\",\n");
 	RldKitBuf_Printf(&b, " \"tool\": \"rldpack %s kit-extract\",\n \"segments\": %d,\n \"upscale\": %d,\n", CTR_NATIVE_VERSION, opt->segments, opt->upscale);
 	RldKitBuf_Printf(&b, " \"seat\": ");
 	RldKitJson_U3(&b, r->seat, U);
@@ -560,7 +560,7 @@ static u8 *RldKit_WriteReport(const RldKitResult *r, const RldKitOptions *opt, c
 
 	memset(&b, 0, sizeof(b));
 	RldKitBuf_Printf(&b, "rldpack kit-extract - the Creator Kit's kart from your own game data\n");
-	RldKitBuf_Printf(&b, "These files are made from your game data. Keep them on this computer; never share them.\n\n");
+	RldKitBuf_Printf(&b, "These files are made on this PC from your own game files.\n\n");
 	RldKitBuf_Printf(&b, "game data      %s\n", source);
 	RldKitBuf_Printf(&b, "driver         %d (%s): %u commands, %u vertex records, %u triangles\n", opt->driver, r->model, (unsigned)r->commands, (unsigned)r->records,
 	                 (unsigned)r->triangles);
@@ -1624,6 +1624,93 @@ static int RldKit_SelfTest(void)
 	else
 	{
 		printf("       %s\n", why);
+	}
+	// THE CLASSIC KART (CHRI bit 5): the kit's kart as retail triangles, from one
+	// decoding of the 15 models; without game data, or with a broken model, a
+	// reason and no kart; spliced into the figure-only test model of make-char
+	// as the game does it (platform/native_chars.c, THE GAME KART).
+	{
+		static RldKitClassic karts[RLDKIT_DRIVERS];
+		static RldKitClassic none[RLDKIT_DRIVERS];
+		static struct RldMkTestMesh mesh;
+		RldKitSource broken = src;
+		struct RldMkOptions mo;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		struct RldCharGameKart gk;
+		struct RldCharSpliceFacts facts;
+		struct RldCharModelFacts mf;
+		struct RldCharFinding finding;
+		struct RldCharKartTri *tri = NULL;
+		u8 *shadow = NULL;
+		u8 *real = NULL;
+		size_t shadowSize = 0;
+		size_t realSize = 0;
+		const char *splice = "not made";
+		u32 t;
+		int textured = 1;
+
+		const int quietBefore = s_rldMkQuiet;
+
+		memset(karts, 0, sizeof(karts));
+		memset(none, 0, sizeof(none));
+		memset(&ply, 0, sizeof(ply));
+		memset(&b, 0, sizeof(b));
+		memset(&facts, 0, sizeof(facts));
+		s_rldMkQuiet = 1;
+		KitTest_Check(RldKit_ClassicKarts(&src, (1u << 3) | 1u, karts, why, sizeof(why)) && karts[3].ok && karts[0].ok && !karts[1].ok &&
+		                  (karts[3].count == 12u) && (karts[0].count == 12u) && (karts[3].retailTriangles == 27u),
+		              "classic kart: donors 0 and 3 from one decoding - the 12 still box triangles each (the kit's kart), driver 1 not asked");
+		for (t = 0; t < karts[3].count; t++)
+		{
+			textured &= karts[3].tri[t].textured;
+		}
+		KitTest_Check((karts[3].count != 0u) && textured, "classic kart: every triangle with its texture layout (the stand-in's kart is textured)");
+		KitTest_Check(!RldKit_ClassicKarts(NULL, 1u, none, why, sizeof(why)) && !none[0].ok && (strstr(none[0].why, "no game data") != NULL),
+		              "classic kart: without game data no kart, the reason 'no game data'");
+		broken.modelSize[5] = 6u;
+		KitTest_Check(!RldKit_ClassicKarts(&broken, 1u, none, why, sizeof(why)) && !none[0].ok && (strstr(none[0].why, "driver 5") != NULL),
+		              "classic kart: a broken model gives no kart, naming its driver");
+
+		if (karts[3].ok && RldMk_GameKartTestModel(&mesh, &ply, &b, &mo) && RldMk_GameKartField(&b, &mo, &gk))
+		{
+			tri = (struct RldCharKartTri *)calloc(karts[3].count, sizeof(*tri));
+			for (t = 0; (tri != NULL) && (t < karts[3].count); t++)
+			{
+				memcpy(tri[t].p, karts[3].tri[t].p, sizeof(tri[t].p));
+				memcpy(tri[t].rgb, karts[3].tri[t].rgb, sizeof(tri[t].rgb));
+				memcpy(tri[t].layout, karts[3].tri[t].layout, sizeof(tri[t].layout));
+				tri[t].cull = karts[3].tri[t].cull;
+				tri[t].textured = karts[3].tri[t].textured;
+			}
+			splice = (tri == NULL) ? "out of memory" : RldChar_SpliceKart(b.cmdl, b.cmdlSize, &gk, tri, karts[3].count, 0, 0, &shadow, &shadowSize, &facts);
+			if ((splice == NULL) && (RldChar_CheckModel(shadow, shadowSize, &finding, NULL, NULL, &mf) != RLDCHAR_VERDICT_OK))
+			{
+				splice = finding.detail;
+			}
+			if (splice == NULL)
+			{
+				splice = RldChar_SpliceKart(b.cmdl, b.cmdlSize, &gk, tri, karts[3].count, 0, 1, &real, &realSize, &facts);
+			}
+		}
+		KitTest_Check((splice == NULL) && (facts.kartTriangles == 12u) && (facts.standIn == 228u) && (facts.layouts >= 1u) && (realSize > shadowSize),
+		              "classic kart: donor 3 spliced into the figure-only model in place of the stand-in (228), through the model check, with its texture layouts");
+		if (splice != NULL)
+		{
+			printf("       splice: %s\n", splice);
+		}
+		s_rldMkQuiet = quietBefore;
+		RldMk_ResetSaid();
+		free(tri);
+		free(shadow);
+		free(real);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		for (t = 0; t < RLDKIT_DRIVERS; t++)
+		{
+			RldKit_ClassicFree(&karts[t]);
+			RldKit_ClassicFree(&none[t]);
+		}
 	}
 	// Refusals: N. Oxide's slot, a broken model.
 	opt.driver = 15;

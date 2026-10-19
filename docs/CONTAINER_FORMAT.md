@@ -4,7 +4,7 @@ CTR Reload Edition has two container types. Both share one envelope:
 
 | Extension | Content | Written by | Read by |
 |---|---|---|---|
-| `.rldtrack` | a custom track, format 4.2 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
+| `.rldtrack` | a custom track, format 4.3 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
 | `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` (also through Reload Studio's Character page) | the game (`characters` folder), `rldpack info`, `rldpack verify` |
 
 The game reads every `.rldchar` of its `characters` folder at start; see
@@ -141,12 +141,16 @@ instead of refusing the file.
 3. The directory, in the same order, at the end of the file:
    file_size = dir_offset + chunk_count x 64.
 
-## 2. `.rldtrack` 4.2
+## 2. `.rldtrack` 4.3
 
-Magic `RLDTRACK`, major 4, minor 2. A reader takes 4.0, 4.1 and 4.2 alike.
-4.2 (2026-10-17) changes no byte of a track but the minor: it marks the
-hi-res driver chunk CHRG version 1 as frozen (section 3). 4.1 (2026-09-28)
-froze the track format.
+Magic `RLDTRACK`, major 4, minor 3. A reader takes 4.0, 4.1, 4.2 and 4.3
+alike. 4.3 (2026-10-18) changes no byte of a track but the minor: it extends
+the hi-res driver chunk CHRG version 1 ignorably - the parts field is
+accepted and the clip list has the optional finish_win and finish_lose - and
+gives CHRI flag bit 5, the game kart of a figure-only file (section 3); a
+reader of 4.2 reads past all of them. 4.2 (2026-10-17) marked CHRG
+version 1 as frozen, again with no byte of a track but the minor. 4.1
+(2026-09-28) froze the track format.
 
 | Chunk | Required | Limit | Content |
 |---|---|---|---|
@@ -362,7 +366,7 @@ is frozen. Source: `include/rldchar.inc`.
 | CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
 | CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) (see "Preview, planned: CNET and CTXT") |
 | CTXT | optional, PREVIEW, written with CNET | 32 MiB, as CNET | the textures of CNET as PNG, decoded to RGBA8 (see the same section) |
-| CHRG | optional, version 1 frozen (4.2), written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, drawn by the engine (see "CHRG (version 1, frozen)") |
+| CHRG | optional, version 1 frozen (4.2), extended ignorably (4.3), written by `rldpack hires-add` | 64 MiB, checked only by the hi-res reader (unknown to the envelope) | the hi-res driver: a 16-byte header and a glTF 2.0 binary model, drawn by the engine (see "CHRG (version 1, frozen)") |
 | CTEX | reserved name, not assigned | none (unknown, skipped) | once planned for texture data; the textures of the native model are CTXT, so the name stays unused |
 | CWHL | reserved name, not assigned | none (unknown, skipped) | own wheels; the wheels of the native model are a part of CNET, so CWHL stays reserved and unassigned (its old plan below) |
 
@@ -383,8 +387,10 @@ for any unknown chunk; everything else about them costs only the native part
 ### CHRG (version 1, frozen)
 
 The hi-res driver. Version 1 is frozen since 2026-10-17 (container format
-4.2): the header, the flags, the clip and wheel names, the fallbacks and the
-rules below do not change within version 1. `include/rldhires.inc` is the code
+4.2) and extended ignorably in 4.3 (2026-10-18: the parts field at 0x10, the
+optional clips finish_win and finish_lose): the header, the flags, the clip
+and wheel names, the fallbacks and the rules below do not change within
+version 1, except by such additions, which a reader of 4.2 reads past. `include/rldhires.inc` is the code
 of it; the game, `rldpack` (hires-check, hires-add) and Reload Studio run the
 same rules from it. CHRG is not a known type of the envelope: it is skipped
 like any unknown chunk, and a CHRG that breaks a rule drops only the hi-res
@@ -398,7 +404,7 @@ uncompressed, SHA-256 like every chunk, at most 64 MiB with the header.
 | 0x04 | u32 | flags | bits 0-1: the vertex colour mode (below); bits 2-31 are 0. A set bit 2-31, or mode 3, drops the hi-res part (HRG-3) |
 | 0x08 | u32 | glbOffset | = headerBytes (HRG-4) |
 | 0x0C | u32 | glbSize | glbOffset + glbSize = the chunk's size (HRG-4) |
-| 0x10 | u32 | parts | only when headerBytes >= 20; proposed for 4.3, not yet accepted (see "The parts"). An older reader reads past it |
+| 0x10 | u32 | parts | only when headerBytes >= 20; accepted in 4.3 (see "The parts"). An older reader reads past it |
 
 The GLB follows byte for byte as the author exported it; the packer checks it
 and never changes it.
@@ -451,8 +457,22 @@ and every chain ends at the rest pose (the node transforms of the file).
 | podium_2 | loop | podium_1 |
 | podium_3 | loop | podium_2 |
 | lose, menu | loop | idle |
+| finish_win (optional, 4.3) | loop: a driver after the finish line on place 1..3, the kart driving on | what the game played before the clip existed: with the kart part the seated race clips, without it podium_1..3 by place |
+| finish_lose (optional, 4.3) | loop: the same from place 4 on | the same: with the kart part the seated race clips, without it lose |
 
-A missing clip is a warning (HRG-19). An animation whose name is not a clip
+The finish clips are the one ignorable extension of the clip list (4.3). They
+are played in the race only, from the tick the driver crosses the finish line
+(ACTION_RACE_FINISHED): finish_win for places 1..3, finish_lose from place 4,
+with or without the kart part, seated or standing as the author made them. The
+podium scene, the menu scene and the driver select never play them. A file
+without them looks exactly as before, pose for pose. A game of 4.2 reads them
+as unknown names (HRG-21, a note) and plays what it always played there.
+
+A missing clip is a warning (HRG-19), except finish_win and finish_lose: a
+missing optional clip says nothing, so that no file of before gets a new
+warning. `rldpack hires-check` keeps counting the twelve clips every file is
+asked for ("clips n/12") and names the optional ones on a line of their own
+("finish clips n/2"). An animation whose name is not a clip
 name, or a clip name a second time, is a note (HRG-21) and is ignored: it is
 never a reason to refuse the model, and Reload Studio shows it as a note at
 the model's animations. CUBICSPLINE is read linear between the key values
@@ -473,14 +493,14 @@ engine's hard limits: 62 materials, 1048576 vertices, 255 skinning entries
 (joints + body nodes with a mesh but no skin + 4 wheels), 64 texture uploads
 (HRG-32..35).
 
-**The parts** (field 0x10, an ignorable extension of version 1, proposed for
-4.3 and not yet accepted; written by `rldpack hires-add --kart-part` or
+**The parts** (field 0x10, an ignorable extension of version 1, accepted in
+4.3; written by `rldpack hires-add --kart-part` or
 `--game-kart`, else the header stays 16 bytes and the bytes are those of
 before):
 
 | Bit | Name | Meaning |
 |---|---|---|
-| 0 | kart part | the subtree of the first node named `kart` (in the drawn scene) is the kart. Where the kart is not wanted - the podium scene, the menu scene, the driver select - the engine leaves it out together with the four wheels; in a race it stays, and a finished driver keeps the seated race clips (idle, steer) instead of podium_1..3 / lose, which a file with a kart part makes standing |
+| 0 | kart part | the subtree of the first node named `kart` (in the drawn scene) is the kart. Where the kart is not wanted - the podium scene, the menu scene, the driver select - the engine leaves it out together with the four wheels; in a race it stays, and a finished driver keeps the seated race clips (idle, steer) instead of podium_1..3 / lose, which a file with a kart part makes standing - or plays its own finish_win / finish_lose (4.3) |
 | 1 | game kart | the file has no kart; the game puts in the original kart from the player's own game data (the engine makes it at the load from the game data: kart, steering wheel on the node `kart_steer`, the kit's wheels; nothing of it is in the file). The classic model of such a file is the figure on a plain stand-in kart made by code (`rldpack make-char --figure-only`), so the file holds no game data. With bit 0 set too, bit 0 wins (HRG-40). Such a file needs no wheel nodes (a note, HRG-42, instead of the warning HRG-20), and a node `kart` without a mesh below it (the joints a figure keeps for the inserted kart) says nothing (no HRG-39) |
 | 8-15 | kart donor | with bit 1: the retail driver 0..14 whose kart (its colours) is taken; 0xFF = the template of CHRI |
 
@@ -498,8 +518,8 @@ model's origin; one draw stays one draw.
 **The kit mark.** What `rldpack kit-extract` makes from the player's game data
 carries glTF extras `{"ctr_kit": "kart" | "steer_wheel" | "wheel"}` on its
 nodes and meshes and material names that start with `ctrkit_`. A model with
-either is HRG-41 (a warning): it contains the original kart from the player's
-game data and must not be shared - export the figure without the kart.
+either is HRG-41 (a warning), with the text "This file contains the kart from your
+game files."
 
 **The rules** are HRG-1 .. HRG-42, each with a fixed level, listed with their
 texts in `s_rldHiresRules` (`include/rldhires.inc`): an error refuses the
@@ -516,7 +536,7 @@ flag bit (HRG-3) or as version 2 (HRG-1): an older reader drops the hi-res
 part and draws the classic model. Both ways are covered by the self-tests
 (`rldpack selftest-hires`, ctest `rldhires_selftest` and `rldhires_files`).
 
-Planned for 4.3: emissive (not built).
+Planned: emissive (not built).
 
 ### CHRI (`RldChar_ParseInfo`)
 
@@ -527,7 +547,7 @@ Planned for 4.3: emissive (not built).
 | 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning; the game drives the character with it |
 | 0x04 | char[20] | name | display name, see the name rule |
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
-| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); bit 3 (`RLDCHAR_FLAG_MAP_COLOR`): the minimap marker has the color at 0x20; bit 4 (`RLDCHAR_FLAG_FULL_HEIGHT`): the models of the file (CMDL and CMSK) use odd heights too - the game draws them with the vertex mask 0xfffcffff instead of the retail 0xfff8ffff, which clears bit 0 of pos.y + byte, so the Y bytes can take all 256 values instead of 128 even ones; the file keeps pos.y even in every frame (the bounding box still clears bit 0 of pos.y and spans 255 from there), the load line adds `, full height`, and a game from before the bit draws an odd height one value lower; further bits are reserved |
+| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); bit 3 (`RLDCHAR_FLAG_MAP_COLOR`): the minimap marker has the color at 0x20; bit 4 (`RLDCHAR_FLAG_FULL_HEIGHT`): the models of the file (CMDL and CMSK) use odd heights too - the game draws them with the vertex mask 0xfffcffff instead of the retail 0xfff8ffff, which clears bit 0 of pos.y + byte, so the Y bytes can take all 256 values instead of 128 even ones; the file keeps pos.y even in every frame (the bounding box still clears bit 0 of pos.y and spans 255 from there), the load line adds `, full height`, and a game from before the bit draws an odd height one value lower; bit 5 (`RLDCHAR_FLAG_GAME_KART`, 4.3): the game kart - the classic model's stand-in kart is replaced by a retail kart from the player's game data (see "The game kart" below); further bits are reserved |
 | 0x20 | u8[4] | mapColor | only when fixedSize >= 0x24, else absent: red, green, blue of the minimap marker, then 0; used only with bit 3 set (bit 3 without the field, or the field without bit 3: the template's color, no finding) |
 | 0x24 | u8 | shadowMode | the look, only when fixedSize >= 0x3C, else retail: 0 retail, 1 auto (the quad at 0x28), 2 off; any other value is read as retail |
 | 0x25 | u8 | exhaustMode | 0 retail, 1 custom (the points at 0x30), 2 off; any other value is read as retail |
@@ -536,6 +556,13 @@ Planned for 4.3: emissive (not built).
 | 0x28 | s16[4] | shadowQuad | xMin, xMax, zMin, zMax in 1/16 game units; only with shadow auto, else 0 |
 | 0x30 | s16[3] | exhaust0 | x, y, z in 1/16 game units: the exhaust in place of retail source 0 (+X, the driver's left); only with exhaust custom, else 0 |
 | 0x36 | s16[3] | exhaust1 | x, y, z in 1/16 game units: in place of retail source 1 (-X, the right); only with custom and count 2, else 0 |
+| 0x3C | u8 | kartDonor | the game kart, only when fixedSize >= 0x50 (written only with bit 5): the retail driver 0..14 whose kart is put in, 0xFF = the template |
+| 0x3D | u8 | reserved | written 0 |
+| 0x3E | u16 | kartTriangles | the triangles of the stand-in range |
+| 0x40 | u16[2] | kartCommands | first, end: list indices of the stand-in range (index 0 is the color count; end is the index of the end word 0xFFFFFFFF - the range is the tail of the list) |
+| 0x44 | u16[2] | kartRecords | first, end: its records (end = the records per frame) |
+| 0x48 | u16 | kartScale | 1/4096: the factor the model was scaled by (4096 = 1) |
+| 0x4A | s16[3] | kartOffset | 1/16 game unit: the shift the model was moved by; a point p of a retail kart lands at kartScale / 4096 x p + kartOffset / 16 |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
 | | | string 0 | author, at most 64 bytes; "" when absent |
 
@@ -587,6 +614,50 @@ Planned for 4.3: emissive (not built).
   Studio's field "Minimap colour" (Choose... / Like the template) starts at
   the template's colour (808080 for Fake Crash: the marker as drawn) and
   passes `--map-color` only when a colour is chosen.
+
+The game kart (CHRI bit 5, container format 4.3; `RldChar_ParseGameKart`,
+`RldChar_GameKartRange`, `RldChar_SpliceKart` in `include/rldchar.inc`):
+
+- A figure-only file (`rldpack make-char --figure-only`, the Creator Kit's
+  figure) holds no game data. Its CMDL is the figure on a plain grey stand-in
+  kart made by code (floor, sides, steering column and ring). make-char
+  always sets bit 5 with it: it writes the stand-in's kart body as the TAIL of
+  the command list and of the records - every other triangle first, then,
+  with the vertex cache emptied, the stand-in's - and describes that range
+  in 0x3C..0x4F. Which triangles are the stand-in is known by their origin
+  (the faces make-char added), never told by shape or colour. The frame
+  holds 2 game units of room around the stand-in kart, and a quarter of the
+  colour table stays free for the donor kart's colours (`--colors 128`: the
+  figure gets 96).
+  `--kart-donor <0..14|template>` (default template) names the donor.
+  Without `--figure-only` nothing of this runs: the bytes are those of before.
+- The game (`platform/native_chars.c`, THE GAME KART), at the first load
+  stage 5 of the session: reads the 15 racer models HI of the player's game
+  data (BIGFILE 242..256), tells the donor's kart from its figure
+  (`include/rldkit.inc`, `RldKit_ClassicKarts`: triangles still in the turn and
+  found in the other drivers) and splices it into the file's model in place
+  of the range: each donor triangle as a strip of its own, with its own
+  texture layout (into shared.vrm, in VRAM from the boot on) and colours, the
+  same records in every frame. The rest of the model is the file's, byte for
+  byte; the stand-in's steering ring stays. The new model is held to
+  `RldChar_CheckModel` (without its texture table, which the file format
+  does not have) and may cost at most the draw memory of the file's (normal
+  and ghost). Both classic paths draw it: the engine's CMDL route with the
+  hi-res part dropped, and the PS1 path (`--no-engine`). Log:
+  `[CTR Char] classic kart from game data, donor N: <file> - K kart triangles in place of the stand-in's T (colours +C, nearest M, clamped Z)`.
+- Never a refusal: without game data, with a field or a range that does not
+  hold, or a limit, the file's model stays (the grey stand-in) with one line
+  `[CTR Char] classic kart: <file>: not made (...) - the grey stand-in kart stays`.
+- A game from before 4.3 ignores bit 5 and the longer fixedSize and draws the
+  stand-in, as before.
+- `rldpack hires-add --game-kart <d>` on a file with bit 5 sets kartDonor to
+  d when it differs, so the classic model and the hi-res part show the same
+  kart (one line).
+- `rldpack info` and `rldpack verify`: `game kart donor <n|template>, stand-in
+  T triangles (commands a..b, records c..d), scale s, offset x y z - the
+  stand-in range holds`, or `game kart ignored: <why> - the game keeps the
+  grey stand-in`; with `--machine` `@value game-kart <n|template|ignored>
+  <container|why>`. make-char prints `@value game-kart <n|template> container`.
 
 The look (`RldChar_ParseLook`, one function for packer and reader): the
 ground shadow and the exhaust of the driver, fitted to the model.
@@ -2469,7 +2540,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new field in the CHRG header | more header bytes (headerBytes > 16) for what an older reader may ignore; a new flag bit or CHRG version 2 for what it must not ignore - an older reader then drops only the hi-res part (see "Extending CHRG") |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color. The game kart at 0x3C came as a later one (fixedSize 0x50, written only with bit 5): an older reader draws the stand-in kart |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |

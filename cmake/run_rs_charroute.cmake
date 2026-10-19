@@ -21,7 +21,9 @@
 #      wheel nodes, a 16 x 16 texture), route-tex64.glb (route-bare with a
 #      64 x 64 texture), route-wheels.glb (an armature, 12 clips, its own 4
 #      wheels), route-vcol.glb (route-bare with PS1-like COLOR_0, grey 128)
-#      and route-jpeg.glb (route-bare with its 16 x 16 texture a JPEG), and
+#      and route-jpeg.glb (route-bare with its 16 x 16 texture a JPEG), and for
+#      Vanilla route-kartjoint-noskin.glb (the kit's mesh-less kart joint, no
+#      skin, no clips) and route-noskin.glb (no skin, no kart), and
 #      the fallback's switches per route as RsCharHires_FallbackArgs gives them
 #      (fallback-<route>.txt, a CMake list).
 #   2. Hi-Res: route-bare.glb without and with hires-upscale; Low-Poly:
@@ -264,7 +266,8 @@ message("charroute passed: jpeg converted to png")
 # part (--kart-part), a figure with the kit's mesh-less "kart" joint with the
 # game's kart (--game-kart template), and so is a plain kart with the switch
 # "Kart: from the player's game data" on (the page's runs below); the classic
-# fallback of both is make-char --figure-only (the figure in a grey stand-in kart).
+# fallback of both is make-char --figure-only (the figure on a stand-in kart,
+# CHRI bit 5: a 4.3 game swaps it for the original kart from the game data).
 set(packExtra --kart-part)
 route(kartpart route-kartpart.glb "${fallbackHires}" "--wheels;off" OFF)
 set(packExtra --game-kart template)
@@ -386,9 +389,15 @@ if(PAGE)
     endif()
     file(READ "${DIR}/page-kartjoint-report.txt" text)
     if(NOT text MATCHES "parts: game kart \\(donor template\\)" OR NOT text MATCHES "game kart: on \\(suggested" OR
-       NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data; the classic model shows your figure in a simple grey kart\.\"" OR
-       NOT text MATCHES "parts: game kart \\(donor template\\), classic model: the figure in a grey stand-in kart")
+       NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data, also to the classic model \\(a game before 4\\.3 shows a simple grey kart\\)\\.\"" OR
+       NOT text MATCHES "parts: game kart \\(donor template\\), classic model: the figure on a stand-in kart that the game swaps for the original kart from the player's game data \\(--figure-only, 4\\.3\\); the grey stand-in only in a game before 4\\.3 or without game data")
         message(FATAL_ERROR "charroute FAILED: the page (kartjoint) does not suggest the game's kart\n${text}")
+    endif()
+    # The game's kart counts as a kart after the finish line (4.3): a missing
+    # finish clip keeps the seated race clips, as the engine plays them.
+    if(NOT text MATCHES "hires clip: finish_win optional, missing - after the finish line: the seated race clips \\(shown: idle\\)" OR
+       NOT text MATCHES "hires clip: finish_lose optional, missing - after the finish line: the seated race clips \\(shown: idle\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (kartjoint) does not keep the seated race clips for the finish clips\n${text}")
     endif()
     file(READ "${DIR}/page-gamekart-report.txt" text)
     # Checked again with the game's kart: HRG-42 (its wheels come with it), no HRG-20.
@@ -401,7 +410,137 @@ if(PAGE)
         message(FATAL_ERROR "charroute FAILED: the plain kart is not packed as before (hires-off)\n${text}")
     endif()
     message("charroute page passed: the kart (kart part, the kit's joint, the switch)")
+
+    # THE KART on Vanilla (K6): a .glb with the kit's kart joint and no kart
+    # gets "Kart: from the player's game data" as on a CHRG route - suggested,
+    # its line on the step Model with "Change" (which opens Advanced at the
+    # box), make-char --figure-only (CHRI bit 5); every build byte for byte
+    # rldpack's with the same switches:
+    #   van-kitfigure  the kit's figure without a skin (the export of the
+    #                  Vanilla template): ${page} --figure-only
+    #   van-kartjoint  the same with its skin: ${page} --rig bind-pose
+    #                  --figure-only (make-char takes a skin only so)
+    #   van-noskin     a plain figure without a skin: ${page} alone - the
+    #                  switches and bytes of before
+    # A plain .glb with a skin has the box off and no line; the author's off
+    # is kept and said.
+    run("rldpack make-char (vanilla, the kit's figure)" "${PACKER}" make-char --model "${DIR}/route-kartjoint-noskin.glb" ${page}
+        --figure-only --out "${DIR}/p-van-kitfigure.rldchar")
+    run("rldpack make-char (vanilla, the kit's joint, skinned)" "${PACKER}" make-char --model "${DIR}/route-kartjoint.glb" ${page}
+        --rig bind-pose --figure-only --out "${DIR}/p-van-kartjoint.rldchar")
+    run("rldpack make-char (vanilla, no skin)" "${PACKER}" make-char --model "${DIR}/route-noskin.glb" ${page}
+        --out "${DIR}/p-van-noskin.rldchar")
+    set(pageDo --do "report ${DIR}/page-van-kitfigure-report.txt" --do "gamekart change")
+    page_route(van-kitfigure vanilla route-kartjoint-noskin.glb p-van-kitfigure.rldchar)
+    set(pageDo --do "report ${DIR}/page-van-kartjoint-report.txt")
+    page_route(van-kartjoint vanilla route-kartjoint.glb p-van-kartjoint.rldchar)
+    set(pageDo --do "report ${DIR}/page-van-noskin-report.txt")
+    page_route(van-noskin vanilla route-noskin.glb p-van-noskin.rldchar)
+    set(pageDo "")
+    page_says(van-kitfigure "make-char [^\n]*--figure-only" "the page did not pass --figure-only on Vanilla")
+    page_says(van-kitfigure "gamekart change: advanced open, card Options, \"Kart: from the player's game data\" shown, in view, focus on the box"
+              "\"Change\" did not open Advanced at the box on Vanilla")
+    foreach(name van-kitfigure van-kartjoint)
+        file(READ "${DIR}/page-${name}-report.txt" text)
+        if(NOT text MATCHES "game kart: on \\(suggested\\), suggested on" OR
+           NOT text MATCHES "vanilla kart: the kit's kart joint, no kart, make-char --figure-only: yes" OR
+           NOT text MATCHES "game kart step line: \"The game adds the original kart from the player's game data \\(a game before 4\\.3 shows a simple grey kart\\)\\.\" \\(shown, with \"Change\"\\)")
+            message(FATAL_ERROR "charroute FAILED: the page (${name}) does not suggest the game's kart with its line\n${text}")
+        endif()
+    endforeach()
+    file(READ "${DIR}/page-van-kitfigure-report.txt" text)
+    if(NOT text MATCHES "--rig bind-pose: no \\(skins 0\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (van-kitfigure) takes a figure without a skin as rigged\n${text}")
+    endif()
+    file(READ "${DIR}/page-van-kartjoint-report.txt" text)
+    if(NOT text MATCHES "--rig bind-pose: yes \\(skins 1\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (van-kartjoint) does not take the skin in its bind pose\n${text}")
+    endif()
+    file(READ "${DIR}/page-van-noskin-report.txt" text)
+    if(NOT text MATCHES "game kart: off \\(suggested\\), suggested off" OR NOT text MATCHES "game kart step line: \"\"[\r\n]" OR
+       NOT text MATCHES "vanilla kart: own \\(no kit joint\\), make-char --figure-only: no, --rig bind-pose: no \\(skins 0\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (van-noskin) does not build a plain figure as before\n${text}")
+    endif()
+    page_check(van-bare vanilla route-bare.glb "")
+    file(READ "${DIR}/page-van-bare-report.txt" text)
+    if(NOT text MATCHES "game kart: off \\(suggested\\), suggested off" OR NOT text MATCHES "game kart step line: \"\"[\r\n]" OR
+       NOT text MATCHES "vanilla kart: own \\(no kit joint\\), make-char --figure-only: no, --rig bind-pose: yes \\(skins 1\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (Vanilla, a plain skinned kart) has the game's kart or its line\n${text}")
+    endif()
+    page_check(van-off vanilla route-kartjoint-noskin.glb "--do;gamekart off")
+    file(READ "${DIR}/page-van-off-report.txt" text)
+    if(NOT text MATCHES "game kart: off \\(chosen\\), suggested on" OR
+       NOT text MATCHES "game kart step line: \"The game will not add a kart - your model is drawn as it is\\.\" \\(shown, with \"Change\"\\)" OR
+       NOT text MATCHES "make-char --figure-only: no")
+        message(FATAL_ERROR "charroute FAILED: the page (Vanilla, the author's off) does not keep and say the choice\n${text}")
+    endif()
+    message("charroute page passed: Vanilla and the game's kart (the kit's figure with and without a skin, a plain figure "
+            "with its bytes of before, a plain skinned one, the author's off)")
     message("charroute page passed: vertex colours psx off gltf")
+
+    # THE COUNTS IN THE MODE CHOSEN (HRG-36): the page's hi-res check counts
+    # what rldpack hires-check --vertex-colors <mode> counts - in PSX blend and
+    # off no HRG-36 (no row, no warning), in glTF its row and warning.
+    foreach(mode psx off gltf)
+        run("rldpack hires-check (route-vcol, ${mode})" "${PACKER}" hires-check "${DIR}/route-vcol.glb" --vertex-colors ${mode})
+        string(REGEX MATCH "hires check: [0-9]+ errors, ([0-9]+) warnings" ignored "${out}")
+        set(packWarn "${CMAKE_MATCH_1}")
+        if(packWarn STREQUAL "")
+            message(FATAL_ERROR "charroute FAILED: rldpack hires-check (${mode}) printed no count\n${out}")
+        endif()
+        if(mode STREQUAL "psx")
+            page_check(count-${mode} hires route-vcol.glb "")
+        else()
+            page_check(count-${mode} hires route-vcol.glb "--do;vcolor ${mode}")
+        endif()
+        file(READ "${DIR}/page-count-${mode}-report.txt" text)
+        if(NOT text MATCHES "\nhires check: usable, [^\n]*, 0 error\\(s\\), ${packWarn} warning\\(s\\), ")
+            message(FATAL_ERROR "charroute FAILED: the page's hi-res check (${mode}) does not count ${packWarn} warning(s) as rldpack does\n${text}")
+        endif()
+        string(FIND "${out}" "HRG-36" packHas)
+        string(FIND "${text}" "hires row: warning HRG-36 " pageHas)
+        if((packHas LESS 0) AND NOT (pageHas LESS 0))
+            message(FATAL_ERROR "charroute FAILED: the page lists HRG-36 in ${mode}, rldpack does not\n${text}")
+        endif()
+        if(NOT (packHas LESS 0) AND (pageHas LESS 0))
+            message(FATAL_ERROR "charroute FAILED: the page does not list HRG-36 in ${mode}, rldpack does\n${text}")
+        endif()
+    endforeach()
+    page_says(count-psx "hires check: usable - [^\n]*, 0 error\\(s\\), 2 warning\\(s\\)" "the log of the check (psx) does not count as rldpack")
+    message("charroute page passed: the hi-res check counts in the mode chosen (psx off gltf as rldpack hires-check)")
+
+    # THE CLASSIC FALLBACK'S WARNINGS: on a CHRG route what the check counts
+    # is shown - make-char's warnings about the model on the step Model as
+    # "Classic fallback: ..." (its notes and infos stay behind Show details),
+    # and the log's "check: ready to build, W warning(s), N note(s)" counts
+    # exactly the warnings and notes the page shows.
+    foreach(name hires-off lowpoly-tex64 kartjoint count-psx van-noskin)
+        file(READ "${DIR}/page-${name}-report.txt" text)
+        string(REGEX MATCHALL "\npage message: [^\t\n]+\t3\t" shownWarn "${text}")
+        string(REGEX MATCHALL "\npage message: [^\t\n]+\t2\t" shownNote "${text}")
+        list(LENGTH shownWarn nWarn)
+        list(LENGTH shownNote nNote)
+        # The last check before the report was written.
+        file(READ "${DIR}/page-${name}.log" logText)
+        string(FIND "${logText}" "page-${name}-report.txt" reportAt)
+        string(SUBSTRING "${logText}" 0 ${reportAt} logText)
+        string(REGEX MATCHALL "check: ready to build, [0-9]+ warning\\(s\\), [0-9]+ note\\(s\\)" checkLines "${logText}")
+        if(NOT checkLines)
+            message(FATAL_ERROR "charroute FAILED: the log of the page (${name}) has no check line before its report\n${logText}")
+        endif()
+        list(GET checkLines -1 lastCheck)
+        if(NOT lastCheck MATCHES "check: ready to build, ${nWarn} warning\\(s\\), ${nNote} note\\(s\\)")
+            message(FATAL_ERROR "charroute FAILED: the page (${name}) shows ${nWarn} warning(s) and ${nNote} note(s), its log says '${lastCheck}'\n${text}")
+        endif()
+    endforeach()
+    file(READ "${DIR}/page-hires-off-report.txt" text)
+    if(NOT text MATCHES "\npage message: model\t3\tClassic fallback: Fitted to Crash size")
+        message(FATAL_ERROR "charroute FAILED: the classic fallback's warning (ply-axes) is not shown on the step Model (hires-off)\n${text}")
+    endif()
+    if(text MATCHES "\npage message: model\t[0-9]\tClassic fallback: The rig was ignored")
+        message(FATAL_ERROR "charroute FAILED: the fallback's info rig-bind-pose is on the step (it stays behind Show details)\n${text}")
+    endif()
+    message("charroute page passed: the classic fallback's warnings on the step, page and log count the same")
 
     # The JPEG kart without the click: refused, the button offered, the
     # HRG-16 line with its fix on the step Model.
@@ -484,6 +623,14 @@ if(PAGE)
     if(NOT text MATCHES "clip shown: jump 0\\.250 90\\.0 paused" OR NOT text MATCHES "advanced: open, card animations" OR
        NOT text MATCHES "hires clip: jump present [0-9.]+" OR NOT text MATCHES "hires summary: clips 12/12 wheels 4/4 joints [1-9]")
         message(FATAL_ERROR "charroute FAILED: the report of the card Animations (clips)\n${text}")
+    endif()
+    # The optional finish clips (4.3): route-wheels.glb has neither - no row,
+    # each says what the game plays after the finish line (no kart part:
+    # podium_1..3 by place, lose).
+    if(NOT text MATCHES "finish clips 0/2[\r\n]" OR text MATCHES "hires row: [a-z]+ HRG-19 " OR
+       NOT text MATCHES "hires clip: finish_win optional, missing - after the finish line: podium_1\\.\\.3 by place \\(shown: podium_1\\)" OR
+       NOT text MATCHES "hires clip: finish_lose optional, missing - after the finish line: lose \\(shown: lose\\)")
+        message(FATAL_ERROR "charroute FAILED: the card Animations does not list the optional finish clips (clips)\n${text}")
     endif()
     file(READ "${DIR}/page-clips-report.txt" text)
     if(NOT text MATCHES "clip shown: bind ")

@@ -1,12 +1,46 @@
-// rs_kit.c - page "Creator Kit": a Blender template made from the user's own game
+// rs_kit.c - the Creator Kit: a Blender template made from the user's own game
+//
+// ITS PLACE: a module of its own (word "kit", rs_module.c) without an entry in
+// the sidebar - it is embedded in the page Character (Rs_ModuleHost): Build a
+// character (step 0) has "Creator Kit" at its top right, and the step Model of
+// every route, while no model is chosen, "No model yet? Start with the
+// Creator Kit." (rs_char.c). Its page is then shown in place of Character's,
+// whose entry stays marked; Back on its step 0 (and the verb "back" there)
+// returns to Build a character (Rs_ShowHost, RS_WM_HOST_RETURN). "page kit" of
+// old scripts opens it there and the log says where it is now (rs_shell.c).
 //
 // The kit is made ON THIS PC from the game files of the person using it, into
 // a folder they choose: the original kart and its wheels (extracted from the
-// game data), a neutral jointed puppet with its skeleton and the twelve clips,
-// the template creator-kit.blend and its demo export, and on request a demo
-// driver to try in the game. Nothing of it comes with Reload Studio, nothing of
-// it may leave that folder (tools/content_guard.py refuses every one of these
-// names in the repository).
+// game data), a neutral jointed puppet with its skeleton and its clips, and
+// a template for each of the three ways of the page Character - Vanilla,
+// Low-Poly, Hi-Res - with its export already set up, and on request a demo
+// driver to try in the game. Nothing of it comes with Reload Studio
+// (tools/content_guard.py refuses every one of these names in the repository).
+//
+// THE WAYS (K9): step 2 chooses "All three ways" (the default) or one of
+// Vanilla, Low-Poly, Hi-Res; only the chosen ways are written. The page
+// Character opens the kit from the step Model of a route with that route's way
+// chosen (Rs_KitChooseWay). The demo driver is built from the Hi-Res template,
+// so its option is there only while the ways chosen include Hi-Res.
+//
+// THE LAYOUT of a kit folder <out> (K4; KIT-OUTPUT-NAMES below):
+//   <out>\NOTICE.txt, CREATOR_KIT.html (the guide), scripts\, the extracted
+//         kit files (kit-kart.glb, kit-wheel.glb, kit-*-gltf.glb, kit-info.json,
+//         kit-extract.txt), classic.glb (Start from an old character)
+//   <out>\<way>\  creator-kit-<way>.blend, creator-kit-<way>-figure.glb (the
+//         figure alone, without a kart: the game puts the kart of the
+//         player's own game under it), NOTICE.txt, creator-kit-report.json;
+//         hires\ also creator-kit-demo-local.glb (the figure on the kit's kart,
+//         for a test on this PC) and, with the demo, demo-puppet.rldchar and
+//         START-DEMO-PUPPE.bat
+//   <way> is vanilla, lowpoly or hires. A way not chosen is left as it was.
+//
+// THE NOTICE (K1): templates/CREATOR_KIT_NOTICE.txt, built into this exe
+// (RS_RES_KIT_NOTICE), is shown as plain text on the step Generate above the
+// button "Generate demo files" - no icon, no warning colour - and written
+// beside the scripts as scripts\CREATOR_KIT_NOTICE.txt, where the generator
+// reads it; the generator writes it as NOTICE.txt into the kit folder and into
+// every way folder.
 //
 // THE GUIDED FLOW, as on the page Character: five steps, each with one main
 // action (the filled button), only what that step needs is shown.
@@ -14,39 +48,45 @@
 //   1 What the kit needs  the game data (found or not, with "How to fix") and
 //                         Blender 5.2 (found, its version, or not); Next
 //   2 Where the kit goes  the output folder (Documents\CTR Reload Creator Kit
-//                         to start with), "Also build a demo driver"; Next
-//   3 Generate            Generate demo files: the three phases with progress
-//                         and Cancel, then the findings with "How to fix"
-//   4 Your kit            the files; Open the template in Blender, the guide,
-//                         Show in folder, Test the demo (in game), Go to Character
+//                         to start with), the ways, "Also build a demo
+//                         driver" (with Hi-Res); Next
+//   3 Generate            the notice; Generate demo files: the three phases
+//                         with progress and Cancel, then the findings with
+//                         "How to fix"
+//   4 Your kit            the files of each way with "Open in Blender"; the
+//                         guide, Show in folder, Test the demo (in game), Go to
+//                         Character; the main action opens the template when
+//                         one way was made, else shows the folder
 //
 // THE CHAIN (Generate): every step a job of the core, in <out>\kit.part:
 //   1 the game data       rldpack kit-extract --game <base> -o <work> --machine
 //                         (tools/rldpack_kit.inc: the kart and the wheel of the
 //                         player's own game data, kit-info.json, kit-extract.txt)
-//   2 the template        Blender: --threads 1 --background --factory-startup
-//                         --python-exit-code 1 --python <scripts>\make_creator_kit.py
-//                         -- --kit <work> --vcol psx (templates/, built into
-//                         this exe and written to <work>\scripts; the setting
-//                         kit.scripts names a folder to take them from instead).
-//                         --threads 1 first: so the .blend has the same bytes
-//                         every run. It writes creator-kit.blend,
-//                         creator-kit-figure.glb (the figure alone, no kart: the
-//                         file to share) and creator-kit-demo-local.glb (with
-//                         the kit's kart: for this PC only)
+//   2 the templates       one Blender start for every way chosen: --threads 1
+//                         --background --factory-startup --python-exit-code 1
+//                         --python <scripts>\make_creator_kit.py -- --kit <work>
+//                         --routes <vanilla,lowpoly,hires | one of them>
+//                         (templates/, built into this exe and written to
+//                         <work>\scripts; the setting kit.scripts names a
+//                         folder to take them from instead). --threads 1
+//                         first: so the .blend has the same bytes every run.
+//                         It writes <work>\<way>\ for every way chosen (THE
+//                         LAYOUT). The colour mode of each way is the
+//                         generator's (no --vcol).
 //                         START FROM AN OLD CHARACTER (step 2, optional, the
 //                         setting kit.classic): before Blender rldpack
 //                         char-export <old.rldchar> -o <work>\classic.glb (its
 //                         model, --source auto), and the generator gets
 //                         --classic <work>\classic.glb (a hidden collection
 //                         Classic in the template, templates/creator_kit_classic.py)
-//   3 the demo driver     (on request) the build of the page Character, route
-//                         Hi-Res, from creator-kit-demo-local.glb: [hires-upscale]
+//   3 the demo driver     (on request, Hi-Res chosen) the build of the page
+//                         Character, route Hi-Res, from
+//                         hires\creator-kit-demo-local.glb: [hires-upscale]
 //                         make-char -> hires-add, with the same switches and
 //                         suggestions (the kit's kart is its kart part:
 //                         hires-add --kart-part, the podium and the menu leave
-//                         it out); START-DEMO-PUPPE.bat with the command of
-//                         "Test in game" (Rs_TestCharacterCommand)
+//                         it out) into hires\; START-DEMO-PUPPE.bat with the
+//                         command of "Test in game" (Rs_TestCharacterCommand)
 // Only when every step is done do the files replace those of an earlier kit
 // in <out>; a failed or cancelled run deletes kit.part and leaves an earlier
 // kit as it was.
@@ -58,12 +98,16 @@
 // THE GUIDE (docs/CREATOR_KIT.html, built into this exe) is written next to the
 // kit, or into Rs_TempDir before there is one, and opened in the browser.
 //
-// AUTOMATION (verbs of the page "kit"): step <0-4>, next, back, game <folder>,
-// blender <exe>, out <folder>, demo on|off, generate (waits), cancel, open
-// guide|template|folder (logs, opens nothing), test-demo (logs the command,
-// starts nothing), report <file>. The report: one tab line per fact - step,
-// game, game-text, blender, blender-text, out, out-text, demo, phase (x3),
-// result, msg (each finding), file (each file of the kit).
+// AUTOMATION (verbs of the page "kit"): step <0-4>, next, back (on step 0: back
+// to Character, Build a character), game <folder>,
+// blender <exe>, out <folder>, ways all|vanilla|lowpoly|hires, demo on|off,
+// generate (waits), cancel, open guide|folder|template [<way>] (logs, opens
+// nothing), test-demo (logs the command, starts nothing), report <file>. The
+// report: one tab line per fact - step, game, game-text, blender,
+// blender-text, out, out-text, ways, demo (on|off, and offered|not offered),
+// notice (shown|hidden and its text, each line end written as \n), phase
+// (x3), result, msg (each finding), file (each file of the kit; those of
+// scripts\ and of the way folders with their folder before a backslash).
 
 #include "reloadstudio.h"
 #include "rs_charroute.h"
@@ -89,20 +133,32 @@
 // The files the kit writes into its folder. tools/content_guard.py refuses
 // every one of these names in the repository; the ctest reloadstudio_kit
 // checks that (KIT-OUTPUT-NAMES, keep the markers).
+// NOTICE.txt (the notice, no game data) is not among them.
 // KIT-OUTPUT-NAMES BEGIN
 static const wchar_t *const g_kitFiles[] = {
     L"kit-kart.glb", L"kit-wheel.glb", L"kit-kart-gltf.glb", L"kit-wheel-gltf.glb", L"kit-info.json",
-    L"kit-extract.txt", L"creator-kit.blend", L"creator-kit-figure.glb", L"creator-kit-demo-local.glb",
-    L"creator-kit-report.json", L"demo-puppet.rldchar", L"START-DEMO-PUPPE.bat", L"classic.glb",
+    L"kit-extract.txt", L"creator-kit-vanilla.blend", L"creator-kit-vanilla-figure.glb",
+    L"creator-kit-lowpoly.blend", L"creator-kit-lowpoly-figure.glb", L"creator-kit-hires.blend",
+    L"creator-kit-hires-figure.glb", L"creator-kit-demo-local.glb", L"creator-kit-report.json",
+    L"demo-puppet.rldchar", L"START-DEMO-PUPPE.bat", L"classic.glb",
 };
 // KIT-OUTPUT-NAMES END
 #define KIT_WORK      L"kit.part"
-#define KIT_BLEND     L"creator-kit.blend"
+#define KIT_BLEND_OLD L"creator-kit.blend"      // the one template of a kit before the ways
 #define KIT_DEMO_GLB  L"creator-kit-demo-local.glb"
 #define KIT_DEMO      L"demo-puppet.rldchar"
 #define KIT_BAT       L"START-DEMO-PUPPE.bat"
 #define KIT_GUIDE     L"CREATOR_KIT.html"
 #define KIT_CLASSIC   L"classic.glb"
+#define KIT_NOTICE    L"NOTICE.txt"
+
+// THE WAYS: the folder word of each route (RS_ROUTE_*), the order the
+// generator writes them in; their names as the page Character says them.
+static const wchar_t *const g_wayWords[RS_ROUTES] = { L"vanilla", L"lowpoly", L"hires" };
+static const wchar_t *const g_wayNames[RS_ROUTES] = { L"Vanilla", L"Low-Poly", L"Hi-Res" };
+// The ways chosen: RS_KIT_WAYS_ALL or one route. Outside g_kit: the page
+// Character may choose before the page is made (Rs_KitChooseWay).
+static int g_kitWays = RS_KIT_WAYS_ALL;
 
 // The scripts and the guide built into this exe (reloadstudio_kit.rc, made by
 // CMakeLists.txt from templates/ and docs/).
@@ -112,6 +168,7 @@ static const struct { int id; const wchar_t *name; } g_kitScripts[] = {
     { RS_RES_KIT_CLIPS, L"creator_kit_clips.py" },
     { RS_RES_KIT_STANDIN, L"creator_kit_standin.py" },
     { RS_RES_KIT_CLASSIC, L"creator_kit_classic.py" },
+    { RS_RES_KIT_NOTICE, L"CREATOR_KIT_NOTICE.txt" },   // the generator reads it beside its script
 };
 #define KIT_SCRIPT_COUNT ((int)(sizeof(g_kitScripts) / sizeof(g_kitScripts[0])))
 
@@ -125,7 +182,12 @@ enum {
     KIT_ID_PHASE,               // .. +2
     KIT_ID_PROGRESS = 140, KIT_ID_MSGS, KIT_ID_DETAILS_BOX, KIT_ID_DETAILS,
     KIT_ID_FILES, KIT_ID_NEXT_TEXT,
-    KIT_ID_BACK = 160, KIT_ID_MAIN, KIT_ID_CANCEL, KIT_ID_GUIDE, KIT_ID_FOLDER, KIT_ID_TEST_DEMO, KIT_ID_TO_CHAR
+    KIT_ID_BACK = 160, KIT_ID_MAIN, KIT_ID_CANCEL, KIT_ID_GUIDE, KIT_ID_FOLDER, KIT_ID_TEST_DEMO, KIT_ID_TO_CHAR,
+    KIT_ID_WAYS_HEAD = 170,
+    KIT_ID_WAYS,                // the choice: All three ways, Vanilla, Low-Poly, Hi-Res
+    KIT_ID_NOTICE = 175,        // the notice on the step Generate (K1)
+    KIT_ID_WAY_FILES,           // .. +2: the files of a way on step 4
+    KIT_ID_WAY_OPEN = 179       // .. +2: its "Open in Blender"
 };
 
 // What a job of the page is.
@@ -163,8 +225,11 @@ static struct {
     HWND blHead, blState, blFix, blBtn;
     HWND outHead, outEdit, outBtn, outState, outFix, demoBox;
     HWND classicHead, classicEdit, classicBtn, classicNote;
+    HWND waysHead, ways;                     // step 2: the choice All three ways, Vanilla, Low-Poly, Hi-Res
+    HWND notice;                             // step 3: the notice (K1), plain text
     HWND phaseLbl[KIT_PHASES], progress, msgs, detailsBox, details;
-    HWND files, nextText;
+    HWND files, nextText;                    // step 4: the files of the kit folder itself, what next
+    HWND wayFiles[RS_ROUTES], wayOpen[RS_ROUTES];  // step 4: the files of each way made, "Open in Blender"
     HWND back, main, cancel, guide, folder, testDemo, toChar;
     int quiet;                       // the page itself sets a field: no check
 
@@ -185,6 +250,7 @@ static struct {
     wchar_t outPath[KIT_PATH];
     wchar_t outText[KIT_TEXT], outFixText[KIT_TEXT];
     int demo;
+    int runWays;                     // the ways of this run / of the kit made last (RS_KIT_WAYS_ALL or a route)
     wchar_t classic[KIT_PATH];       // "Start from an old character": the .rldchar, "" = none
     int classicUsed;                 // this run exported it (classic.glb in the kit)
 
@@ -309,6 +375,87 @@ static int Kit_WriteResource(int id, const wchar_t *path)
     if (!ok)
         DeleteFileW(path);
     return ok;
+}
+
+// THE NOTICE: the text built into this exe (templates/CREATOR_KIT_NOTICE.txt,
+// UTF-8), its line ends as the controls want them ("\r\n"), the line ends at
+// its end left out. Never NULL (Rs_Free it); "" if the resource is missing.
+static wchar_t *Kit_NoticeText(void)
+{
+    HRSRC r = FindResourceW(NULL, MAKEINTRESOURCEW(RS_RES_KIT_NOTICE), MAKEINTRESOURCEW(10)); // RT_RCDATA
+    HGLOBAL g = r ? LoadResource(NULL, r) : NULL;
+    const char *p = g ? (const char *)LockResource(g) : NULL;
+    DWORD n = r ? SizeofResource(NULL, r) : 0;
+    wchar_t *raw, *out;
+    size_t i, k = 0, len;
+    if (!p || !n)
+        return Rs_Dup(L"");
+    if (n >= 3 && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
+        p += 3;
+        n -= 3;
+    }
+    raw = Rs_FromUtf8(p, (int)n);
+    len = wcslen(raw);
+    out = Rs_Alloc((len * 2 + 1) * sizeof(wchar_t));
+    for (i = 0; i < len; i++) {
+        if (raw[i] == L'\r')
+            continue;
+        if (raw[i] == L'\n')
+            out[k++] = L'\r';
+        out[k++] = raw[i];
+    }
+    while (k > 0 && (out[k - 1] == L'\r' || out[k - 1] == L'\n' || out[k - 1] == L' '))
+        k--;
+    out[k] = 0;
+    Rs_Free(raw);
+    return out;
+}
+
+// THE WAYS.
+static int Kit_WayOn(int ways, int route)
+{
+    return ways == RS_KIT_WAYS_ALL || ways == route;
+}
+
+// The demo driver is built from the Hi-Res template: offered while it is chosen.
+static int Kit_DemoOffered(void)
+{
+    return Kit_WayOn(g_kitWays, RS_ROUTE_HIRES);
+}
+
+// <dir>\<way>\<name>; name NULL or "" = the way's folder.
+static void Kit_WayPath(wchar_t *out, int cap, const wchar_t *dir, int route, const wchar_t *name)
+{
+    wchar_t sub[KIT_PATH];
+    Rs_PathJoin(sub, KIT_PATH, dir, g_wayWords[route]);
+    if (name && name[0])
+        Rs_PathJoin(out, cap, sub, name);
+    else
+        Kit_Copy(out, cap, sub);
+}
+
+// creator-kit-<way>.blend, creator-kit-<way>-figure.glb.
+static void Kit_WayBlend(wchar_t *out, int cap, int route)
+{
+    swprintf(out, cap, L"creator-kit-%ls.blend", g_wayWords[route]);
+}
+
+static void Kit_WayFigure(wchar_t *out, int cap, int route)
+{
+    swprintf(out, cap, L"creator-kit-%ls-figure.glb", g_wayWords[route]);
+}
+
+// The ways as the generator takes them (--routes) and as the report says them.
+static void Kit_WaysList(int ways, wchar_t *out, int cap)
+{
+    int r;
+    out[0] = 0;
+    for (r = 0; r < RS_ROUTES; r++)
+        if (Kit_WayOn(ways, r)) {
+            if (out[0])
+                wcsncat(out, L",", (size_t)cap - wcslen(out) - 1);
+            wcsncat(out, g_wayWords[r], (size_t)cap - wcslen(out) - 1);
+        }
 }
 
 static void Kit_MsgClear(void)
@@ -545,12 +692,21 @@ static int Kit_HasGit(const wchar_t *path)
     return 0;
 }
 
+// A kit is in the folder: its extracted files, a template of a way, or the
+// one template of a kit made before the ways.
 static int Kit_HasKit(const wchar_t *dir)
 {
-    wchar_t probe[KIT_PATH];
-    Rs_PathJoin(probe, KIT_PATH, dir, KIT_BLEND);
+    wchar_t probe[KIT_PATH], name[64];
+    int r;
+    Rs_PathJoin(probe, KIT_PATH, dir, KIT_BLEND_OLD);
     if (Rs_FileExists(probe))
         return 1;
+    for (r = 0; r < RS_ROUTES; r++) {
+        Kit_WayBlend(name, 64, r);
+        Kit_WayPath(probe, KIT_PATH, dir, r, name);
+        if (Rs_FileExists(probe))
+            return 1;
+    }
     Rs_PathJoin(probe, KIT_PATH, dir, L"kit-info.json");
     return Rs_FileExists(probe);
 }
@@ -573,7 +729,7 @@ static void Kit_CheckOut(void)
     } else if (Kit_HasGit(g_kit.outPath)) {
         g_kit.out = KIT_OUT_GIT;
         Kit_Copy(g_kit.outText, KIT_TEXT,
-                 L"This folder is inside a git repository. The kit holds data from your game and must stay out of any repository.");
+                 L"This folder is inside a git repository. The kit holds files from your game, so it is made outside of repositories.");
         Kit_Copy(g_kit.outFixText, KIT_TEXT, L"Choose a folder outside it.");
     } else if (g_kit.game == KIT_GAME_OK && Kit_Inside(g_kit.outPath, g_kit.gameBase)) {
         g_kit.out = KIT_OUT_GAME;
@@ -607,6 +763,7 @@ static void Kit_SetPhase(int ph, int state)
 }
 
 static void Kit_EndRun(HWND page, int result);
+static int Kit_Generate(HWND page);
 
 static int Kit_StartRldpack(HWND page, int kind, const wchar_t *const *args, int n)
 {
@@ -626,9 +783,10 @@ static int Kit_StartExtract(HWND page)
 
 static int Kit_StartBlender(HWND page)
 {
-    wchar_t script[KIT_PATH], cmd[KIT_PATH * 3];
+    wchar_t script[KIT_PATH], cmd[KIT_PATH * 3], ways[64];
     Kit_SetPhase(KIT_PH_BLENDER, KIT_ST_RUNNING);
-    Kit_Copy(g_kit.progressText, KIT_TEXT, L"Building the template in Blender...");
+    Kit_Copy(g_kit.progressText, KIT_TEXT, g_kit.runWays == RS_KIT_WAYS_ALL ? L"Building the templates in Blender..."
+                                                                             : L"Building the template in Blender...");
     Rs_PathJoin(script, KIT_PATH, g_kit.scripts, L"make_creator_kit.py");
     cmd[0] = 0;
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--threads");
@@ -642,8 +800,10 @@ static int Kit_StartBlender(HWND page)
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--");
     Rs_AppendArg(cmd, KIT_PATH * 3, L"--kit");
     Rs_AppendArg(cmd, KIT_PATH * 3, g_kit.work);
-    Rs_AppendArg(cmd, KIT_PATH * 3, L"--vcol");
-    Rs_AppendArg(cmd, KIT_PATH * 3, L"psx");
+    // The ways chosen, always named (K5); the colour mode of each is the generator's.
+    Kit_WaysList(g_kit.runWays, ways, 64);
+    Rs_AppendArg(cmd, KIT_PATH * 3, L"--routes");
+    Rs_AppendArg(cmd, KIT_PATH * 3, ways);
     if (g_kit.classicUsed) {
         wchar_t glb[KIT_PATH];
         Rs_PathJoin(glb, KIT_PATH, g_kit.work, KIT_CLASSIC);
@@ -668,7 +828,7 @@ static int Kit_StartDemo(HWND page)
 
     Kit_SetPhase(KIT_PH_DEMO, KIT_ST_RUNNING);
     Kit_Copy(g_kit.progressText, KIT_TEXT, L"Building the demo driver...");
-    Rs_PathJoin(glb, KIT_PATH, g_kit.work, KIT_DEMO_GLB);
+    Kit_WayPath(glb, KIT_PATH, g_kit.work, RS_ROUTE_HIRES, KIT_DEMO_GLB);
     memset(&c, 0, sizeof(c));
     RsHires_CheckFile(glb, &c);
     // As the page Character: the suggested vertex colour mode is the check's
@@ -689,7 +849,7 @@ static int Kit_StartDemo(HWND page)
     RsHires_CheckFree(&c);
     if (errors || !read)
         return 0;
-    Rs_PathJoin(g_kit.demoClassic, KIT_PATH, g_kit.work, KIT_DEMO L".classic.part");
+    Kit_WayPath(g_kit.demoClassic, KIT_PATH, g_kit.work, RS_ROUTE_HIRES, KIT_DEMO L".classic.part");
     Kit_Copy(g_kit.demoModel, KIT_PATH, glb);
     g_kit.demoDerived[0] = 0;
     if (g_kit.demoUpscale) {
@@ -740,7 +900,7 @@ static int Kit_StartPack(HWND page)
     const wchar_t *args[RS_HIRES_PACK_ARGS];
     wchar_t out[KIT_PATH];
     int n;
-    Rs_PathJoin(out, KIT_PATH, g_kit.work, KIT_DEMO);
+    Kit_WayPath(out, KIT_PATH, g_kit.work, RS_ROUTE_HIRES, KIT_DEMO);
     n = RsHires_PackArgsParts(g_kit.demoClassic, g_kit.demoModel, out, g_kit.demoVcol, g_kit.demoParts, args);
     return Kit_StartRldpack(page, KIT_JOB_PACK, args, n);
 }
@@ -752,7 +912,7 @@ static int Kit_StartClassicAfterUpscale(HWND page)
     const wchar_t *fallback[RS_CHARHIRES_FALLBACK_ARGS];
     wchar_t glb[KIT_PATH];
     int k = 0, f, j;
-    Rs_PathJoin(glb, KIT_PATH, g_kit.work, KIT_DEMO_GLB);
+    Kit_WayPath(glb, KIT_PATH, g_kit.work, RS_ROUTE_HIRES, KIT_DEMO_GLB);
     Kit_Copy(g_kit.demoModel, KIT_PATH, g_kit.demoDerived);
     args[k++] = L"make-char";
     args[k++] = L"--machine";
@@ -786,7 +946,7 @@ static int Kit_WriteBat(void)
     wchar_t demo[KIT_PATH], bat[KIT_PATH], why[KIT_TEXT];
     wchar_t *cmd = Rs_Alloc(8192 * sizeof(wchar_t)), *text = Rs_Alloc(9000 * sizeof(wchar_t));
     int ok;
-    Rs_PathJoin(demo, KIT_PATH, g_kit.outPath, KIT_DEMO);   // where it will be
+    Kit_WayPath(demo, KIT_PATH, g_kit.outPath, RS_ROUTE_HIRES, KIT_DEMO);   // where it will be
     ok = Rs_TestCharacterCommand(demo, 14, cmd, 8192);
     Kit_Copy(why, KIT_TEXT, L"");
     if (ok) {
@@ -794,7 +954,7 @@ static int Kit_WriteBat(void)
                  L"@echo off\r\nrem The demo driver of the Creator Kit, made by Reload Studio from your own game data.\r\n"
                  L"rem Starts CTR Reload with it in a race. It never appears in the driver select.\r\n"
                  L"chcp 65001 >nul\r\n%ls\r\n", cmd);
-        Rs_PathJoin(bat, KIT_PATH, g_kit.work, KIT_BAT);
+        Kit_WayPath(bat, KIT_PATH, g_kit.work, RS_ROUTE_HIRES, KIT_BAT);
         ok = Rs_WriteTextFile(bat, text);
     } else {
         Kit_Msg(RS_SEV_WARNING, L"START-DEMO-PUPPE.bat was not written.", why);
@@ -804,20 +964,24 @@ static int Kit_WriteBat(void)
     return ok;
 }
 
-// Moves every file of kit.part (and its scripts) into the output folder.
+// Moves every file of kit.part, of its scripts and of its way folders into the
+// output folder (a way folder of the output that this run did not make stays
+// as it was).
 static int Kit_MoveOut(void)
 {
     wchar_t pattern[KIT_PATH], src[KIT_PATH], dst[KIT_PATH], sub[KIT_PATH], subOut[KIT_PATH];
     WIN32_FIND_DATAW fd;
     HANDLE h;
     int pass, ok = 1;
-    for (pass = 0; pass < 2; pass++) {
+    // Pass 0 the folder itself, 1 scripts, 2.. the way folders.
+    for (pass = 0; pass < 2 + RS_ROUTES; pass++) {
         const wchar_t *from = pass ? sub : g_kit.work, *to = pass ? subOut : g_kit.outPath;
         if (pass) {
-            Rs_PathJoin(sub, KIT_PATH, g_kit.work, L"scripts");
-            Rs_PathJoin(subOut, KIT_PATH, g_kit.outPath, L"scripts");
+            const wchar_t *word = pass == 1 ? L"scripts" : g_wayWords[pass - 2];
+            Rs_PathJoin(sub, KIT_PATH, g_kit.work, word);
+            Rs_PathJoin(subOut, KIT_PATH, g_kit.outPath, word);
             if (!Rs_DirExists(sub))
-                break;
+                continue;
             CreateDirectoryW(subOut, NULL);
         }
         Rs_PathJoin(pattern, KIT_PATH, from, L"*");
@@ -872,16 +1036,24 @@ static int Kit_Next(HWND page)
             return -1;
         }
         return 1;
-    case KIT_JOB_BLENDER:
-        Rs_PathJoin(probe, KIT_PATH, g_kit.work, KIT_BLEND);
-        if (!Rs_FileExists(probe)) {
-            Kit_Msg(RS_SEV_ERROR, L"Blender ended without writing creator-kit.blend.",
-                    L"Click Show details to see everything Blender printed.");
-            Kit_SetPhase(KIT_PH_BLENDER, KIT_ST_FAILED);
-            return -1;
+    case KIT_JOB_BLENDER: {
+        // Every way chosen has its template and its figure export.
+        int r;
+        for (r = 0; r < RS_ROUTES; r++) {
+            wchar_t name[64], text[KIT_TEXT];
+            if (!Kit_WayOn(g_kit.runWays, r))
+                continue;
+            Kit_WayBlend(name, 64, r);
+            Kit_WayPath(probe, KIT_PATH, g_kit.work, r, name);
+            if (!Rs_FileExists(probe)) {
+                swprintf(text, KIT_TEXT, L"Blender ended without writing %ls\\%ls.", g_wayWords[r], name);
+                Kit_Msg(RS_SEV_ERROR, text, L"Click Show details to see everything Blender printed.");
+                Kit_SetPhase(KIT_PH_BLENDER, KIT_ST_FAILED);
+                return -1;
+            }
         }
         Kit_SetPhase(KIT_PH_BLENDER, KIT_ST_OK);
-        if (!g_kit.demo) {
+        if (!g_kit.demo || !Kit_WayOn(g_kit.runWays, RS_ROUTE_HIRES)) {
             Kit_SetPhase(KIT_PH_DEMO, KIT_ST_SKIPPED);
             return 0;
         }
@@ -892,6 +1064,7 @@ static int Kit_Next(HWND page)
             return -1;
         }
         return 1;
+    }
     case KIT_JOB_UPSCALE:
         return Kit_StartClassicAfterUpscale(page) ? 1 : -1;
     case KIT_JOB_CLASSIC:
@@ -901,7 +1074,7 @@ static int Kit_Next(HWND page)
         }
         return Kit_StartPack(page) ? 1 : -1;
     case KIT_JOB_PACK:
-        Rs_PathJoin(probe, KIT_PATH, g_kit.work, KIT_DEMO);
+        Kit_WayPath(probe, KIT_PATH, g_kit.work, RS_ROUTE_HIRES, KIT_DEMO);
         if (!Rs_FileExists(probe)) {
             Kit_SetPhase(KIT_PH_DEMO, KIT_ST_FAILED);
             return -1;
@@ -1096,6 +1269,8 @@ static int Kit_Generate(HWND page)
         Kit_Msg(RS_SEV_ERROR, g_kit.outText, g_kit.outFixText);
         return 0;
     }
+    // The ways of this run: those chosen now (step 4 lists what it made).
+    g_kit.runWays = g_kitWays;
     Kit_ClassicRead();
     g_kit.classicUsed = 0;
     if (g_kit.classic[0]) {
@@ -1183,10 +1358,13 @@ static void Kit_OpenGuide(void)
         Rs_Tell(Rs_MainWindow(), L"Creator Kit", L"The guide could not be opened. It is CREATOR_KIT.html in the folder of your kit.");
 }
 
-static void Kit_OpenTemplate(void)
+// The template of a way (RS_ROUTE_*) in Blender.
+static void Kit_OpenTemplate(int route)
 {
-    wchar_t blend[KIT_PATH], params[KIT_PATH + 8];
-    Rs_PathJoin(blend, KIT_PATH, g_kit.outPath, KIT_BLEND);
+    wchar_t blend[KIT_PATH], name[64], dir[KIT_PATH], params[KIT_PATH + 8], text[KIT_TEXT];
+    Kit_WayBlend(name, 64, route);
+    Kit_WayPath(blend, KIT_PATH, g_kit.outPath, route, name);
+    Kit_WayPath(dir, KIT_PATH, g_kit.outPath, route, NULL);
     if (Rs_Automating()) {
         Rs_AutoLog(L"  open: template %ls (%ls) with %ls", blend, Rs_FileExists(blend) ? L"exists" : L"missing",
                    g_kit.blenderPath);
@@ -1194,14 +1372,25 @@ static void Kit_OpenTemplate(void)
     }
     swprintf(params, KIT_PATH + 8, L"\"%ls\"", blend);
     if (!Rs_FileExists(blend) || !g_kit.blenderPath[0] ||
-        (INT_PTR)ShellExecuteW(NULL, L"open", g_kit.blenderPath, params, g_kit.outPath, SW_SHOWNORMAL) <= 32)
-        Rs_Tell(Rs_MainWindow(), L"Creator Kit", L"Blender could not be started with the template. Open creator-kit.blend in Blender yourself.");
+        (INT_PTR)ShellExecuteW(NULL, L"open", g_kit.blenderPath, params, dir, SW_SHOWNORMAL) <= 32) {
+        swprintf(text, KIT_TEXT, L"Blender could not be started with the template. Open %ls\\%ls in Blender yourself.",
+                 g_wayWords[route], name);
+        Rs_Tell(Rs_MainWindow(), L"Creator Kit", text);
+    }
+}
+
+// The way the main action of step 4 opens: the one way made, else none (-1:
+// it shows the folder).
+static int Kit_OneWay(void)
+{
+    return g_kit.runWays == RS_KIT_WAYS_ALL ? -1 : g_kit.runWays;
 }
 
 static void Kit_OpenFolder(void)
 {
     wchar_t blend[KIT_PATH], params[KIT_PATH + 16];
-    Rs_PathJoin(blend, KIT_PATH, g_kit.outPath, KIT_BLEND);
+    // The folder, with NOTICE.txt marked.
+    Rs_PathJoin(blend, KIT_PATH, g_kit.outPath, KIT_NOTICE);
     if (Rs_Automating()) {
         Rs_AutoLog(L"  open: folder %ls (%ls)", g_kit.outPath, Rs_DirExists(g_kit.outPath) ? L"exists" : L"missing");
         return;
@@ -1213,7 +1402,7 @@ static void Kit_OpenFolder(void)
 static void Kit_TestDemo(void)
 {
     wchar_t demo[KIT_PATH], why[KIT_TEXT];
-    Rs_PathJoin(demo, KIT_PATH, g_kit.outPath, KIT_DEMO);
+    Kit_WayPath(demo, KIT_PATH, g_kit.outPath, RS_ROUTE_HIRES, KIT_DEMO);
     if (!Rs_TestCharacter(demo, RS_ROUTE_HIRES, why, KIT_TEXT))
         Kit_Msg(RS_SEV_ERROR, L"The demo driver could not be started.", why);
 }
@@ -1267,31 +1456,49 @@ static void Kit_Update(void)
     Kit_SetLabel(g_kit.progress, g_kit.progressText, RS_COL_MUTED);
     if (Kit_Checked(g_kit.detailsBox) && g_kit.details)
         Rs_SetText(g_kit.details, g_kit.raw ? g_kit.raw : L"");
-    // Step 4
+    // Step 4: the files of the kit folder itself, then those of each way made.
     {
         wchar_t list[KIT_PATH * 2];
+        const int made = g_kit.result == KIT_RES_OK;
+        // What only that way has; the files every way has are said above them.
+        static const wchar_t *const what[RS_ROUTES] = {
+            L"within the limits of the classic model; the game poses it by itself",
+            L"within the limits of Low-Poly, with the clips the route plays",
+            L"12 clips + 2 optional finish clips; creator-kit-demo-local.glb - your figure on the kart from your game "
+            L"files, for a test on this PC"
+        };
         swprintf(list, KIT_PATH * 2,
-                 L"In %ls:\r\n  creator-kit.blend - the template: the puppet, its skeleton and 12 clips, your kart\r\n"
-                 L"  creator-kit-figure.glb - your figure without a kart: safe to share, the game adds its own kart\r\n"
-                 L"  creator-kit-demo-local.glb - your figure with the kart from your game: keep it to yourself\r\n"
-                 L"  kit-kart.glb, kit-wheel.glb, kit-info.json, kit-extract.txt - the kart and its wheels from your game\r\n"
-                 L"%ls%ls  CREATOR_KIT.html - the guide; scripts - how the template was made",
-                 g_kit.outPath, g_kit.phase[KIT_PH_DEMO] == KIT_ST_OK
-                                    ? L"  demo-puppet.rldchar, START-DEMO-PUPPE.bat - the demo driver and its start\r\n"
-                                    : L"",
-                 g_kit.classicUsed && g_kit.result == KIT_RES_OK
-                     ? L"  classic.glb - your old character, in the template's hidden collection Classic\r\n"
-                     : L"");
+                 L"In %ls:\r\n"
+                 L"  NOTICE.txt - the notice; CREATOR_KIT.html - the guide; scripts - how the templates were made\r\n"
+                 L"  kit-kart.glb, kit-wheel.glb, kit-info.json, kit-extract.txt - the kart and its wheels from your game files\r\n"
+                 L"%ls"
+                 L"In the folder of each way: creator-kit-<way>.blend - the template (the puppet, its skeleton, the kart from "
+                 L"your game files); creator-kit-<way>-figure.glb - your figure without the kart, every player's game adds the "
+                 L"kart from their own game; NOTICE.txt; creator-kit-report.json - what the generator checked",
+                 g_kit.outPath,
+                 g_kit.classicUsed && made ? L"  classic.glb - your old character, in the hidden collection Classic of the templates\r\n"
+                                           : L"");
         Rs_SetText(g_kit.files, list);
+        for (i = 0; i < RS_ROUTES; i++) {
+            swprintf(list, KIT_PATH * 2, L"%ls - %ls\\ - %ls%ls", g_wayNames[i], g_wayWords[i], what[i],
+                     i == RS_ROUTE_HIRES && g_kit.phase[KIT_PH_DEMO] == KIT_ST_OK
+                         ? L"; demo-puppet.rldchar, START-DEMO-PUPPE.bat - the demo driver and its start"
+                         : L"");
+            Rs_SetText(g_kit.wayFiles[i], list);
+        }
     }
     // The bar.
-    Kit_Show(g_kit.back, s > 0 && !running);
+    // Back on step 0 leaves the kit for its host (Character, Build a character).
+    Kit_Show(g_kit.back, (s > 0 || Rs_ModuleHost(Rs_PageIdOf(g_kit.page)) >= 0) && !running);
     Kit_Show(g_kit.cancel, running);
     Kit_Show(g_kit.guide, s == 0 || s == 4);
-    Kit_Show(g_kit.folder, s == 4);
+    // Step 4: the main action opens the template when one way was made, else
+    // it shows the folder (and the button of its own goes).
+    Kit_Show(g_kit.folder, s == 4 && Kit_OneWay() >= 0);
     Kit_Show(g_kit.testDemo, s == 4 && g_kit.phase[KIT_PH_DEMO] == KIT_ST_OK);
     Kit_Show(g_kit.toChar, s == 4);
-    Rs_SetText(g_kit.main, s == 3 ? L"Generate demo files" : s == 4 ? L"Open the template in Blender" : L"Next");
+    Rs_SetText(g_kit.main, s == 3 ? L"Generate demo files"
+                           : s == 4 ? (Kit_OneWay() >= 0 ? L"Open the template in Blender" : L"Show in folder") : L"Next");
     Kit_Enable(g_kit.main, !running && (s == 0 || (s == 1 && g_kit.game == KIT_GAME_OK && g_kit.blender == KIT_BL_OK) ||
                                         (s == 2 && g_kit.out == KIT_OUT_OK) || (s == 3 && Kit_Ready()) || s == 4));
     // What each step shows.
@@ -1309,7 +1516,11 @@ static void Kit_Update(void)
     Kit_Show(g_kit.outBtn, s == 2);
     Kit_Show(g_kit.outState, s == 2);
     Kit_Show(g_kit.outFix, s == 2 && g_kit.outFixText[0]);
-    Kit_Show(g_kit.demoBox, s == 2);
+    Kit_Show(g_kit.waysHead, s == 2);
+    Kit_Show(g_kit.ways, s == 2);
+    if (g_kit.ways && (int)SendMessageW(g_kit.ways, CB_GETCURSEL, 0, 0) != (g_kitWays == RS_KIT_WAYS_ALL ? 0 : g_kitWays + 1))
+        SendMessageW(g_kit.ways, CB_SETCURSEL, (WPARAM)(g_kitWays == RS_KIT_WAYS_ALL ? 0 : g_kitWays + 1), 0);
+    Kit_Show(g_kit.demoBox, s == 2 && Kit_DemoOffered());
     Kit_Show(g_kit.classicHead, s == 2);
     Kit_Show(g_kit.classicEdit, s == 2);
     Kit_Show(g_kit.classicBtn, s == 2);
@@ -1320,7 +1531,13 @@ static void Kit_Update(void)
     Kit_Show(g_kit.msgs, s == 3 && !Kit_Checked(g_kit.detailsBox));
     Kit_Show(g_kit.detailsBox, s == 3);
     Kit_Show(g_kit.details, s == 3 && Kit_Checked(g_kit.detailsBox));
+    Kit_Show(g_kit.notice, s == 3);
     Kit_Show(g_kit.files, s == 4);
+    for (i = 0; i < RS_ROUTES; i++) {
+        const int shown = s == 4 && Kit_WayOn(g_kit.runWays, i);
+        Kit_Show(g_kit.wayFiles[i], shown);
+        Kit_Show(g_kit.wayOpen[i], shown);
+    }
     Kit_Show(g_kit.nextText, s == 4);
 }
 
@@ -1343,14 +1560,15 @@ static void Kit_Create(HWND page)
     g_kit.demoVcol = -1;
     for (i = 0; i < KIT_STEPS; i++)
         g_kit.stepLbl[i] = Rs_Label(page, KIT_ID_STEP + i, g_stepTitles[i], RS_FONT_BODY);
+    g_kit.runWays = g_kitWays;
     g_kit.intro = Rs_Label(page, KIT_ID_INTRO,
-        L"The Creator Kit is a ready Blender template for a driver of your own, made on this PC from your own game files:\r\n\r\n"
-        L"  \x2022  the original kart and its wheels, from your game data, in high resolution\r\n"
-        L"  \x2022  a neutral jointed puppet with a skeleton and the 12 clips the game plays\r\n"
-        L"  \x2022  the template creator-kit.blend with the export already set up\r\n"
+        L"The Creator Kit gives you ready Blender templates for a driver of your own, made on this PC from your own game files:\r\n\r\n"
+        L"  \x2022  a template for each way of the page Character - Vanilla, Low-Poly and Hi-Res - with its export already set up\r\n"
+        L"  \x2022  a neutral jointed puppet with a skeleton and its clips to start from\r\n"
+        L"  \x2022  the original kart and its wheels from your game files, to build around\r\n"
         L"  \x2022  if you like, a demo driver to try in the game right away\r\n\r\n"
-        L"The kart and the wheels are made from your own game files, on this PC only. Keep them to yourself - "
-        L"do not upload or share them. You need Blender 5.2 and the game data of CTR Reload.",
+        L"The kart and the wheels are generated on this PC from your own game files. You need Blender 5.2 and your "
+        L"own copy of the original game, set up for CTR Reload.",
         RS_FONT_BODY);
     g_kit.gameHead = Rs_Label(page, KIT_ID_GAME_HEAD, L"Game data", RS_FONT_BOLD);
     g_kit.gameState = Rs_Label(page, KIT_ID_GAME_STATE, L"", RS_FONT_BODY);
@@ -1374,7 +1592,16 @@ static void Kit_Create(HWND page)
     g_kit.outBtn = Rs_Button(page, KIT_ID_OUT_BTN, L"Browse...");
     g_kit.outState = Rs_Label(page, KIT_ID_OUT_STATE, L"", RS_FONT_BODY);
     g_kit.outFix = Rs_Label(page, KIT_ID_OUT_FIX, L"", RS_FONT_SMALL);
-    g_kit.demoBox = Rs_Check(page, KIT_ID_DEMO, L"Also build a demo driver to try in the game");
+    // THE WAYS (K9): All three ways (the default) or one of them.
+    g_kit.waysHead = Rs_Label(page, KIT_ID_WAYS_HEAD, L"Templates", RS_FONT_BOLD);
+    g_kit.ways = Rs_Combo(page, KIT_ID_WAYS);
+    SendMessageW(g_kit.ways, CB_ADDSTRING, 0, (LPARAM)L"All three ways");
+    for (i = 0; i < RS_ROUTES; i++)
+        SendMessageW(g_kit.ways, CB_ADDSTRING, 0, (LPARAM)g_wayNames[i]);
+    SendMessageW(g_kit.ways, CB_SETCURSEL, (WPARAM)(g_kitWays == RS_KIT_WAYS_ALL ? 0 : g_kitWays + 1), 0);
+    Rs_SetTip(g_kit.ways, L"Which templates the kit makes: one for each way of the page Character, or the one "
+                                L"you build for.");
+    g_kit.demoBox = Rs_Check(page, KIT_ID_DEMO, L"Also build a demo driver to try in the game (from the Hi-Res template)");
     SendMessageW(g_kit.demoBox, BM_SETCHECK, BST_CHECKED, 0);
     // "Start from an old character" (C's guide, section 11): optional.
     g_kit.classicHead = Rs_Label(page, KIT_ID_CLASSIC_HEAD, L"Start from an old character", RS_FONT_BOLD);
@@ -1394,10 +1621,25 @@ static void Kit_Create(HWND page)
     g_kit.detailsBox = Rs_Check(page, KIT_ID_DETAILS_BOX, L"Show details");
     g_kit.details = Rs_Edit(page, KIT_ID_DETAILS, L"", ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL);
     SendMessageW(g_kit.details, WM_SETFONT, (WPARAM)Rs_Font(RS_FONT_MONO), FALSE);
-    g_kit.files = Rs_Label(page, KIT_ID_FILES, L"", RS_FONT_BODY);
+    // THE NOTICE (K1): plain text in the text colour, no icon.
+    {
+        wchar_t *notice = Kit_NoticeText();
+        g_kit.notice = Rs_Label(page, KIT_ID_NOTICE, notice, RS_FONT_BODY);
+        Rs_Free(notice);
+    }
+    g_kit.files = Rs_Label(page, KIT_ID_FILES, L"", RS_FONT_SMALL);
+    for (i = 0; i < RS_ROUTES; i++) {
+        wchar_t tip[KIT_TEXT], name[64];
+        g_kit.wayFiles[i] = Rs_Label(page, KIT_ID_WAY_FILES + i, L"", RS_FONT_SMALL);
+        g_kit.wayOpen[i] = Rs_Button(page, KIT_ID_WAY_OPEN + i, L"Open in Blender");
+        Kit_WayBlend(name, 64, i);
+        swprintf(tip, KIT_TEXT, L"Opens %ls\\%ls in Blender.", g_wayWords[i], name);
+        Rs_SetTip(g_kit.wayOpen[i], tip);
+    }
     g_kit.nextText = Rs_Label(page, KIT_ID_NEXT_TEXT,
-        L"Next: open the template in Blender, make your driver on the puppet (the guide shows how), export it "
-        L"with the stored export to creator-kit-figure.glb, and build it on the page Character, route Hi-Res.",
+        L"Next: open a template in Blender, make your driver on the puppet (the guide shows how), export it with the "
+        L"stored export (creator-kit-<way>-figure.glb in the folder of the way), and build it on the page Character "
+        L"with the same way.",
         RS_FONT_BODY);
     g_kit.back = Rs_Button(page, KIT_ID_BACK, L"Back");
     g_kit.main = Rs_PrimaryButton(page, KIT_ID_MAIN, L"Next");
@@ -1406,6 +1648,31 @@ static void Kit_Create(HWND page)
     g_kit.folder = Rs_Button(page, KIT_ID_FOLDER, L"Show in folder");
     g_kit.testDemo = Rs_Button(page, KIT_ID_TEST_DEMO, L"Test the demo");
     g_kit.toChar = Rs_Button(page, KIT_ID_TO_CHAR, L"Go to Character");
+}
+
+// The height a label needs at width w in its own font (wrapped), at least one line.
+static int Kit_TextHeight(HWND label, int w)
+{
+    RECT r = { 0, 0, w > 0 ? w : 1, 0 };
+    wchar_t *text = Rs_GetText(label);
+    HDC dc = GetDC(label);
+    HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(label, WM_GETFONT, 0, 0));
+    DrawTextW(dc, text[0] ? text : L"X", -1, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EDITCONTROL);
+    SelectObject(dc, old);
+    ReleaseDC(label, dc);
+    Rs_Free(text);
+    return r.bottom + Rs_Px(2);
+}
+
+void Rs_KitChooseWay(int way)
+{
+    if (way != RS_KIT_WAYS_ALL && (way < 0 || way >= RS_ROUTES))
+        return;
+    g_kitWays = way;
+    if (g_kit.page) {
+        Kit_Update();
+        Kit_Relayout();
+    }
 }
 
 static void Kit_Layout(HWND page, int w, int h)
@@ -1464,8 +1731,16 @@ static void Kit_Layout(HWND page, int w, int h)
         y += Rs_Px(24);
         MoveWindow(g_kit.outFix, in.left, y, iw, Rs_Px(20), TRUE);
         y += Rs_Px(g_kit.outFixText[0] ? 26 : 4);
-        MoveWindow(g_kit.demoBox, in.left, y, iw, Rs_Px(24), TRUE);
-        y += Rs_Px(36);
+        // The ways: "Templates" with its choice beside it.
+        MoveWindow(g_kit.waysHead, in.left, y + Rs_Px(4), Rs_Px(120), lh, TRUE);
+        MoveWindow(g_kit.ways, in.left + Rs_Px(128), y, Rs_Px(220), Rs_Px(300), TRUE);
+        y += Rs_Px(38);
+        if (Kit_DemoOffered()) {
+            MoveWindow(g_kit.demoBox, in.left, y, iw, Rs_Px(24), TRUE);
+            y += Rs_Px(36);
+        } else {
+            y += Rs_Px(6);
+        }
         MoveWindow(g_kit.classicHead, in.left, y, iw, lh, TRUE);
         y += lh + Rs_Px(4);
         MoveWindow(g_kit.classicEdit, in.left, y, iw - Rs_Px(128), Rs_Px(28), TRUE);
@@ -1482,14 +1757,38 @@ static void Kit_Layout(HWND page, int w, int h)
         y += lh + gap;
         MoveWindow(g_kit.detailsBox, in.left, y, Rs_Px(200), Rs_Px(24), TRUE);
         y += Rs_Px(32);
-        MoveWindow(g_kit.msgs, in.left, y, iw, in.bottom - y > Rs_Px(60) ? in.bottom - y : Rs_Px(60), TRUE);
-        MoveWindow(g_kit.details, in.left, y, iw, in.bottom - y > Rs_Px(60) ? in.bottom - y : Rs_Px(60), TRUE);
+        {
+            // The notice at the bottom of the card, right above the bar with
+            // "Generate demo files"; the findings take the room between.
+            int nh = Kit_TextHeight(g_kit.notice, iw), ntop, mh;
+            mh = in.bottom - nh - gap - y;
+            if (mh < Rs_Px(60))
+                mh = Rs_Px(60);
+            ntop = y + mh + gap;
+            MoveWindow(g_kit.msgs, in.left, y, iw, mh, TRUE);
+            MoveWindow(g_kit.details, in.left, y, iw, mh, TRUE);
+            MoveWindow(g_kit.notice, in.left, ntop, iw, nh, TRUE);
+        }
         break;
-    case 4:
-        MoveWindow(g_kit.files, in.left, y, iw, Rs_Px(150), TRUE);
-        y += Rs_Px(158);
-        MoveWindow(g_kit.nextText, in.left, y, iw, Rs_Px(60), TRUE);
+    case 4: {
+        int fh = Kit_TextHeight(g_kit.files, iw), ow = Rs_Px(156), wh;
+        MoveWindow(g_kit.files, in.left, y, iw, fh, TRUE);
+        y += fh + gap;
+        // One row per way made: what only it has, "Open in Blender" at its end.
+        for (i = 0; i < RS_ROUTES; i++) {
+            if (!Kit_WayOn(g_kit.runWays, i))
+                continue;
+            wh = Kit_TextHeight(g_kit.wayFiles[i], iw - ow - gap);
+            if (wh < bh)
+                wh = bh;
+            MoveWindow(g_kit.wayFiles[i], in.left, y, iw - ow - gap, wh, TRUE);
+            MoveWindow(g_kit.wayOpen[i], in.right - ow, y, ow, bh, TRUE);
+            y += wh + Rs_Px(6);
+        }
+        y += gap;
+        MoveWindow(g_kit.nextText, in.left, y, iw, Kit_TextHeight(g_kit.nextText, iw), TRUE);
         break;
+    }
     }
     // The bar: Back on the left; the main action on the right, beside it the others.
     MoveWindow(g_kit.back, left, barTop, Rs_Px(104), bh, TRUE);
@@ -1561,20 +1860,35 @@ static LRESULT Kit_Command(HWND page, WPARAM wParam, LPARAM lParam)
         Kit_Update();
         return 0;
     }
+    if (id == KIT_ID_WAYS && code == CBN_SELCHANGE) {
+        int sel = (int)SendMessageW(g_kit.ways, CB_GETCURSEL, 0, 0);
+        if (sel >= 0 && sel <= RS_ROUTES)
+            Rs_KitChooseWay(sel == 0 ? RS_KIT_WAYS_ALL : sel - 1);
+        return 0;
+    }
     if (code != BN_CLICKED)
         return 0;
+    if (id >= KIT_ID_WAY_OPEN && id < KIT_ID_WAY_OPEN + RS_ROUTES) {
+        Kit_OpenTemplate(id - KIT_ID_WAY_OPEN);
+        return 0;
+    }
     switch (id) {
     case KIT_ID_MAIN:
         if (g_kit.step < 3)
             Kit_GoStep(page, g_kit.step + 1);
         else if (g_kit.step == 3)
             Kit_Generate(page);
+        else if (Kit_OneWay() >= 0)
+            Kit_OpenTemplate(Kit_OneWay());
         else
-            Kit_OpenTemplate();
+            Kit_OpenFolder();
         Kit_Update();
         break;
     case KIT_ID_BACK:
-        Kit_GoStep(page, g_kit.step - 1);
+        if (g_kit.step == 0)
+            Rs_ShowHost(page);
+        else
+            Kit_GoStep(page, g_kit.step - 1);
         break;
     case KIT_ID_CANCEL:
         if (g_kit.job) {
@@ -1724,10 +2038,15 @@ static void Kit_ReportFiles(FILE *f, const wchar_t *dir, const wchar_t *prefix)
         return;
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (!prefix[0] && _wcsicmp(fd.cFileName, L"scripts") == 0) {
-                wchar_t sub[KIT_PATH];
+            // scripts and the way folders, one level down.
+            int r, known = _wcsicmp(fd.cFileName, L"scripts") == 0;
+            for (r = 0; r < RS_ROUTES; r++)
+                known |= _wcsicmp(fd.cFileName, g_wayWords[r]) == 0;
+            if (!prefix[0] && known) {
+                wchar_t sub[KIT_PATH], pre[64];
                 Rs_PathJoin(sub, KIT_PATH, dir, fd.cFileName);
-                Kit_ReportFiles(f, sub, L"scripts\\");
+                swprintf(pre, 64, L"%ls\\", fd.cFileName);
+                Kit_ReportFiles(f, sub, pre);
             }
             continue;
         }
@@ -1760,7 +2079,31 @@ static int Kit_Report(const wchar_t *path)
     Kit_ReportLine(f, L"blender-text\t%ls\t%ls", g_kit.blText, g_kit.blFixText);
     Kit_ReportLine(f, L"out\t%ls\t%ls", outs[g_kit.out], g_kit.outPath);
     Kit_ReportLine(f, L"out-text\t%ls\t%ls", g_kit.outText, g_kit.outFixText);
-    Kit_ReportLine(f, L"demo\t%ls", g_kit.demo ? L"on" : L"off");
+    {
+        wchar_t ways[64], *notice = Rs_GetText(g_kit.notice), *line;
+        size_t k, n = 0;
+        Kit_WaysList(g_kitWays, ways, 64);
+        Kit_ReportLine(f, L"ways\t%ls\t%ls", g_kitWays == RS_KIT_WAYS_ALL ? L"all" : g_wayWords[g_kitWays], ways);
+        Kit_ReportLine(f, L"demo\t%ls\t%ls", g_kit.demo ? L"on" : L"off",
+                       Kit_DemoOffered() ? L"offered" : L"not offered");
+        // The notice as the control holds it, every line end written as \n.
+        line = Rs_Alloc((wcslen(notice) * 2 + 1) * sizeof(wchar_t));
+        for (k = 0; notice[k]; k++) {
+            if (notice[k] == L'\r')
+                continue;
+            if (notice[k] == L'\n') {
+                line[n++] = L'\\';
+                line[n++] = L'n';
+            } else {
+                line[n++] = notice[k];
+            }
+        }
+        line[n] = 0;
+        fputs("notice\t", f);
+        Kit_ReportLine(f, L"%ls\t%ls", (GetWindowLongPtrW(g_kit.notice, GWL_STYLE) & WS_VISIBLE) ? L"shown" : L"hidden", line);
+        Rs_Free(line);
+        Rs_Free(notice);
+    }
     Kit_ClassicRead();
     Kit_ReportLine(f, L"classic\t%ls", g_kit.classic);
     for (i = 0; i < KIT_PHASES; i++)
@@ -1785,6 +2128,15 @@ static int Kit_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         }
         Kit_GoStep(page, n);
         return Kit_Busy(page) ? RS_AUTO_WAIT : RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"back") == 0 && g_kit.step == 0 && Rs_ModuleHost(Rs_PageIdOf(page)) >= 0) {
+        if (g_kit.job) {
+            Rs_AutoLog(L"  back: the kit is being made - Cancel first");
+            return RS_AUTO_FAIL;
+        }
+        Rs_AutoLog(L"  back: to Character, Build a character");
+        Rs_ShowHost(page);
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"next") == 0 || wcscmp(verb, L"back") == 0) {
         Kit_GoStep(page, g_kit.step + (verb[0] == L'n' ? 1 : -1));
@@ -1839,6 +2191,24 @@ static int Kit_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         g_kit.demo = on;
         return RS_AUTO_DONE;
     }
+    // "ways all|vanilla|lowpoly|hires": the choice of step 2.
+    if (wcscmp(verb, L"ways") == 0) {
+        int r, way = wcscmp(arg, L"all") == 0 ? RS_KIT_WAYS_ALL : -2;
+        for (r = 0; r < RS_ROUTES; r++)
+            if (wcscmp(arg, g_wayWords[r]) == 0)
+                way = r;
+        if (way == -2) {
+            Rs_AutoLog(L"  ways wants all, vanilla, lowpoly or hires");
+            return RS_AUTO_FAIL;
+        }
+        if (g_kit.job) {
+            Rs_AutoLog(L"  ways: the kit is being made - Cancel first");
+            return RS_AUTO_FAIL;
+        }
+        Rs_KitChooseWay(way);
+        Rs_AutoLog(L"  ways: %ls", way == RS_KIT_WAYS_ALL ? L"All three ways" : g_wayNames[way]);
+        return RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"generate") == 0) {
         Kit_CheckGame();
         Kit_CheckOut();
@@ -1880,19 +2250,34 @@ static int Kit_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     if (wcscmp(verb, L"open") == 0) {
         if (wcscmp(arg, L"guide") == 0)
             Kit_OpenGuide();
-        else if (wcscmp(arg, L"template") == 0)
-            Kit_OpenTemplate();
-        else if (wcscmp(arg, L"folder") == 0)
+        else if (wcsncmp(arg, L"template", 8) == 0 && (arg[8] == 0 || arg[8] == L' ')) {
+            // "open template <way>", or "open template" for the one way made.
+            const wchar_t *word = arg + 8;
+            int r, way = -1;
+            while (*word == L' ')
+                word++;
+            for (r = 0; r < RS_ROUTES; r++)
+                if (wcscmp(word, g_wayWords[r]) == 0)
+                    way = r;
+            if (!word[0])
+                way = Kit_OneWay();
+            if (way < 0) {
+                Rs_AutoLog(L"  open template wants vanilla, lowpoly or hires%ls",
+                           word[0] ? L"" : L" (more than one way was made)");
+                return RS_AUTO_FAIL;
+            }
+            Kit_OpenTemplate(way);
+        } else if (wcscmp(arg, L"folder") == 0)
             Kit_OpenFolder();
         else {
-            Rs_AutoLog(L"  open guide, open template or open folder");
+            Rs_AutoLog(L"  open guide, open template [<way>] or open folder");
             return RS_AUTO_FAIL;
         }
         return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"test-demo") == 0) {
         wchar_t demo[KIT_PATH], why[KIT_TEXT];
-        Rs_PathJoin(demo, KIT_PATH, g_kit.outPath, KIT_DEMO);
+        Kit_WayPath(demo, KIT_PATH, g_kit.outPath, RS_ROUTE_HIRES, KIT_DEMO);
         if (!Rs_TestCharacter(demo, RS_ROUTE_HIRES, why, KIT_TEXT)) {
             Rs_AutoLog(L"  test-demo refused: %ls", why);
             return RS_AUTO_FAIL;

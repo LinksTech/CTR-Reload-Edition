@@ -6,12 +6,22 @@
 // data of the test is rldpack's kit-standin, read by the real kit-extract).
 // The Studio is pointed at it as Blender (kit.blender), called as "--threads 1
 // --background --factory-startup --python-exit-code 1 --python <script> --
-// --kit <dir> [--vcol <psx|gltf|off>]", or "--version". The environment says
-// what it does:
+// --kit <dir> [options]", or "--version". The options after "--kit <dir>" come
+// in any order, each at most once: --routes <list> (a comma-separated list of
+// vanilla, lowpoly, hires; at least one, no repeats; default all three),
+// --vcol <psx|gltf|off> (default psx), --classic <glb> (the file must exist).
+// Anything else is a wrong call (exit 2).
+//
+// Layout it writes (K4): <dir>\NOTICE.txt, a byte copy of CREATOR_KIT_NOTICE.txt
+// from the folder of the script (missing: exit 4), and for each chosen way W
+// (in the order vanilla, lowpoly, hires) a folder <dir>\W\ with
+// creator-kit-W.blend, creator-kit-W-figure.glb, NOTICE.txt and
+// creator-kit-report.json; hires also gets creator-kit-demo-local.glb.
+// The environment says what it does:
 //
 //   RS_KIT_STANDIN_MODE       unset or ok | noversion | fail4 | hang
 //   RS_KIT_STANDIN_VERSION    the first line of --version (default "Blender 5.2.2 LTS")
-//   RS_KIT_STANDIN_DEMO       a file copied to creator-kit-demo-local.glb
+//   RS_KIT_STANDIN_DEMO       a file copied to hires\creator-kit-demo-local.glb
 //   RS_KIT_STANDIN_LOG        every call appends its arguments here, one line
 //   RS_KIT_STANDIN_ENVFILE    a Blender call writes TEMP, TMP and BLENDER_USER_*
 //
@@ -146,34 +156,108 @@ static int Version(void)
     return 0;
 }
 
+// Reads a whole file into a malloc buffer; NULL when it cannot be read.
+static unsigned char *ReadAll(const wchar_t *path, size_t *size)
+{
+    FILE *f = _wfopen(path, L"rb");
+    long n;
+    unsigned char *buf;
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return NULL; }
+    buf = (unsigned char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); fclose(f); return NULL; }
+    fclose(f);
+    *size = (size_t)n;
+    return buf;
+}
+
+// Makes <dir>\<way>\ with the four files of one way (and the demo for hires).
+// Returns 0 or the exit code.
+static int WriteWay(const wchar_t *dir, const wchar_t *way, const wchar_t *vcol,
+                    const unsigned char *notice, size_t noticeSize)
+{
+    wchar_t sub[1200], name[256], demo[1024], dst[1300];
+    char w8[64], v8[64], text[300], line[600];
+    Utf8(way, w8, sizeof w8);
+    Utf8(vcol, v8, sizeof v8);
+    swprintf(sub, 1200, L"%ls\\%ls", dir, way);
+    MakeDirs(sub);
+    swprintf(name, 256, L"creator-kit-%ls.blend", way);
+    snprintf(text, sizeof text, "BLENDER-v502 made-up stand-in file %s\n", w8);
+    WriteFileIn(sub, name, text, strlen(text));
+    swprintf(name, 256, L"creator-kit-%ls-figure.glb", way);
+    snprintf(text, sizeof text, "stand-in figure %s", w8);
+    WriteGlb(sub, name, text);
+    WriteFileIn(sub, L"NOTICE.txt", notice, noticeSize);
+    snprintf(line, sizeof line, "{\"blender\": \"5.2.2 stand-in\", \"route\": \"%s\", \"vcol\": \"%s\", \"messages\": []}\n", w8, v8);
+    WriteFileIn(sub, L"creator-kit-report.json", line, strlen(line));
+    if (wcscmp(way, L"hires") == 0) {
+        if (Env(L"RS_KIT_STANDIN_DEMO", demo, 1024)) {
+            swprintf(dst, 1300, L"%ls\\creator-kit-demo-local.glb", sub);
+            if (!CopyFileW(demo, dst, FALSE)) {
+                Say("creator kit: the demo model could not be copied (stand-in)");
+                return 3;
+            }
+        } else {
+            WriteGlb(sub, L"creator-kit-demo-local.glb", "stand-in demo");
+        }
+    }
+    return 0;
+}
+
 static int Blender(int argc, wchar_t **argv)
 {
     static const wchar_t *fixed[] = { L"--threads", L"1", L"--background", L"--factory-startup",
                                       L"--python-exit-code", L"1", L"--python", NULL, L"--", L"--kit" };
-    int i;
-    const wchar_t *script, *dir, *vcol = L"psx";
-    wchar_t demo[1024], dst[1200];
-    char u[2048], line[2300];
+    static const wchar_t *ways[3] = { L"vanilla", L"lowpoly", L"hires" };
+    int i, k, rc, chosen[3] = { 0, 0, 0 };
+    int haveRoutes = 0, haveVcol = 0, haveClassic = 0;
+    const wchar_t *script, *dir, *vcol = L"psx", *classic = NULL;
+    wchar_t notice[1200], list[256], *p, *next;
+    char u[2048], line[2300], joined[64];
+    unsigned char *nbuf;
+    size_t nsize = 0, slash;
     DWORD attr;
-    // An optional "--classic <glb>" at the end: the file must be there.
-    if (argc >= 16 && wcscmp(argv[argc - 2], L"--classic") == 0) {
-        attr = GetFileAttributesW(argv[argc - 1]);
-        if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            Say("creator kit: --classic file missing (stand-in)");
-            return 4;
-        }
-        argc -= 2;
-    }
-    if (argc != 12 && argc != 14) goto wrong;
+    if (argc < 12) goto wrong;
     for (i = 0; i < 10; i++) {
         if (fixed[i] && wcscmp(argv[i + 1], fixed[i]) != 0) goto wrong;
     }
     script = argv[8];
     dir = argv[11];
-    if (argc == 14) {
-        if (wcscmp(argv[12], L"--vcol") != 0) goto wrong;
-        vcol = argv[13];
-        if (wcscmp(vcol, L"psx") && wcscmp(vcol, L"gltf") && wcscmp(vcol, L"off")) goto wrong;
+    // Options after "--kit <dir>", in any order, each at most once.
+    for (i = 12; i < argc; i += 2) {
+        if (i + 1 >= argc) goto wrong;
+        if (wcscmp(argv[i], L"--vcol") == 0 && !haveVcol) {
+            haveVcol = 1;
+            vcol = argv[i + 1];
+            if (wcscmp(vcol, L"psx") && wcscmp(vcol, L"gltf") && wcscmp(vcol, L"off")) goto wrong;
+        } else if (wcscmp(argv[i], L"--classic") == 0 && !haveClassic) {
+            haveClassic = 1;
+            classic = argv[i + 1];
+        } else if (wcscmp(argv[i], L"--routes") == 0 && !haveRoutes) {
+            haveRoutes = 1;
+            if (wcslen(argv[i + 1]) >= 256) goto wrong;
+            wcscpy(list, argv[i + 1]);
+            for (p = list; ; p = next + 1) {
+                next = wcschr(p, L',');
+                if (next) *next = 0;
+                for (k = 0; k < 3; k++) if (wcscmp(p, ways[k]) == 0) break;
+                if (k == 3 || chosen[k]) goto wrong;
+                chosen[k] = 1;
+                if (!next) break;
+            }
+        } else {
+            goto wrong;
+        }
+    }
+    if (!haveRoutes) chosen[0] = chosen[1] = chosen[2] = 1;
+    if (classic) {
+        attr = GetFileAttributesW(classic);
+        if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            Say("creator kit: --classic file missing (stand-in)");
+            return 4;
+        }
     }
     attr = GetFileAttributesW(script);
     if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) {
@@ -192,23 +276,31 @@ static int Blender(int argc, wchar_t **argv)
         Sleep(120000);
         return 0;
     }
-    MakeDirs(dir);
-    WriteFileIn(dir, L"creator-kit.blend", "BLENDER-v502 made-up stand-in file\n", 35);
-    if (Env(L"RS_KIT_STANDIN_DEMO", demo, 1024)) {
-        swprintf(dst, 1200, L"%ls\\creator-kit-demo-local.glb", dir);
-        if (!CopyFileW(demo, dst, FALSE)) {
-            Say("creator kit: the demo model could not be copied (stand-in)");
-            return 3;
-        }
-    } else {
-        WriteGlb(dir, L"creator-kit-demo-local.glb", "stand-in demo");
+    // The notice lies beside the script.
+    slash = wcslen(script);
+    while (slash > 0 && script[slash - 1] != L'\\' && script[slash - 1] != L'/') slash--;
+    if (slash == 0) swprintf(notice, 1200, L"CREATOR_KIT_NOTICE.txt");
+    else swprintf(notice, 1200, L"%.*ls%ls", (int)slash, script, L"CREATOR_KIT_NOTICE.txt");
+    nbuf = ReadAll(notice, &nsize);
+    if (!nbuf) {
+        Say("creator kit: CREATOR_KIT_NOTICE.txt is missing beside the script (stand-in)");
+        return 4;
     }
-    WriteGlb(dir, L"creator-kit-figure.glb", "stand-in figure");
+    MakeDirs(dir);
+    WriteFileIn(dir, L"NOTICE.txt", nbuf, nsize);
+    joined[0] = 0;
+    for (k = 0; k < 3; k++) {
+        if (!chosen[k]) continue;
+        rc = WriteWay(dir, ways[k], vcol, nbuf, nsize);
+        if (rc) { free(nbuf); return rc; }
+        Utf8(ways[k], u, sizeof u);
+        if (joined[0]) strcat(joined, ",");
+        strcat(joined, u);
+    }
+    free(nbuf);
     Utf8(vcol, u, sizeof u);
-    snprintf(line, sizeof line, "{\"blender\": \"5.2.2 stand-in\", \"vcol\": \"%s\", \"messages\": []}\n", u);
-    WriteFileIn(dir, L"creator-kit-report.json", line, strlen(line));
     Say("@progress\tblender\t1\t1");
-    snprintf(line, sizeof line, "creator kit: ok vcol=%s source=stand-in (stand-in)", u);
+    snprintf(line, sizeof line, "creator kit: ok routes=%s vcol=%s source=stand-in (stand-in)", joined, u);
     Say(line);
     return 0;
 wrong:

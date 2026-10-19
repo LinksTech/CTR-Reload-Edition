@@ -243,24 +243,37 @@ static void RldHiresPack_Print(const RldHiresReport *rep)
 	}
 }
 
-// The summary line of hires-check (and of hires-add).
+// The summary line of hires-check (and of hires-add), then the line of the
+// optional clips. "clips n/12" counts the clips every file is asked for
+// (RLDHIRES_CLIP_BASE), as before the optional ones existed.
 static void RldHiresPack_Summary(const char *what, const RldHiresReport *rep, const RldHiresModel *m)
 {
 	int clips = 0;
+	int finish = 0;
 	int textures = 0;
 	int i;
 
 	for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
 	{
-		clips += (m->clipAnim[i] >= 0);
+		if (RldHires_ClipOptional(i))
+		{
+			finish += (m->clipAnim[i] >= 0);
+		}
+		else
+		{
+			clips += (m->clipAnim[i] >= 0);
+		}
 	}
 	for (i = 0; i < m->imageCount; i++)
 	{
 		textures += (m->images[i].used != 0);
 	}
 	printf("%s: %d errors, %d warnings, %d notes, clips %d/%d, wheels %d/%d, skin %u joints, %llu triangles, textures %d (%llu bytes RGBA8)\n", what,
-	       rep->errors, rep->warnings, rep->notes, clips, RLDHIRES_CLIP_COUNT, m->wheelsFound, RLDHIRES_WHEEL_COUNT, (unsigned)m->joints,
+	       rep->errors, rep->warnings, rep->notes, clips, RLDHIRES_CLIP_BASE, m->wheelsFound, RLDHIRES_WHEEL_COUNT, (unsigned)m->joints,
 	       (unsigned long long)m->triangles, textures, (unsigned long long)m->textureBytes);
+	printf("%s: finish clips %d/%d (optional: finish_win %s, finish_lose %s; a missing one plays what the game played before)\n", what, finish,
+	       RLDHIRES_CLIP_COUNT - RLDHIRES_CLIP_BASE, (m->clipAnim[RLDHIRES_CLIP_FINISH_WIN] >= 0) ? "yes" : "no",
+	       (m->clipAnim[RLDHIRES_CLIP_FINISH_LOSE] >= 0) ? "yes" : "no");
 }
 
 // What a vertex colour mode means, for the line hires-check and hires-add print.
@@ -580,6 +593,41 @@ static int RldHiresPack_Finish(const struct RldHiresPackIn *in, const u8 *chrg, 
 	return 0;
 }
 
+// hires-add --game-kart on a file with CHRI bit 5 (make-char --figure-only,
+// include/rldchar.inc THE GAME KART): the classic model and the hi-res part show
+// the same kart, so the donor of --game-kart goes into CHRI too (one line when
+// it changes). A file without bit 5, or one whose field is not there, stays as it is.
+static void RldHiresPack_GameKartDonor(struct RldHiresPackIn *in, u32 donor)
+{
+	int i;
+
+	for (i = 0; i < in->c.chunkCount; i++)
+	{
+		struct RldChunk *chunk = &in->c.chunks[i];
+		struct RldCharInfo info;
+		struct RldCharGameKart gk;
+		char was[12];
+		char now[12];
+
+		if ((memcmp(chunk->type, "CHRI", 4) != 0) || (chunk->sizeStored != chunk->sizeRaw) || (chunk->stored == NULL))
+		{
+			continue;
+		}
+		if ((RldChar_ParseInfo(&info, chunk->stored, (size_t)chunk->sizeStored) != NULL) ||
+		    (RldChar_ParseGameKart(&info, chunk->stored, (size_t)chunk->sizeStored, &gk) != NULL) || (gk.donor == donor))
+		{
+			return;
+		}
+		RldMk_DonorText(gk.donor, was, sizeof(was));
+		RldMk_DonorText(donor, now, sizeof(now));
+		chunk->stored[RLDCHAR_CHRI_KART_DONOR] = (u8)donor;
+		Sha256(chunk->stored, (size_t)chunk->sizeStored, chunk->hash);
+		printf("  game kart: the classic model's kart donor (CHRI) set from %s to %s, the hi-res part's\n", was, now);
+		Rld_Say("info", "game-kart", NULL, "The classic model's kart donor (CHRI) was %s; it is %s now, as the hi-res part's, so both show the same kart.", was, now);
+		return;
+	}
+}
+
 static int RldHires_AddCommand(int argc, char **argv)
 {
 	static RldHiresReport rep;
@@ -647,6 +695,10 @@ static int RldHires_AddCommand(int argc, char **argv)
 		Rld_Say("error", "rldchar", paths[0], "%s is no readable character: %s", paths[0], why);
 		free(glb);
 		return 1;
+	}
+	if ((parts & RLDHIRES_PART_GAME_KART) != 0u)
+	{
+		RldHiresPack_GameKartDonor(&in, (parts & RLDHIRES_PART_DONOR_MASK) >> RLDHIRES_PART_DONOR_SHIFT);
 	}
 	chunk = RldHires_BuildChunkParts(glb, (u32)glbSize, (u32)mode, parts, &chunkSize);
 	free(glb);

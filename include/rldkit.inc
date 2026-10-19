@@ -2476,6 +2476,61 @@ static int RldKit_TileOf(RldKitTile *tiles, int *count, int max, u32 tpage, u32 
 	return (*count)++;
 }
 
+// THE KART of driver `donor` among the 15 decoded models: isKart[t] = 1 for
+// each of its triangles that is still in the turn and found in at least
+// RLDKIT_SHARED_MIN of the other drivers (RLDKIT_MATCH, else RLDKIT_MATCH_LOOSE).
+// The counts go to r (stillTriangles, kartShared, kartLoose, dropped).
+static void RldKit_KartMask(const RldKitRetail *all, int donor, u8 *isKart, RldKitResult *r)
+{
+	const RldKitRetail *m = &all[donor];
+	u32 t;
+	int d;
+
+	for (t = 0; t < m->tris; t++)
+	{
+		double key[3][3];
+		int shared = 0;
+		int loose = 0;
+
+		if (!RldKit_TriStill(m, t))
+		{
+			continue;
+		}
+		r->stillTriangles++;
+		RldKit_SortedCorners(m, t, key);
+		for (d = 0; d < RLDKIT_DRIVERS; d++)
+		{
+			if (d == donor)
+			{
+				continue;
+			}
+			if (RldKit_HasTriangle(&all[d], key, RLDKIT_MATCH))
+			{
+				shared++;
+				loose++;
+			}
+			else if (RldKit_HasTriangle(&all[d], key, RLDKIT_MATCH_LOOSE))
+			{
+				loose++;
+			}
+		}
+		if (shared >= RLDKIT_SHARED_MIN)
+		{
+			isKart[t] = 1;
+			r->kartShared++;
+		}
+		else if (loose >= RLDKIT_SHARED_MIN)
+		{
+			isKart[t] = 1;
+			r->kartLoose++;
+		}
+		else
+		{
+			r->dropped++;
+		}
+	}
+}
+
 // The kit of driver opt->driver. 1 = r filled (free with RldKit_ResultFree),
 // 0 with why (r is empty).
 static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKitResult *r, char *why, size_t whySize)
@@ -2546,49 +2601,7 @@ static int RldKit_Build(const RldKitSource *src, const RldKitOptions *opt, RldKi
 	}
 
 	// THE KART: still triangles shared with other drivers.
-	for (t = 0; t < m->tris; t++)
-	{
-		double key[3][3];
-		int shared = 0;
-		int loose = 0;
-
-		if (!RldKit_TriStill(m, t))
-		{
-			continue;
-		}
-		r->stillTriangles++;
-		RldKit_SortedCorners(m, t, key);
-		for (d = 0; d < RLDKIT_DRIVERS; d++)
-		{
-			if (d == opt->driver)
-			{
-				continue;
-			}
-			if (RldKit_HasTriangle(&all[d], key, RLDKIT_MATCH))
-			{
-				shared++;
-				loose++;
-			}
-			else if (RldKit_HasTriangle(&all[d], key, RLDKIT_MATCH_LOOSE))
-			{
-				loose++;
-			}
-		}
-		if (shared >= RLDKIT_SHARED_MIN)
-		{
-			isKart[t] = 1;
-			r->kartShared++;
-		}
-		else if (loose >= RLDKIT_SHARED_MIN)
-		{
-			isKart[t] = 1;
-			r->kartLoose++;
-		}
-		else
-		{
-			r->dropped++;
-		}
-	}
+	RldKit_KartMask(all, opt->driver, isKart, r);
 
 	// The kart triangles with their looks; the tiles' UV boxes.
 	for (t = 0; t < m->tris; t++)
@@ -3270,6 +3283,157 @@ done:
 	if (!ok)
 	{
 		RldKit_ResultFree(r);
+	}
+	return ok;
+}
+
+//========================================================================================
+// THE CLASSIC KART (CHRI bit 5, include/rldchar.inc THE GAME KART)
+//========================================================================================
+//
+// The retail kart triangles of a donor AS THEY ARE, for the classic model of a
+// figure-only file: the same kart as RldKit_Build finds (RldKit_KartMask), but
+// not smoothed and not on an atlas - each triangle with its corners in the order
+// the retail model draws them (frame 10 of the turn, model units), its colours,
+// its TextureLayout words (they point into shared.vrm, which is in VRAM from the
+// boot on) and the cull bits of the command that draws it. The game splices
+// them into the file's CMDL (RldChar_SpliceKart). Only the 15 models are read
+// (BIGFILE 242..256): no picture is decoded. Everything stays in memory.
+
+#define RLDKIT_CLASSIC_TRIS_MAX 1024u
+
+typedef struct RldKitClassicTri
+{
+	double p[3][3];  // model units, frame 10, in the retail drawing order
+	u8 rgb[3][3];
+	u32 layout[3];   // the 12 bytes of its TextureLayout, when textured
+	u32 cull;        // bits 28-29 of the command that draws it
+	int textured;
+} RldKitClassicTri;
+
+typedef struct RldKitClassic
+{
+	int ok;                 // made
+	char why[160];          // why not
+	u32 count;
+	RldKitClassicTri *tri;  // malloc'ed
+	u32 retailTriangles;    // the donor's whole model
+} RldKitClassic;
+
+static void RldKit_ClassicFree(RldKitClassic *k)
+{
+	free(k->tri);
+	memset(k, 0, sizeof(*k));
+}
+
+// The classic kart of every donor whose bit is set in `donors` (bit d = driver
+// d, 0..14), from ONE decoding of the 15 models. out[d] is filled for each
+// such d (ok, or why). 0 = the models could not be decoded (why); then every
+// asked out[d] carries the same reason.
+static int RldKit_ClassicKarts(const RldKitSource *src, u32 donors, RldKitClassic out[RLDKIT_DRIVERS], char *why, size_t whySize)
+{
+	static RldKitRetail all[RLDKIT_DRIVERS];
+	int d;
+	int ok = 1;
+
+	memset(all, 0, sizeof(all));
+	for (d = 0; d < RLDKIT_DRIVERS; d++)
+	{
+		if ((donors >> (u32)d) & 1u)
+		{
+			RldKit_ClassicFree(&out[d]);
+		}
+	}
+	for (d = 0; ok && (d < RLDKIT_DRIVERS); d++)
+	{
+		char w[160];
+
+		if ((src == NULL) || !RldKit_RetailDecode(src->model[d], src->modelSize[d], &all[d], w, sizeof(w)))
+		{
+			char text[200];
+
+			snprintf(text, sizeof(text), "driver %d (BIGFILE entry %u): %s", d, (unsigned)(RLDKIT_BIG_MODEL_HI + (u32)d), (src == NULL) ? "no game data" : w);
+			RldKit_Fail(why, whySize, text);
+			ok = 0;
+		}
+	}
+	for (d = 0; d < RLDKIT_DRIVERS; d++)
+	{
+		RldKitClassic *k = &out[d];
+		const RldKitRetail *m = &all[d];
+		RldKitResult counts;
+		u8 *isKart;
+		u32 t;
+
+		if (((donors >> (u32)d) & 1u) == 0u)
+		{
+			continue;
+		}
+		if (!ok)
+		{
+			snprintf(k->why, sizeof(k->why), "%s", (why != NULL) ? why : "the game data cannot be read");
+			continue;
+		}
+		if (m->frames <= 20u)
+		{
+			snprintf(k->why, sizeof(k->why), "the donor's turn has fewer than 21 frames - no kart can be told apart");
+			continue;
+		}
+		memset(&counts, 0, sizeof(counts));
+		isKart = (u8 *)calloc(m->tris ? m->tris : 1u, 1);
+		k->tri = (RldKitClassicTri *)calloc(m->tris ? m->tris : 1u, sizeof(RldKitClassicTri));
+		if ((isKart == NULL) || (k->tri == NULL))
+		{
+			free(isKart);
+			RldKit_ClassicFree(k);
+			snprintf(k->why, sizeof(k->why), "out of memory");
+			continue;
+		}
+		RldKit_KartMask(all, d, isKart, &counts);
+		k->retailTriangles = m->tris;
+		for (t = 0; t < m->tris; t++)
+		{
+			RldKitClassicTri *c = &k->tri[k->count];
+			int i;
+
+			if (!isKart[t])
+			{
+				continue;
+			}
+			for (i = 0; i < 3; i++)
+			{
+				RldKit_Pos(m, RLDKIT_NEUTRAL_FRAME, m->triRec[t * 3u + (u32)i], c->p[i]);
+				RldKit_Colour(m, m->triCol[t * 3u + (u32)i], c->rgb[i]);
+			}
+			c->textured = RldKit_Layout(m, t, c->layout);
+			if (!c->textured)
+			{
+				memset(c->layout, 0, sizeof(c->layout));
+			}
+			c->cull = m->triCmd[t] & 0x30000000u;
+			k->count++;
+		}
+		free(isKart);
+		if ((k->count == 0u) || (k->count > RLDKIT_CLASSIC_TRIS_MAX))
+		{
+			const u32 n = k->count;
+
+			RldKit_ClassicFree(k);
+			if (n == 0u)
+			{
+				snprintf(k->why, sizeof(k->why), "no kart triangle was found");
+			}
+			else
+			{
+				snprintf(k->why, sizeof(k->why), "more than %u kart triangles", (unsigned)RLDKIT_CLASSIC_TRIS_MAX);
+			}
+			continue;
+		}
+		k->ok = 1;
+	}
+	for (d = 0; d < RLDKIT_DRIVERS; d++)
+	{
+		RldKit_RetailFree(&all[d]);
 	}
 	return ok;
 }

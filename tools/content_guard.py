@@ -42,8 +42,8 @@ the history publishes it. A check fails on
             archives, which are often made by other people), in any letter
             case, also with dots, spaces or control characters after it
   kit name  a file made by the Creator Kit of Reload Studio (kit-kart.glb,
-            kit-wheel.glb, kit-info.json, creator-kit.blend, ... and a work
-            folder kit.part): the kit is made on the user's PC from the
+            kit-wheel.glb, kit-info.json, creator-kit-hires.blend,
+            creator-kit-vanilla-figure.glb, ... and a work folder kit.part): the kit is made on the user's PC from the
             user's game files, so none of it may ever be in the repository.
             Checked by name, in any letter case, whatever the extension
   content   the first bytes of EVERY file (not only large ones) look like a
@@ -935,6 +935,15 @@ def self_test():
                  'creator-kit-anything.glb', 'creator-kit-report.json', 'kit-kartei.md'):
         case('refuses %s (creator kit prefix%s)' % (path, ', intended' if 'kartei' in path else ''),
              kit_refused, path)
+    # the files of the kit's three ways (vanilla, lowpoly, hires: one folder each); their NOTICE.txt is no
+    # kit name - it holds no game data, and the stem would also hit THIRD_PARTY_NOTICES.md
+    for path in ('vanilla/creator-kit-vanilla.blend', 'vanilla/creator-kit-vanilla-figure.glb',
+                 'lowpoly/creator-kit-lowpoly.blend', 'creator-kit-lowpoly-figure.glb',
+                 'hires/creator-kit-hires.blend', 'hires/creator-kit-hires-figure.glb',
+                 'hires/creator-kit-demo-local.glb', 'hires/creator-kit-report.json'):
+        case('refuses %s (creator kit way file)' % path, kit_refused, path)
+    for path in ('templates/CREATOR_KIT_NOTICE.txt', 'vanilla/NOTICE.txt', 'THIRD_PARTY_NOTICES.md'):
+        case('passes %s (harmless name)' % path, kit_passes, path)
     for path in ('make_creator_kit.py', 'templates/make_creator_kit.py',
                  'templates/creator_kit_puppet.py', 'docs/CREATOR_KIT.md', 'docs/CREATOR_KIT.html',
                  'tools/reloadstudio/rs_kit.c', 'kitchen.txt', 'kit.txt', 'docs/kit-guide/README.md',

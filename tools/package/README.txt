@@ -311,6 +311,10 @@ move it to another one) and opens inside the screen. It can be made small;
 a page that does not fit then scrolls (scroll bars, mouse wheel). In a
 narrow window the sidebar shows only its icons.
 
+The sidebar lists Track, Cups, Character and Test in game. At the bottom are
+Expansions (a placeholder: "Coming soon", nothing to set yet) and Light mode /
+Dark mode.
+
 4.1 Page "Track" - build a track container
   Track       The folder with your export: .lev (geometry), .vrm (textures),
               optional .sca or .sndb (music), optional track.txt (settings).
@@ -366,6 +370,18 @@ for the game (and for cups).
   a cup with problems.
 
 4.3 Page "Character" - build a character
+The first screen, "Build a character", asks what to build: Vanilla, Low-Poly
+or Hi-Res. "Creator Kit" (Templates to get started) at its top right opens
+the Creator Kit there: ready Blender templates with a jointed puppet and the
+kart made on this PC from your own game files, one per way (guide:
+docs/CREATOR_KIT.md). On "Where the kit goes" choose "All three ways" (the
+default) or one of Vanilla, Low-Poly and Hi-Res; each way gets its own folder
+(vanilla, lowpoly, hires) with its template, the export of the figure alone
+and NOTICE.txt. The demo driver is offered with Hi-Res. "Back" on the kit's
+first step returns to the three ways. On the step Model of every way, while
+no model is chosen, "No model yet? Start with the Creator Kit." opens it too,
+with that way chosen.
+
 The page goes in five steps, one tab each: 1 Model, 2 Driver, 3 In-game look,
 4 Voices, 5 Extras. The preview stays on the right and the bar with the
 messages and the build at the bottom; nothing has to be scrolled (from
@@ -967,6 +983,10 @@ Characters
 - The size is visual only - physics and collision follow the driving style.
 - With "Show kart wheels" off, tyre dust and skid marks still show where the
   game's wheels would be.
+- A Hi-Res model of more than about 20000 triangles that uses the game's
+  kart can stop at "could not be reduced automatically to 7200 triangles"
+  when Reload Studio builds its classic fallback. Reducing the model in
+  Blender (Decimate) or giving it a kart part avoids that.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the

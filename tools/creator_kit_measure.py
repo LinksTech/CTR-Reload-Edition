@@ -42,13 +42,15 @@ FIGURE_BONES = ["root", "pelvis", "spine", "chest", "neck", "head"] + \
 KART_JOINTS = ("kart", "kart_steer")
 FOOT_NAMES = ("foot.L", "foot.R", "toe.L", "toe.R")
 CLIP_NAMES = ["idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit",
-              "podium_1", "podium_2", "podium_3", "lose", "menu"]
+              "podium_1", "podium_2", "podium_3", "lose", "menu", "finish_win", "finish_lose"]
 CLIP_DUR = {"idle": 2.0, "steer_left": 0.5, "steer_right": 0.5, "jump": 0.6, "drift_left": 1.0,
             "drift_right": 1.0, "hit": 1.0, "podium_1": 2.0, "podium_2": 2.0, "podium_3": 2.0,
-            "lose": 2.0, "menu": 3.0}
-LOOPS = ["idle", "drift_left", "drift_right", "podium_1", "podium_2", "podium_3", "lose", "menu"]
+            "lose": 2.0, "menu": 3.0, "finish_win": 2.0, "finish_lose": 2.0}
+LOOPS = ["idle", "drift_left", "drift_right", "podium_1", "podium_2", "podium_3", "lose", "menu",
+         "finish_win", "finish_lose"]
 STANDING = ["podium_1", "podium_2", "podium_3", "lose", "menu"]
-SEATED = ["idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit"]
+FINISH = ["finish_win", "finish_lose"]  # optional (format 4.3), seated after the finish line
+SEATED = ["idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit"] + FINISH
 DRIVE = ["idle", "steer_left", "steer_right", "drift_left", "drift_right"]
 STD_FLOOR = [[-53.0, 36.3], [-50.0, 33.9], [-46.0, 17.9], [-42.0, 10.9], [-40.0, 10.7], [-30.0, 9.4],
              [-20.0, 8.2], [-10.0, 6.9], [0.0, 5.7], [10.0, 5.9], [20.0, 6.2], [30.0, 6.5], [40.0, 6.8],
@@ -778,8 +780,10 @@ def c3_5(K):
 
 
 def c3_6(K):
+    # the puppet of the local demo is the Hi-Res puppet (the kit's way hires): within the Hi-Res budget
+    # (include/rldhires.inc RLDHIRES_BUDGET_TRIANGLES); the Low-Poly target (8000) is checked on its own figure
     n = K.mesh["ntri"]
-    return ck(n <= 8000, str(n), "<= 8000", value=n)
+    return ck(n <= 64000, str(n), "<= 64000 (Hi-Res budget)", value=n)
 
 
 def c3_7(K):
@@ -881,7 +885,8 @@ def c4_2(K):
         if n in K.clips:
             worst = max(worst, abs(K.clips[n].dur - CLIP_DUR[n]))
     ok = not miss and worst <= 1.0 / 30.0 + 1e-6
-    return ck(ok, "%d/12 present, max dev %s s" % (12 - len(miss), fnum(worst)), "all 12, dev <= 1/30 s",
+    nc = len(CLIP_NAMES)
+    return ck(ok, "%d/%d present, max dev %s s" % (nc - len(miss), nc, fnum(worst)), "all %d, dev <= 1/30 s" % nc,
               ("missing: " + ",".join(miss)) if miss else "", value=worst)
 
 
@@ -970,7 +975,7 @@ def c4_6(K):
     ok = True
     rest = K.joint_pos("pelvis", K.m.rest_world)
     any_ = False
-    for n in K.have(DRIVE + ["jump", "hit"]):
+    for n in K.have(DRIVE + ["jump", "hit"] + FINISH):
         any_ = True
         up = dn = hz = dd = 0.0
         for _, w in K.frames(n):
@@ -988,7 +993,7 @@ def c4_6(K):
         ok = ok and good
     if not any_:
         return skip("no seated clips")
-    return ck(ok, "; ".join(msgs), "drive <= 2.0 u; jump/hit up <= 6, xz <= 2, down <= 2")
+    return ck(ok, "; ".join(msgs), "drive and finish <= 2.0 u; jump/hit up <= 6, xz <= 2, down <= 2")
 
 
 def c4_7(K):
@@ -1166,6 +1171,46 @@ def c4_15(K):
     return ck(max(ext) <= 160.0, "extent %s / %s / %s u" % tuple(fnum(e) for e in ext), "<= 160 u per axis", value=ext)
 
 
+def head_turn(K, w):
+    """(pitch down, yaw toward +x) in degrees of the head's forward direction against its rest pose."""
+    hd = K.m.names["head"]
+    f = vnorm(mdir(mmul(w[hd], minv_affine(K.m.rest_world[hd])), (0.0, 0.0, 1.0)))
+    return math.asin(max(-1.0, min(1.0, -f[1]))) * DEG, math.atan2(f[0], f[2]) * DEG
+
+
+def c4_16(K):
+    # the optional finish clips: finish_win cheers with both hands up (above the head joint) in every frame;
+    # finish_lose keeps the hands on the wheel, the head down and shaking
+    cl = K.have(FINISH)
+    if not cl:
+        return skip("no finish clips")
+    msgs = []
+    ok = True
+    if "finish_win" in cl:
+        low = 1e9
+        for _, w in K.frames("finish_win"):
+            hy = K.joint_pos("head", w)[1]
+            for side in (".L", ".R"):
+                low = min(low, K.joint_pos("fingers" + side, w)[1] - hy)
+        ok = ok and low >= 0.0
+        msgs.append("win: fingers - head y min %s u" % fnum(low))
+    if "finish_lose" in cl:
+        ks = K.m.names["kart_steer"]
+        inv = minv_affine(K.m.rest_world[ks])
+        gp = grip_points({"steer": K.steer})
+        grip = 0.0
+        pmin, ylo, yhi = 1e9, 1e9, -1e9
+        for _, w in K.frames("finish_lose"):
+            mm = mmul(w[ks], inv)
+            for side in (".L", ".R"):
+                grip = max(grip, dist(K.joint_pos("fingers" + side, w), mpoint(mm, gp[side])))
+            pd, yw = head_turn(K, w)
+            pmin, ylo, yhi = min(pmin, pd), min(ylo, yw), max(yhi, yw)
+        ok = ok and grip <= 1.5 and pmin >= 10.0 and (yhi - ylo) >= 20.0
+        msgs.append("lose: grip %s u, head down min %s deg, shake %s deg" % (fnum(grip), fnum(pmin), fnum(yhi - ylo)))
+    return ck(ok, "; ".join(msgs), "win: hands >= head joint; lose: grip <= 1.5 u, head down >= 10 deg, shake >= 20 deg")
+
+
 # ---------------------------------------------------------------- K6 criteria
 
 def tri_count(K_or_model, nodes):
@@ -1280,7 +1325,7 @@ ALL = [("3.1", c3_1), ("3.2", c3_2), ("3.3", c3_3), ("3.4", c3_4), ("3.5", c3_5)
        ("3.8", c3_8), ("3.9", c3_9), ("3.10", c3_10), ("3.11", c3_11),
        ("4.2", c4_2), ("4.3", c4_3), ("4.4", c4_4), ("4.5", c4_5), ("4.6", c4_6), ("4.7", c4_7), ("4.8", c4_8),
        ("4.9", c4_9), ("4.10", c4_10), ("4.11", c4_11), ("4.12", c4_12), ("4.13", c4_13), ("4.14", c4_14),
-       ("4.15", c4_15), ("6.6", c6_6), ("6.7", c6_7), ("6.8", c6_8), ("6.9", c6_9)]
+       ("4.15", c4_15), ("4.16", c4_16), ("6.6", c6_6), ("6.7", c6_7), ("6.8", c6_8), ("6.9", c6_9)]
 NEEDS_PUPPET = ({c for c, _ in ALL if c.startswith("3.") or c.startswith("4.")})
 
 
@@ -1735,6 +1780,8 @@ def selftest():
     case("two components -> 3.9 FAIL", expect("cut", {"cut": "head"}, "3.9", "FAIL"))
     case("duration off by 0.2 s -> 4.2 FAIL", expect("dur", {"durs": {"steer_left": 0.7}}, "4.2", "FAIL"))
     case("missing clip -> 4.2 FAIL", expect("miss", {"skip_clips": ["menu"]}, "4.2", "FAIL"))
+    case("finish clips with the arms down and no head shake -> 4.16 FAIL", expect("base", {}, "4.16", "FAIL"))
+    case("no finish clips -> 4.16 SKIP", expect("nofin", {"skip_clips": ["finish_win", "finish_lose"]}, "4.16", "SKIP"))
     case("podium foot 1 u below ground -> 4.9 FAIL", expect("below", {"below": 1.0}, "4.9", "FAIL"))
     case("weights not summing to 1 -> 3.8 FAIL", expect("bw", {"bad_weight": True}, "3.8", "FAIL"))
     case("wheel 1 u off -> 6.7 FAIL", expect("wh", {"wheel_off": True}, "6.7", "FAIL"))
@@ -1770,8 +1817,8 @@ def selftest():
         K, _k = _kit({})
         r = run_measure(K, None, "psx")
         s1 = json.dumps([x.as_dict() for x in r], sort_keys=True)
-        return len(r) == 29 and "3.1" in s1, "len %d" % len(r)
-    case("29 criteria, JSON serialisable", t_json)
+        return len(r) == 30 and "3.1" in s1, "len %d" % len(r)
+    case("30 criteria, JSON serialisable", t_json)
 
     bad = results.count(False)
     print("creator-kit-measure selftest: %d ok, %d FAIL" % (len(results) - bad, bad))

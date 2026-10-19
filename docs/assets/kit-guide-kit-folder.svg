@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 474" width="800" height="474" font-family="sans-serif">
+<rect width="800" height="474" rx="12" fill="#f2f3f5"/>
+<text x="400" y="30" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">Your kit folder</text>
+<rect x="20" y="46" width="760" height="142" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="40" y="70" font-size="14" font-weight="bold" fill="#1f2933">&lt;kit folder&gt;</text>
+<text x="60" y="94" font-size="12.5" fill="#1f2933">NOTICE.txt</text>
+<text x="60" y="113" font-size="12.5" fill="#1f2933">CREATOR_KIT.html</text>
+<text x="390" y="113" font-size="12" fill="#5f6b7a">this guide</text>
+<circle cx="48" cy="128" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="60" y="132" font-size="12.5" fill="#1f2933">kit-kart.glb, kit-wheel.glb, kit-*-gltf.glb</text>
+<text x="390" y="132" font-size="12" fill="#5f6b7a">the kart and wheels from your game files</text>
+<text x="60" y="151" font-size="12.5" fill="#1f2933">kit-info.json, kit-extract.txt</text>
+<text x="390" y="151" font-size="12" fill="#5f6b7a">sizes and points of the kart, the log</text>
+<text x="60" y="170" font-size="12.5" fill="#1f2933">classic.glb</text>
+<text x="390" y="170" font-size="12" fill="#5f6b7a">only when you start from an old character</text>
+<path d="M132 190L132 218.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M132 226L128.2 217L135.8 217z" fill="#5f6b7a"/>
+<rect x="20" y="230" width="224" height="172" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="32" y="254" font-size="14" font-weight="bold" fill="#1f2933">vanilla\</text>
+<text x="32" y="273" font-size="11" fill="#5f6b7a">Vanilla: classic limits, no clips</text>
+<circle cx="36" cy="294" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="46" y="298" font-size="11" fill="#1f2933">creator-kit-vanilla.blend</text>
+<circle cx="36" cy="312" r="4" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="46" y="316" font-size="11" fill="#1f2933">creator-kit-vanilla-figure.glb</text>
+<text x="46" y="334" font-size="11" fill="#1f2933">creator-kit-report.json</text>
+<text x="46" y="352" font-size="11" fill="#1f2933">NOTICE.txt</text>
+<path d="M370 190L370 218.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M370 226L366.2 217L373.8 217z" fill="#5f6b7a"/>
+<rect x="258" y="230" width="224" height="172" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="270" y="254" font-size="14" font-weight="bold" fill="#1f2933">lowpoly\</text>
+<text x="270" y="273" font-size="11" fill="#5f6b7a">Low-Poly: 8000 triangles, 512 px</text>
+<circle cx="274" cy="294" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="284" y="298" font-size="11" fill="#1f2933">creator-kit-lowpoly.blend</text>
+<circle cx="274" cy="312" r="4" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="284" y="316" font-size="11" fill="#1f2933">creator-kit-lowpoly-figure.glb</text>
+<text x="284" y="334" font-size="11" fill="#1f2933">creator-kit-report.json</text>
+<text x="284" y="352" font-size="11" fill="#1f2933">NOTICE.txt</text>
+<path d="M638 190L638 218.8" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M638 226L634.2 217L641.8 217z" fill="#5f6b7a"/>
+<rect x="496" y="230" width="284" height="172" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="508" y="254" font-size="14" font-weight="bold" fill="#1f2933">hires\</text>
+<text x="508" y="273" font-size="11" fill="#5f6b7a">Hi-Res: full budget, 12 + 2 clips</text>
+<circle cx="512" cy="294" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="522" y="298" font-size="11" fill="#1f2933">creator-kit-hires.blend</text>
+<circle cx="512" cy="312" r="4" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="522" y="316" font-size="11" fill="#1f2933">creator-kit-hires-figure.glb</text>
+<circle cx="512" cy="330" r="4" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="522" y="334" font-size="11" fill="#1f2933">creator-kit-demo-local.glb</text>
+<text x="522" y="352" font-size="11" fill="#1f2933">creator-kit-report.json</text>
+<text x="522" y="370" font-size="11" fill="#1f2933">NOTICE.txt</text>
+<text x="522" y="388" font-size="11" fill="#1f2933">demo-puppet.rldchar + .bat (demo driver)</text>
+<circle cx="125.1" cy="427" r="5" fill="#2f9e44" stroke="#2f9e44" stroke-width="1"/>
+<text x="138.1" y="432" font-size="12" fill="#1f2933">the figure alone, without the kart</text>
+<circle cx="411.6" cy="427" r="5" fill="#f08c00" stroke="#f08c00" stroke-width="1"/>
+<text x="424.6" y="432" font-size="12" fill="#1f2933">contains the kart from your game files</text>
+<text x="400" y="458" font-size="12" text-anchor="middle" fill="#5f6b7a">Only the ways you choose are written.</text>
+</svg>

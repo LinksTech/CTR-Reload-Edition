@@ -1,0 +1,8 @@
+The kart and wheels are generated on this PC from your own game files.
+The template exports only your character, and every player gets the
+kart from their own game.
+
+CTR Reload is not responsible for files you share.
+
+Requirements: Blender 5.2 and your own copy of the original game, set
+up for CTR Reload.

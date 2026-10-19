@@ -169,6 +169,17 @@
 //   Hi-Res    fallback) and the .glb itself in the chunk CHRG (THE BUILD OF A
 //             CHRG ROUTE); the presets and the plain-English messages are
 //             rs_charhires.c's
+// THE CREATOR KIT (rs_kit.c, a module of its own embedded in this page): step
+// 0 has "Creator Kit" at the top right, beside "What do you want to build?"
+// (K10: the kit's icon, the title in the font of the card titles, "Templates
+// to get started" small below it; as tall as that heading row), and the step
+// Model of every route, while no model is chosen (the field empty), the line
+// "No model yet? Start with the Creator Kit." with "Open Creator Kit" at its
+// end. Either shows the kit's page in place of this one (the sidebar keeps
+// Character marked): from step 0 with all three ways, from the step Model
+// with the way of the route chosen (Rs_KitChooseWay, K9). Back on the kit's
+// first step comes back here to step 0 (RS_WM_HOST_RETURN), every entry
+// kept. The automation verb "kit" clicks the one that is shown.
 // Then only the steps of the route, the tabs of before: Model, Driver, In-game
 // look, Voices (optional: Next skips it), Build. What a route does not need is
 // hidden, not greyed out (Char_RouteHides). "Change type" in the head of the
@@ -208,7 +219,8 @@
 // suggests "Kart: from the player's game data" (Advanced, card Options, below
 // the upscale): the box is ticked, one line below it and one on the step Model
 // with "Change" say so, and the pack gets --game-kart template (the game puts
-// the original kart from the player's own game data under the figure). Any
+// the original kart from the player's own game data under the figure; from
+// 4.3 also under the classic model, make-char --figure-only: CHRI bit 5). Any
 // other model (RS_KART_OWN) has the switch off and is packed as before - the
 // same bytes. A box the author clicked stays with that model (the choices per
 // model); "gamekart auto" in automation forgets it. A finished character
@@ -229,9 +241,13 @@
 //
 // THE CLIPS of a CHRG route (Advanced, card Animations; the page "Hi-Res
 // (Preview)" had them before it went): the list "Clip" - Bind pose and the 12
-// clips of the game -, Play | Pause, "< Frame" and "Frame >" (1/30 s, a tick
-// of the game), the time of the frame, and the table of the 12 clips: in the
-// file and how long, or the stand-in the game plays, or the rest pose. A
+// clips of the game, then the optional finish_win and finish_lose (4.3) -,
+// Play | Pause, "< Frame" and "Frame >" (1/30 s, a tick of the game), the time
+// of the frame, and the table of the 14 clips: in the file and how long, or
+// the stand-in the game plays, or the rest pose; a missing finish clip is no
+// warning and says what the game plays after the finish line instead (with
+// a kart - its kart part or the game's kart - the seated race clips, else
+// podium_1..3 by place / lose). A
 // click on a row shows that clip. The preview shows the clip chosen; at the
 // start idle (where the clips can play), playing - in automation paused at
 // its first frame unless "hires-play on" (shots stay the same every run).
@@ -255,9 +271,11 @@
 // a CHRG route), and nothing where it has none. Vanilla: make-char's @msg
 // lines by their id (Char_TabOfCode, as before); a CHRG route: those of
 // RsCharHires_Messages by their place - a model without clips or wheel nodes
-// is one line each - and of the classic fallback's make-char only its errors
-// about the model; its other lines about the model (the reduction, the fit,
-// rig-bind-pose) stay behind "Show details" (Char_ChrgMessages). The head of
+// is one line each - and of the classic fallback's make-char its errors and
+// warnings about the model; its notes and infos about the model (the
+// reduction, the fit, rig-bind-pose) stay behind "Show details"
+// (Char_ChrgMessages; the warnings are shown since the check counted them
+// while the step had none of them). The head of
 // each step keeps its number in red, amber or green.
 //
 // THE PREVIEW is shown from step 1 on, on every step. Vanilla: the classic
@@ -545,6 +563,10 @@
 #define CHAR_ID_GAMEKART_NOTE  249   // the line below the box: the suggestion, or the author's choice
 #define CHAR_ID_GAMEKART_STEP  250   // the line of the switch on the step Model itself (outside Advanced)
 #define CHAR_ID_GAMEKART_CHANGE 251  // "Change" at its end: opens Advanced at the box
+// THE CREATOR KIT: its button on step 0 and its line on the step Model.
+#define CHAR_ID_KIT_OPEN       252   // "Creator Kit" at the top right of step 0
+#define CHAR_ID_KIT_STEP       253   // "No model yet? Start with the Creator Kit." (CHRG routes, no model)
+#define CHAR_ID_KIT_LINK       254   // "Open Creator Kit" at its end
 #define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode, upscale or PNG conversion the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
@@ -941,6 +963,7 @@ static struct {
     int route;                      // RS_ROUTE_NONE until chosen
     int choosing;                   // step 0 "What do you want to build?" is shown
     HWND routeAsk, routeCard[RS_ROUTES], routeLabel, changeType;
+    HWND kitOpen, kitStep, kitLink; // THE CREATOR KIT: step 0's button, the line of the step Model
     HBITMAP routeImage[RS_ROUTES];  // the pictures of the cards (Rs_RouteImage), NULL = none
     int routeImageW, routeImageH;   // the size they were made for
     int advOpen;                    // Advanced of the step Model is open
@@ -961,6 +984,13 @@ static struct {
     // the box is the author's choice for this model.
     HWND gameKart, gameKartHelp, gameKartNote, gameKartStep, gameKartChange;
     int kartSuggested, kartChosen;
+    // ... and of the route Vanilla (K6): the kart case of its model, a .glb
+    // (RS_KART_*, RsHires_KartCaseFile; -1 = none: not a .glb, not read), the
+    // model and its stamp it was read for.
+    int vanKart;
+    int vanSkins;                   // its skins: one or more - make-char gets --rig bind-pose (as the CHRG fallback)
+    wchar_t vanKartPath[CHAR_VAL];
+    unsigned long long vanKartStamp;
     // THE JPEG TEXTURES of a CHRG route: the box of Advanced and its help,
     // the line on the step Model with "Change" (empty and hidden while the
     // box is off), the button "Convert to PNG" (shown: pngFixOn); of the
@@ -1000,6 +1030,7 @@ static struct {
     // preview switch Low-Poly/Hi-Res | Classic fallback, the idle clip playing.
     struct RsHiresCheck hires;
     int hiresChecked;               // hires holds the check of hiresPath
+    int hiresLogDue;                // its line in the automation log is still to be written (Char_HiresLog)
     int hiresPng;                   // ... as converted to PNG ("Convert JPEG textures to PNG" was on)
     int hiresGameKart;              // ... with the author's choice of "Kart: from the player's game data" (-1 none, 0, 1)
     wchar_t hiresPath[CHAR_VAL];
@@ -1249,12 +1280,27 @@ static int Char_ModelIsCharacter(void)
     return Char_EndsWith(model, L".rldchar");
 }
 
+// THE KART of the route Vanilla (K6): the kart case of its model when the box
+// has a place there - a .glb read (RsHires_KartCaseFile), not with a kart part
+// of its own, and the card Options of Advanced shown on Vanilla (the box lives
+// there) - else -1. The same rule as a CHRG route: the kit's kart joint
+// without a kart (RS_KART_GAME) suggests the box.
+static int Char_VanillaKart(void)
+{
+    if (g_char.route != RS_ROUTE_VANILLA || g_char.vanKart < 0 || g_char.vanKart == RS_KART_PART ||
+        !Char_ExtrasShown(CHAR_EXTRAS_OPTIONS))
+        return -1;
+    return g_char.vanKart;
+}
+
 // THE KART: the box "Kart: from the player's game data" has a place - a CHRG
 // route, a .glb model, and not a model with a kart part of its own (that wins:
-// the check says so as a message).
+// the check says so as a message); on Vanilla Char_VanillaKart.
 static int Char_KartBoxWanted(void)
 {
-    if (!Char_Chrg() || Char_ModelIsCharacter())
+    if (!Char_Chrg())
+        return Char_VanillaKart() >= 0;
+    if (Char_ModelIsCharacter())
         return 0;
     return !(g_char.hiresChecked && g_char.hires.read && g_char.hires.kartCase == RS_KART_PART);
 }
@@ -1306,6 +1352,22 @@ static void Char_ExtrasFix(void)
         }
 }
 
+// THE CREATOR KIT: its line on the step Model is wanted on every route
+// (Vanilla, Low-Poly, Hi-Res) while the model field is empty (spaces only
+// count as empty).
+static int Char_KitHint(void)
+{
+    wchar_t model[8];
+    int i;
+    if (g_char.route < 0 || g_char.route >= RS_ROUTES || !g_char.model)
+        return 0;
+    GetWindowTextW(g_char.model, model, 8);
+    for (i = 0; model[i]; i++)
+        if (model[i] != L' ' && model[i] != L'\t')
+            return 0;
+    return 1;
+}
+
 // The controls a route does not need: hidden (not greyed out). Vanilla has
 // no "Upscale small textures" and no switch Low-Poly/Hi-Res | Classic fallback; a CHRG
 // route has no size (the hi-res model keeps its own size), no repair or
@@ -1317,9 +1379,10 @@ static void Char_ExtrasFix(void)
 static int Char_RouteHides(HWND c)
 {
     int id = GetDlgCtrlID(c);
+    // (Vanilla keeps "Kart: from the player's game data": Char_KartBoxWanted.)
     if (!Char_Chrg())
         return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
-               c == g_char.upscaleChange || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_PREVIEW_SWITCH ||
+               c == g_char.upscaleChange || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_PREVIEW_SWITCH ||
                id == CHAR_ID_PREVIEW_SWITCH + 1 ||
                (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP) || (id >= CHAR_ID_CLIP_LABEL && id <= CHAR_ID_CHAR_NOTE);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
@@ -2760,6 +2823,10 @@ static int Char_TabOfId(int id, int *card)
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
     }
+    if (id == CHAR_ID_KIT_STEP || id == CHAR_ID_KIT_LINK) {
+        *card = CHAR_CARD_BASIC;
+        return CHAR_TAB_MODEL;
+    }
     if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE ||
         id == CHAR_ID_GAMEKART_STEP || id == CHAR_ID_GAMEKART_CHANGE || (id >= CHAR_ID_PNG_STEP && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_CLASSIC_STEP || id == CHAR_ID_CLASSIC_CHANGE) {
         *card = CHAR_CARD_BASIC;
@@ -2976,6 +3043,16 @@ static void Char_MsgAdd(int tab, int severity, const wchar_t *text, const wchar_
 
 // A message of the list opens its step (and its card of Advanced).
 static void Char_MsgOpen(HWND page, int i);
+
+// The messages of the page of one severity, every step: what the page shows
+// (the automation log counts these, so that log and page agree).
+static int Char_CountPageMsgs(int severity)
+{
+    int i, n = 0;
+    for (i = 0; i < g_char.pageMsgCount; i++)
+        n += g_char.pageMsg[i].severity == severity;
+    return n;
+}
 
 // The errors and warnings of the last run per tab, for the heads.
 static void Char_CountTabs(void)
@@ -3257,6 +3334,95 @@ static void Char_DrawRouteCard(const DRAWITEMSTRUCT *di, int r)
     if (focus && !(di->itemState & ODS_NOFOCUSRECT)) {
         t = rc;
         InflateRect(&t, -Rs_Px(5), -Rs_Px(5));
+        SetTextColor(dc, RS_COL_TEXT);
+        DrawFocusRect(dc, &t);
+    }
+}
+
+// THE CREATOR KIT's button of step 0 (K10): the kit's icon, "Creator Kit" in
+// the font of the card titles and below it, small, "Templates to get
+// started"; framed as the cards, the accent colour where the focus is.
+#define CHAR_KIT_TITLE L"Creator Kit"
+#define CHAR_KIT_SUB   L"Templates to get started"
+#define CHAR_KIT_ICON  L"\xE7B8"            // Package (Segoe MDL2 Assets), the kit's module icon
+
+// The height of one line of a font (RS_FONT_*), or of the large icon font (-1).
+static int Char_FontLine(int font)
+{
+    HDC dc = GetDC(NULL);
+    TEXTMETRICW tm;
+    HGDIOBJ old = SelectObject(dc, font < 0 ? Rs_IconFont(1) : Rs_Font(font));
+    GetTextMetricsW(dc, &tm);
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+    return tm.tmHeight;
+}
+
+static int Char_FontWidth(int font, const wchar_t *text)
+{
+    HDC dc = GetDC(NULL);
+    SIZE sz = { 0, 0 };
+    HGDIOBJ old = SelectObject(dc, font < 0 ? Rs_IconFont(1) : Rs_Font(font));
+    GetTextExtentPoint32W(dc, text, (int)wcslen(text), &sz);
+    SelectObject(dc, old);
+    ReleaseDC(NULL, dc);
+    return sz.cx;
+}
+
+// What the button needs: padding, the icon, the wider of its two lines; the
+// two lines one above the other.
+static void Char_KitButtonSize(int *w, int *h)
+{
+    const int padX = Rs_Px(14), padY = Rs_Px(6), iconGap = Rs_Px(10);
+    int tw = Char_FontWidth(RS_FONT_SECTION, CHAR_KIT_TITLE), sw = Char_FontWidth(RS_FONT_SMALL, CHAR_KIT_SUB);
+    *w = padX + Char_FontWidth(-1, CHAR_KIT_ICON) + iconGap + (tw > sw ? tw : sw) + padX;
+    *h = padY + Char_FontLine(RS_FONT_SECTION) + Char_FontLine(RS_FONT_SMALL) + padY;
+}
+
+static void Char_DrawKitButton(const DRAWITEMSTRUCT *di)
+{
+    HDC dc = di->hDC;
+    RECT rc = di->rcItem, t;
+    const int focus = (di->itemState & ODS_FOCUS) != 0, pressed = (di->itemState & ODS_SELECTED) != 0;
+    const int padX = Rs_Px(14), iconGap = Rs_Px(10);
+    const int titleH = Char_FontLine(RS_FONT_SECTION), subH = Char_FontLine(RS_FONT_SMALL);
+    int iconW = Char_FontWidth(-1, CHAR_KIT_ICON), y;
+    HBRUSH br;
+    HPEN pen;
+    HGDIOBJ oldBr, oldPen, oldFont;
+
+    br = CreateSolidBrush(RS_COL_PAGE);
+    FillRect(dc, &rc, br);
+    DeleteObject(br);
+    br = CreateSolidBrush(RS_COL_CARD);
+    pen = CreatePen(PS_SOLID, focus || pressed ? Rs_Px(2) : 1, focus || pressed ? RS_COL_ACCENT : RS_COL_BORDER);
+    oldBr = SelectObject(dc, br);
+    oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, Rs_Px(14), Rs_Px(14));
+    SelectObject(dc, oldBr);
+    SelectObject(dc, oldPen);
+    DeleteObject(br);
+    DeleteObject(pen);
+    SetBkMode(dc, TRANSPARENT);
+    // The icon, in the middle of the button's height.
+    SetRect(&t, rc.left + padX, rc.top, rc.left + padX + iconW, rc.bottom);
+    oldFont = SelectObject(dc, Rs_IconFont(1));
+    SetTextColor(dc, RS_COL_ACCENT);
+    DrawTextW(dc, CHAR_KIT_ICON, -1, &t, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    // The two lines, together in the middle of the height.
+    y = rc.top + ((rc.bottom - rc.top) - titleH - subH) / 2;
+    SetRect(&t, rc.left + padX + iconW + iconGap, y, rc.right - padX, y + titleH);
+    SelectObject(dc, Rs_Font(RS_FONT_SECTION));
+    SetTextColor(dc, RS_COL_TEXT);
+    DrawTextW(dc, CHAR_KIT_TITLE, -1, &t, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SetRect(&t, t.left, t.bottom, t.right, t.bottom + subH);
+    SelectObject(dc, Rs_Font(RS_FONT_SMALL));
+    SetTextColor(dc, RS_COL_MUTED);
+    DrawTextW(dc, CHAR_KIT_SUB, -1, &t, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+    if (focus && !(di->itemState & ODS_NOFOCUSRECT)) {
+        t = rc;
+        InflateRect(&t, -Rs_Px(4), -Rs_Px(4));
         SetTextColor(dc, RS_COL_TEXT);
         DrawFocusRect(dc, &t);
     }
@@ -3668,10 +3834,11 @@ static void Char_ImportColumns(int width)
     ListView_SetColumnWidth(g_char.modelFiles, 3, state);
 }
 
-// Height of the list for this many rows: its head, the rows, the border.
-static int Char_ImportListHeight(int rows)
+// Height of a list (report view) for this many rows: its head, the rows, the
+// border - measured, so that the last row is not cut at any DPI or font.
+static int Char_ListHeight(HWND list, int rows)
 {
-    HWND head = ListView_GetHeader(g_char.modelFiles);
+    HWND head = ListView_GetHeader(list);
     int headH = Rs_Px(24), rowH = 0;
     RECT rc;
 
@@ -3685,18 +3852,23 @@ static int Char_ImportListHeight(int rows)
         if (Header_Layout(head, &hl) && wp.cy > 0)
             headH = wp.cy;
     }
-    if (ListView_GetItemCount(g_char.modelFiles) > 0 && ListView_GetItemRect(g_char.modelFiles, 0, &rc, LVIR_BOUNDS))
+    if (ListView_GetItemCount(list) > 0 && ListView_GetItemRect(list, 0, &rc, LVIR_BOUNDS))
         rowH = rc.bottom - rc.top;
     if (rowH <= 0) {
         TEXTMETRICW tm;
-        HDC dc = GetDC(g_char.modelFiles);
-        HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(g_char.modelFiles, WM_GETFONT, 0, 0));
+        HDC dc = GetDC(list);
+        HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(list, WM_GETFONT, 0, 0));
         GetTextMetricsW(dc, &tm);
         SelectObject(dc, old);
-        ReleaseDC(g_char.modelFiles, dc);
+        ReleaseDC(list, dc);
         rowH = tm.tmHeight + Rs_Px(4);
     }
     return headH + rows * rowH + 2 * GetSystemMetrics(SM_CYBORDER) + Rs_Px(2);
+}
+
+static int Char_ImportListHeight(int rows)
+{
+    return Char_ListHeight(g_char.modelFiles, rows);
 }
 
 // The list anew from g_char.importRow.
@@ -5773,11 +5945,14 @@ static void Char_ReduceFitShow(HWND page, int show)
 // THE MESSAGES OF A CHRG ROUTE: those of RsCharHires_Messages at their place
 // (the model, its animations, its wheels, its size on the step Model; the
 // build on the step Build), each with its "How to fix" and rule ID; a line
-// when the model could not be read; of the classic fallback's make-char only
-// its errors about the model ("Classic fallback: ..."; its warnings, notes and
-// infos about the model - the reduction, the fit, rig-bind-pose - stay behind
-// Show details) and, as for Vanilla, everything it says about the other
-// steps (name, icon, voices). Returns the errors.
+// when the model could not be read; of the classic fallback's make-char its
+// errors and warnings about the model ("Classic fallback: ..."; its notes and
+// infos about the model - the reduction, the fit, rig-bind-pose, which every
+// fallback says - stay behind Show details) and, as for Vanilla, everything
+// it says about the other steps (name, icon, voices). Returns the errors.
+// The warnings were behind Show details too until the check counted them
+// while the step showed none ("Ready to build" with warnings no one could
+// see): what the check counts as a warning is shown at its place.
 // The part of the hi-res check alone (also without make-char, Char_ChrgNoMake).
 static int Char_ChrgHiresMessages(void)
 {
@@ -5828,7 +6003,8 @@ static int Char_ChrgMessages(int exitCode, int makeOk)
         for (i = 0; i < g_charJob.msgCount; i++) {
             const struct CharMsg *m = &g_charJob.msgs[i];
             int tab = Char_TabOfCode(m->code);
-            if (m->severity != order[s] || (tab == CHAR_TAB_MODEL && m->severity != RS_SEV_ERROR))
+            if (m->severity != order[s] ||
+                (tab == CHAR_TAB_MODEL && m->severity != RS_SEV_ERROR && m->severity != RS_SEV_WARNING))
                 continue;
             if (tab == CHAR_TAB_MODEL)
                 swprintf(text, 2 * RS_WIZ_TEXT_MAX + 32, L"Classic fallback: %ls", m->text ? m->text : L"");
@@ -5849,7 +6025,7 @@ static void Char_ChrgInfo(void)
 {
     const struct RsHiresCheck *c = &g_char.hires;
     const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
-    wchar_t t[640], tris[2][24], skin[32];
+    wchar_t t[640], tris[2][24], skin[32], finish[32];
     unsigned long long target;
     if (!c->read) {
         Char_SetInfo(c->why[0] ? c->why : L"The model could not be read.", RS_COL_ERROR);
@@ -5862,10 +6038,14 @@ static void Char_ChrgInfo(void)
         swprintf(skin, 32, L"skin of %u joint%ls", c->joints, c->joints == 1 ? L"" : L"s");
     else
         Char_Copy(skin, 32, L"no skin");
-    swprintf(t, 640, L"%ls triangles of %ls%ls - textures up to %u px, %d texture%ls, %.1f of %.1f MiB - %d of %d animations - %ls - %ls",
+    // The optional finish clips only when the file has one.
+    finish[0] = 0;
+    if (c->finishClips > 0)
+        swprintf(finish, 32, L" (+ %d finish)", c->finishClips);
+    swprintf(t, 640, L"%ls triangles of %ls%ls - textures up to %u px, %d texture%ls, %.1f of %.1f MiB - %d of %d animations%ls - %ls - %ls",
              tris[0], tris[1], p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge,
              c->textures, c->textures == 1 ? L"" : L"s", (double)c->textureBytes / 1048576.0, (double)c->budgetTextureBytes / 1048576.0,
-             c->clips, RS_HIRES_CLIPS,
+             c->clips, RS_HIRES_CLIPS_BASE, finish,
              c->wheels == 4 ? L"its own wheels" : c->parts == RS_HIRES_PARTS_GAME_KART ? L"the game's kart and wheels" : L"standard wheels",
              skin);
     Char_SetInfo(t, c->usable ? RS_COL_TEXT : RS_COL_ERROR);
@@ -5917,7 +6097,7 @@ static void Char_ShowCheckResult(int exitCode)
     if (Rs_Automating()) {
         if (ok)
             Rs_AutoLog(L"  check: ready to build, %d warning(s), %d note(s)",
-                       Char_CountMsgs(RS_SEV_WARNING), Char_CountMsgs(RS_SEV_NOTE));
+                       Char_CountPageMsgs(RS_SEV_WARNING), Char_CountPageMsgs(RS_SEV_NOTE));
         else
             Rs_AutoLog(L"  check: cannot build yet, %d problem(s)", errors);
         if (over)
@@ -6148,14 +6328,27 @@ static void Char_HiresEnsure(const wchar_t *model)
     g_char.animSeconds = 0.0f;
     g_char.animWheel = 0.0f;
     Char_ClipFill();
-    if (Rs_Automating()) {
-        if (g_char.hires.read)
-            Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
-                       g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS,
-                       g_char.hires.wheels, g_char.hires.errors, g_char.hires.warnings);
-        else
-            Rs_AutoLog(L"  hires check: not read - %ls", g_char.hires.why);
-    }
+    // Its line in the automation log once the colour mode is chosen
+    // (Char_VcolUpdate): the warnings are those of that mode.
+    g_char.hiresLogDue = 1;
+}
+
+// The line of a new hi-res check in the automation log, in the colour mode
+// chosen (RsHires_WarningsInMode: HRG-36 only in glTF, as rldpack hires-check
+// --vertex-colors says it).
+static void Char_HiresLog(void)
+{
+    if (!g_char.hiresLogDue)
+        return;
+    g_char.hiresLogDue = 0;
+    if (!Rs_Automating())
+        return;
+    if (g_char.hires.read)
+        Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
+                   g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
+                   g_char.hires.wheels, g_char.hires.errors, RsHires_WarningsInMode(&g_char.hires));
+    else
+        Rs_AutoLog(L"  hires check: not read - %ls", g_char.hires.why);
 }
 
 // The check of another model or none: the hi-res check goes.
@@ -6260,6 +6453,7 @@ static void Char_VcolUpdate(void)
     }
     if ((was < 0) != (g_char.vcolMode < 0) && g_char.view)
         Char_Relayout(GetParent(g_char.view));
+    Char_HiresLog();
     if (Rs_Automating() && s >= 0 && was != g_char.vcolMode)
         Rs_AutoLog(L"  vertex colors: %ls (%ls; suggested %ls)", RsHires_ColourWord(g_char.vcolMode),
                    g_char.vcolChosen ? L"the author's choice" : L"the suggestion", RsHires_ColourWord(s));
@@ -6349,7 +6543,8 @@ static void Char_UpscaleSet(int on)
 static void Char_OptionsChange(HWND page, HWND box)
 {
     int c;
-    if (!Char_Chrg() || !Char_ExtrasShown(CHAR_EXTRAS_OPTIONS))
+    // A CHRG route, or Vanilla with "Kart: from the player's game data" (K6).
+    if ((!Char_Chrg() && !(box == g_char.gameKart && Char_KartBoxWanted())) || !Char_ExtrasShown(CHAR_EXTRAS_OPTIONS))
         return;
     g_char.advOpen = 1;
     g_char.extrasCard = CHAR_EXTRAS_OPTIONS;
@@ -6378,7 +6573,7 @@ static void Char_GameKartControls(void)
     step[0] = 0;
     if (Char_KartBoxWanted()) {
         RsCharHires_GameKartLine(on, g_char.kartSuggested, line, RS_WIZ_TEXT_MAX);
-        RsCharHires_GameKartStepLine(on, g_char.kartSuggested, step, RS_WIZ_TEXT_MAX);
+        RsCharHires_GameKartStepLine(on, g_char.kartSuggested, g_char.route, step, RS_WIZ_TEXT_MAX);
     }
     GetWindowTextW(g_char.gameKartNote, was, RS_WIZ_TEXT_MAX);
     GetWindowTextW(g_char.gameKartStep, wasStep, RS_WIZ_TEXT_MAX);
@@ -6388,7 +6583,28 @@ static void Char_GameKartControls(void)
         Char_Relayout(GetParent(g_char.view));
 }
 
-// After the hi-res check of a CHRG route (as Char_UpscaleUpdate): the
+// THE KART of the route Vanilla (K6): the kart case of its model, read again
+// when the file is another one or changed; a model that is no .glb has none.
+static void Char_VanillaKartEnsure(const wchar_t *model)
+{
+    unsigned long long stamp;
+    if (!model[0] || !Char_EndsWith(model, L".glb")) {
+        g_char.vanKart = -1;
+        g_char.vanSkins = 0;
+        g_char.vanKartPath[0] = 0;
+        g_char.vanKartStamp = 0;
+        return;
+    }
+    stamp = Char_StampFile(CHAR_STAMP_START, model);
+    if (g_char.vanKartPath[0] && _wcsicmp(model, g_char.vanKartPath) == 0 && stamp == g_char.vanKartStamp)
+        return;
+    g_char.vanKart = RsHires_KartCaseFile(model, &g_char.vanSkins);
+    Char_Copy(g_char.vanKartPath, CHAR_VAL, model);
+    g_char.vanKartStamp = stamp;
+}
+
+// After the hi-res check of a CHRG route (as Char_UpscaleUpdate), or after the
+// kart case of a Vanilla model was read (Char_VanillaKartEnsure, K6): the
 // suggestion (the model has the kit's kart joint, RS_KART_GAME) and the box -
 // the author's choice for this model, or the suggestion. A model with a kart
 // part of its own (RS_KART_PART) or without a check has no box and no
@@ -6397,9 +6613,16 @@ static void Char_GameKartUpdate(void)
 {
     const int was = Char_IsChecked(g_char.gameKart);
     static int wasWanted = -1;      // the box had a place at the last check
-    int chosen, on, wanted;
-    if (!Char_Chrg() || !g_char.hiresChecked || !g_char.hires.read || g_char.hires.fromCharacter ||
-        g_char.hires.kartCase == RS_KART_PART) {
+    int chosen, on, wanted, kase;
+    const wchar_t *path;
+    if (Char_Chrg()) {
+        kase = !g_char.hiresChecked || !g_char.hires.read || g_char.hires.fromCharacter ? -1 : g_char.hires.kartCase;
+        path = g_char.hiresPath;
+    } else {
+        kase = Char_VanillaKart();
+        path = g_char.vanKartPath;
+    }
+    if (kase < 0 || kase == RS_KART_PART) {
         g_char.kartSuggested = 0;
         g_char.kartChosen = 0;
         Char_SetChecked(g_char.gameKart, 0);
@@ -6410,8 +6633,8 @@ static void Char_GameKartUpdate(void)
         wasWanted = wanted;
         return;
     }
-    g_char.kartSuggested = g_char.hires.kartCase == RS_KART_GAME;
-    chosen = Char_Remembered(g_char.hiresPath, CHAR_CHOICE_GAMEKART);
+    g_char.kartSuggested = kase == RS_KART_GAME;
+    chosen = Char_Remembered(path, CHAR_CHOICE_GAMEKART);
     g_char.kartChosen = chosen >= 0;
     on = chosen >= 0 ? chosen : g_char.kartSuggested;
     Char_SetChecked(g_char.gameKart, on);
@@ -6434,6 +6657,9 @@ static void Char_GameKartSet(HWND page, int on)
     Char_SetChecked(g_char.gameKart, on);
     if (Char_Chrg() && g_char.hiresChecked && g_char.hiresPath[0]) {
         Char_Remember(g_char.hiresPath, CHAR_CHOICE_GAMEKART, on != 0);
+        g_char.kartChosen = 1;
+    } else if (!Char_Chrg() && Char_VanillaKart() >= 0) {
+        Char_Remember(g_char.vanKartPath, CHAR_CHOICE_GAMEKART, on != 0);
         g_char.kartChosen = 1;
     }
     g_char.builtFresh = 0;
@@ -6782,6 +7008,12 @@ static void Char_ClipFill(void)
                 Char_Copy(state, 96, L"yes");
                 swprintf(length, 32, L"%.2f s", (double)c->clipSeconds[i]);
             }
+        } else if (c->clipState[i] == RS_HIRES_CLIP_FINISH) {
+            // Optional (4.3): no warning, the game plays what it played before.
+            wchar_t what[64];
+            RsHires_FinishText(c, i, what, 64);
+            swprintf(entry, 160, L"%ls (optional, missing - after the finish line: %ls)", RsHires_ClipName(i), what);
+            swprintf(state, 96, L"no (optional) - after the finish line: %ls", what);
         } else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK) {
             swprintf(entry, 160, L"%ls (missing - plays %ls%ls)", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
                      c->clipFullLock[i] ? L" at full lock" : L"");
@@ -7381,9 +7613,22 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
             Char_ArgsAdd(a, L"off");
         }
         // THE KART: a figure that gets the game's kart (the kit's joint, or the
-        // switch) - its classic model shows it in a plain grey stand-in kart
-        // made by code (make-char --figure-only, no game data in the file).
+        // switch) - its classic model shows it on a plain stand-in kart made by
+        // code (make-char --figure-only, no game data in the file), which a 4.3
+        // game swaps for the original kart (CHRI bit 5, set by --figure-only).
         if (Char_KartParts() == RS_HIRES_PARTS_GAME_KART)
+            Char_ArgsAdd(a, L"--figure-only");
+    } else {
+        // Vanilla (K6): a .glb with a skin (the kit's figure exported with its
+        // skeleton) is taken in its bind pose, as the CHRG fallback takes it
+        // (RsCharHires_FallbackArgs) - make-char refuses a skin without it; a
+        // model without a skin gets nothing new, its bytes stay as before.
+        if (g_char.route == RS_ROUTE_VANILLA && g_char.vanKart >= 0 && g_char.vanSkins > 0) {
+            Char_ArgsAdd(a, L"--rig");
+            Char_ArgsAdd(a, L"bind-pose");
+        }
+        // The game's kart, as for a CHRG route: its model is the classic one.
+        if (Char_KartBoxWanted() && Char_IsChecked(g_char.gameKart))
             Char_ArgsAdd(a, L"--figure-only");
     }
     return 1;
@@ -7837,6 +8082,14 @@ static int Char_CheckRun(HWND page, int force)
             Char_ChrgNoMake(page);
             return 0;
         }
+    } else {
+        // Vanilla (K6): the kart case of a .glb model, and with it the
+        // suggestion "Kart: from the player's game data" (make-char
+        // --figure-only), before make-char checks it with that switch.
+        wchar_t model[CHAR_VAL];
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        Char_VanillaKartEnsure(model);
+        Char_GameKartUpdate();
     }
     seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
@@ -9187,18 +9440,25 @@ static void Char_ReportChrg(FILE *f)
     }
     if (!g_char.hiresChecked || !c->read)
         return;
-    Char_Put(f, L"hires summary: clips %d/%d wheels %d/4 joints %u triangles %llu textures %d bytes %llu of %llu edge %u of %u",
-             c->clips, RS_HIRES_CLIPS, c->wheels, c->joints, c->triangles, c->textures, c->textureBytes, c->budgetTextureBytes,
-             c->textureEdge, c->budgetEdge);
+    Char_Put(f, L"hires summary: clips %d/%d wheels %d/4 joints %u triangles %llu textures %d bytes %llu of %llu edge %u of %u finish clips %d/%d",
+             c->clips, RS_HIRES_CLIPS_BASE, c->wheels, c->joints, c->triangles, c->textures, c->textureBytes, c->budgetTextureBytes,
+             c->textureEdge, c->budgetEdge, c->finishClips, RS_HIRES_CLIPS - RS_HIRES_CLIPS_BASE);
+    // The findings in the colour mode chosen (RsHires_RowInMode: HRG-36 only in glTF).
     for (i = 0; i < c->rowCount; i++)
-        Char_Put(f, L"hires row: %ls %ls %ls", Char_SeverityWord(c->rows[i].severity), c->rows[i].rule[0] ? c->rows[i].rule : L"-",
-                 c->rows[i].text);
+        if (RsHires_RowInMode(c, i))
+            Char_Put(f, L"hires row: %ls %ls %ls", Char_SeverityWord(c->rows[i].severity), c->rows[i].rule[0] ? c->rows[i].rule : L"-",
+                     c->rows[i].text);
     if (c->rowsDropped > 0)
         Char_Put(f, L"hires rows not listed: %d", c->rowsDropped);
     for (i = 0; i < RS_HIRES_CLIPS; i++) {
         if (c->clipState[i] == RS_HIRES_CLIP_PRESENT)
             Char_Put(f, L"hires clip: %ls present %.2f", RsHires_ClipName(i), (double)c->clipSeconds[i]);
-        else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK)
+        else if (c->clipState[i] == RS_HIRES_CLIP_FINISH) {
+            wchar_t what[64];
+            RsHires_FinishText(c, i, what, 64);
+            Char_Put(f, L"hires clip: %ls optional, missing - after the finish line: %ls (shown: %ls)", RsHires_ClipName(i), what,
+                     c->clipVia[i] >= 0 ? RsHires_ClipName(c->clipVia[i]) : L"rest");
+        } else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK)
             Char_Put(f, L"hires clip: %ls fallback %ls%ls", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
                      c->clipFullLock[i] ? L" full-lock" : L"");
         else
@@ -9223,6 +9483,14 @@ static void Char_ReportFlow(FILE *f)
         Char_Put(f, L"step: 0 choose");
     else
         Char_Put(f, L"step: %d %ls", g_char.tab + 1, g_charTabWords[g_char.tab]);
+    // THE CREATOR KIT: its button of step 0 and its line of the step Model.
+    Char_Put(f, L"kit option: %ls", Char_IsShown(g_char.kitOpen)
+                                         ? L"shown (\"Creator Kit\", top right of step 0; the kit's icon, the title in the font of "
+                                           L"the card titles, \"Templates to get started\" small below it)"
+                                         : L"not shown");
+    text = Rs_GetText(g_char.kitStep);
+    Char_Put(f, L"kit step line: %ls", Char_IsShown(g_char.kitStep) && Char_IsShown(g_char.kitLink) ? text : L"(none)");
+    Rs_Free(text);
     Char_Put(f, L"advanced: %ls%ls (cards on this route: %d)", g_char.advOpen ? L"open, card " : L"closed",
              g_char.advOpen ? g_charExtrasWords[g_char.extrasCard] : L"", Char_ExtrasCount());
     {
@@ -9256,16 +9524,28 @@ static void Char_ReportFlow(FILE *f)
         // the next build packs.
         GetWindowTextW(g_char.gameKartNote, line, RS_WIZ_TEXT_MAX);
         Char_Put(f, L"game kart: %ls (%ls), suggested %ls, line \"%ls\"%ls", Char_IsChecked(g_char.gameKart) ? L"on" : L"off",
-                 g_char.kartChosen ? L"chosen" : checked ? L"suggested" : L"default", g_char.kartSuggested ? L"on" : L"off", line,
-                 !Char_Chrg() ? L" [no CHRG route: hidden, not used]" : Char_KartBoxWanted() ? L"" : L" [no box on this model]");
+                 g_char.kartChosen ? L"chosen" : checked || Char_VanillaKart() >= 0 ? L"suggested" : L"default",
+                 g_char.kartSuggested ? L"on" : L"off", line,
+                 Char_KartBoxWanted() ? L"" : Char_Chrg() ? L" [no box on this model]"
+                                                          : L" [Vanilla: no box - the model is no .glb, has a kart part or is not read]");
         GetWindowTextW(g_char.gameKartStep, line, RS_WIZ_TEXT_MAX);
         Char_Put(f, L"game kart step line: \"%ls\"%ls", line,
                  !line[0] ? L"" : Char_IsShown(g_char.gameKartStep) && Char_IsShown(g_char.gameKartChange) ? L" (shown, with \"Change\")"
                                                                                                              : L" (not shown on this view)");
+        // Vanilla (K6): the kart case of its model and whether make-char gets
+        // --figure-only and (a skin) --rig bind-pose.
+        if (!Char_Chrg())
+            Char_Put(f, L"vanilla kart: %ls, make-char --figure-only: %ls, --rig bind-pose: %ls (skins %d)",
+                     g_char.vanKart == RS_KART_GAME ? L"the kit's kart joint, no kart" : g_char.vanKart == RS_KART_PART ? L"a kart part"
+                     : g_char.vanKart == RS_KART_OWN ? L"own (no kit joint)" : L"none (no .glb)",
+                     Char_KartBoxWanted() && Char_IsChecked(g_char.gameKart) ? L"yes" : L"no",
+                     g_char.route == RS_ROUTE_VANILLA && g_char.vanKart >= 0 && g_char.vanSkins > 0 ? L"yes" : L"no",
+                     g_char.vanSkins);
         {
             const unsigned parts = Char_KartParts();
             Char_Put(f, L"parts: %ls", (parts & RS_HIRES_PARTS_GAME_KART) == RS_HIRES_PARTS_GAME_KART
-                                       ? L"game kart (donor template), classic model: the figure in a grey stand-in kart (--figure-only)"
+                                       ? L"game kart (donor template), classic model: the figure on a stand-in kart that the game swaps for the original kart "
+                                         L"from the player's game data (--figure-only, 4.3); the grey stand-in only in a game before 4.3 or without game data"
                                        : (parts & RS_HIRES_PARTS_KART) ? L"kart part" : L"none");
         }
         // THE JPEG TEXTURES: the box (only ever the author's), what the check
@@ -9300,11 +9580,12 @@ static void Char_ReportFlow(FILE *f)
     }
     if (Char_Chrg()) {
         if (g_char.hiresChecked && g_char.hires.read)
-            Char_Put(f, L"hires check: %ls, %llu triangles (budget %llu), texture edge %u (budget %u), %d of %d clips, %d wheel nodes, "
+            Char_Put(f, L"hires check: %ls, %llu triangles (budget %llu), texture edge %u (budget %u), %d of %d clips, %d of %d finish clips, %d wheel nodes, "
                         L"%d error(s), %d warning(s), animation %ls",
                      g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.budgetTriangles,
-                     g_char.hires.textureEdge, g_char.hires.budgetEdge, g_char.hires.clips, RS_HIRES_CLIPS, g_char.hires.wheels,
-                     g_char.hires.errors, g_char.hires.warnings, g_char.hires.animReady ? L"plays" : L"none");
+                     g_char.hires.textureEdge, g_char.hires.budgetEdge, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
+                     g_char.hires.finishClips, RS_HIRES_CLIPS - RS_HIRES_CLIPS_BASE, g_char.hires.wheels,
+                     g_char.hires.errors, RsHires_WarningsInMode(&g_char.hires), g_char.hires.animReady ? L"plays" : L"none");
         else
             Char_Put(f, L"hires check: %ls", g_char.hiresChecked ? g_char.hires.why : L"(none)");
         Char_ReportChrg(f);
@@ -10717,6 +10998,16 @@ static void Char_Create(HWND page)
     SetWindowLongPtrW(g_char.routeLabel, GWL_STYLE, GetWindowLongPtrW(g_char.routeLabel, GWL_STYLE) | SS_RIGHT | SS_ENDELLIPSIS);
     g_char.changeType = Rs_Button(page, CHAR_ID_CHANGE_TYPE, L"Change type");
     Rs_SetTip(g_char.changeType, L"Back to \"What do you want to build?\" - everything entered stays.");
+    g_char.vanKart = -1;
+    // THE CREATOR KIT: step 0's button (owner-drawn, Char_DrawKitButton), the
+    // line of the step Model.
+    g_char.kitOpen = Char_TabButton(page, CHAR_ID_KIT_OPEN, L"Creator Kit", RS_FONT_SECTION);
+    Rs_SetTip(g_char.kitOpen, L"Ready Blender templates for a driver of your own - Vanilla, Low-Poly and Hi-Res: a jointed "
+                              L"puppet, its clips and the kart from your own game files.");
+    g_char.kitStep = Rs_Label(page, CHAR_ID_KIT_STEP, L"No model yet? Start with the Creator Kit.", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.kitStep, RS_COL_MUTED);
+    g_char.kitLink = Rs_Button(page, CHAR_ID_KIT_LINK, L"Open Creator Kit");
+    Rs_SetTip(g_char.kitLink, L"Opens the Creator Kit with the template of this way: a puppet to start your model from.");
     g_char.advanced = Rs_Button(page, CHAR_ID_ADVANCED, L"Advanced options");
     g_char.upscale = Rs_Check(page, CHAR_ID_UPSCALE, L"Upscale small textures");
     g_char.upscaleHelp = Rs_Label(page, CHAR_ID_UPSCALE_HELP,
@@ -10844,7 +11135,8 @@ static void Char_Create(HWND page)
     Rs_SetTip(g_char.clipTable, L"Click a clip to show it.");
     g_char.clipNote = Rs_Label(page, CHAR_ID_CLIP_NOTE,
                                L"The clips posed with the engine's own animation code, as the game plays them. A missing clip "
-                               L"plays its stand-in (the table says which). The wheels turn slowly while a clip plays.",
+                               L"plays its stand-in (the table says which). finish_win and finish_lose are optional: a driver "
+                               L"plays them after the finish line (places 1-3, from 4). The wheels turn slowly while a clip plays.",
                                RS_FONT_SMALL);
     Rs_SetTextColor(g_char.clipNote, RS_COL_MUTED);
     g_char.clipSel = -1;
@@ -10946,6 +11238,8 @@ static void Char_Create(HWND page)
     SetWindowPos(g_char.routeAsk, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     for (i = RS_ROUTES - 1; i >= 0; i--)
         SetWindowPos(g_char.routeCard[i], g_char.routeAsk, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // "Creator Kit" right after the three cards.
+    SetWindowPos(g_char.kitOpen, g_char.routeCard[RS_ROUTES - 1], 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 // Label left, field right of it.
@@ -11056,9 +11350,12 @@ static int Char_LayStrip(int left, int right, int top)
 // of the field when the text wraps); returns the y below it.
 static int Char_LayStepLine(HWND label, HWND change, int x, int y, int fieldW)
 {
-    int bh = Rs_Px(g_char.compact ? 24 : 28), cw = Char_TextWidth(change, L"Change") + Rs_Px(28);
-    int lw = fieldW - cw - Rs_Px(8), tw, off, rowH, noteH;
-    wchar_t *text = Rs_GetText(label);
+    int bh = Rs_Px(g_char.compact ? 24 : 28), cw, lw, tw, off, rowH, noteH;
+    wchar_t *text = Rs_GetText(change);
+    cw = Char_TextWidth(change, text) + Rs_Px(28);
+    lw = fieldW - cw - Rs_Px(8);
+    Rs_Free(text);
+    text = Rs_GetText(label);
     tw = Char_TextWidth(label, text) + Rs_Px(4);
     Rs_Free(text);
     if (tw < lw)
@@ -11090,6 +11387,9 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         infoH = Rs_Px(18);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH, TRUE);
     y += infoH + Rs_Px(g_char.compact ? 4 : 8);
+    // THE CREATOR KIT: every route without a model.
+    if (Char_KitHint())
+        y = Char_LayStepLine(g_char.kitStep, g_char.kitLink, x, y, fieldW);
     // A CHRG route, a model with COLOR_0: "Vertex color blending" and its line.
     if (chrg && g_char.vcolMode >= 0) {
         int bw = Char_CheckWidth(g_char.vblend);
@@ -11110,7 +11410,7 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         y = Char_LayStepLine(g_char.pngStep, g_char.pngChange, x, y, fieldW);
     if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.upscaleStep) > 0)
         y = Char_LayStepLine(g_char.upscaleStep, g_char.upscaleChange, x, y, fieldW);
-    if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.gameKartStep) > 0)
+    if ((chrg || Char_KartBoxWanted()) && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.gameKartStep) > 0)
         y = Char_LayStepLine(g_char.gameKartStep, g_char.gameKartChange, x, y, fieldW);
     // A model with JPEG textures: "Convert to PNG", the fix of its error.
     if (chrg && g_char.pngFixOn) {
@@ -11343,6 +11643,23 @@ static int Char_LayOptions(const RECT *in)
         MoveWindow(g_char.quality, x, y + Rs_Px(4), w, qualityH, TRUE);
         y += Rs_Px(4) + qualityH;
     }
+    // THE KART of Vanilla (K6): the box with its line and help, as on a CHRG
+    // route, for a .glb model that may get the game's kart.
+    if (Char_KartBoxWanted()) {
+        int bw = Char_CheckWidth(g_char.gameKart);
+        y += Rs_Px(14);
+        MoveWindow(g_char.gameKart, x, y, bw < w ? bw : w, Rs_Px(24), TRUE);
+        if (GetWindowTextLengthW(g_char.gameKartNote) > 0) {
+            y += Rs_Px(26);
+            noteH = Char_NoteHeight(g_char.gameKartNote, w);
+            MoveWindow(g_char.gameKartNote, x, y, w, noteH, TRUE);
+            y += noteH + Rs_Px(6);
+        } else
+            y += Rs_Px(28);
+        noteH = Char_TextHeight(g_char.gameKartHelp, w, CHAR_NOTE_LINES);
+        MoveWindow(g_char.gameKartHelp, x, y, w, noteH, TRUE);
+        y += noteH;
+    }
     return y;
 }
 
@@ -11381,8 +11698,9 @@ static int Char_LayClips(const RECT *in)
     y += Rs_Px(34);
     MoveWindow(g_char.clipTime, x + lw, y, w - lw, Rs_Px(18), TRUE);
     y += Rs_Px(24);
-    // The table: the header and the 12 rows (compact: as many as there is room for).
-    tableH = Rs_Px(g_char.compact ? 160 : 268);
+    // The table: the header and every clip row, measured (compact: as many as
+    // there is room for).
+    tableH = g_char.compact ? Rs_Px(160) : Char_ListHeight(g_char.clipTable, RS_HIRES_CLIPS);
     MoveWindow(g_char.clipTable, x, y, w, tableH, TRUE);
     c0 = Rs_Px(100);
     c2 = Rs_Px(80);
@@ -11872,11 +12190,20 @@ static void Char_RouteImages(int w, int h);
 static void Char_LayChoose(HWND page, int left, int right, int top, int bottom)
 {
     const int gap = Rs_Px(g_char.compact ? 12 : 20), askH = Rs_Px(g_char.compact ? 28 : 36), pad = Rs_Px(12);
-    int w, h, i;
+    int w, h, i, rowH;
 
     (void)page;
-    MoveWindow(g_char.routeAsk, left, top, right - left, askH, TRUE);
-    top += askH + Rs_Px(g_char.compact ? 4 : 12);
+    {
+        // "Creator Kit" at the top right (K10): as tall as the heading row,
+        // which grows to the button when the button needs more; the question
+        // in the middle of the row.
+        int kw, kh, th = Char_FontLine(RS_FONT_SECTION) + Rs_Px(4);
+        Char_KitButtonSize(&kw, &kh);
+        rowH = askH > kh ? askH : kh;
+        MoveWindow(g_char.kitOpen, right - kw, top, kw, rowH, TRUE);
+        MoveWindow(g_char.routeAsk, left, top + (rowH - th) / 2, right - kw - Rs_Px(12) - left, th, TRUE);
+    }
+    top += rowH + Rs_Px(g_char.compact ? 4 : 12);
     w = (right - left - 2 * gap) / 3;
     h = bottom - top;
     if (h > w)
@@ -11898,7 +12225,7 @@ static int Char_Wanted(HWND c)
     wchar_t *text;
     int on;
 
-    if ((id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES) || id == CHAR_ID_ROUTE_ASK)
+    if ((id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES) || id == CHAR_ID_ROUTE_ASK || id == CHAR_ID_KIT_OPEN)
         return g_char.choosing;
     if (g_char.choosing || c == g_char.check || Char_RouteHides(c))
         return 0;
@@ -11936,6 +12263,8 @@ static int Char_Wanted(HWND c)
         // instead, and their lines on the step go too.
         if (c == g_char.charNote)
             return Char_ModelIsCharacter();
+        if (c == g_char.kitStep || c == g_char.kitLink)
+            return Char_KitHint();
         if (Char_ModelIsCharacter() &&
             (c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
              c == g_char.upscaleChange || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) ||
@@ -12329,6 +12658,16 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED)
             Char_ShowChoice(page);
         break;
+    case CHAR_ID_KIT_OPEN:
+    case CHAR_ID_KIT_LINK:
+        // Step 0: the kit with all three ways; the step Model of a route: with
+        // that route's way chosen (K9) - the author can change it there.
+        if (code == BN_CLICKED) {
+            Rs_KitChooseWay(id == CHAR_ID_KIT_LINK && g_char.route >= 0 && g_char.route < RS_ROUTES ? g_char.route
+                                                                                                    : RS_KIT_WAYS_ALL);
+            Rs_ShowPage(RS_PAGE_KIT);
+        }
+        break;
     case CHAR_ID_ADVANCED:
         if (code == BN_CLICKED) {
             g_char.advOpen = !g_char.advOpen;
@@ -12454,8 +12793,13 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_Cancel(page);
         break;
     case CHAR_ID_MODEL:
-        if (code == EN_CHANGE)
+        if (code == EN_CHANGE) {
+            const int hint = Char_IsShown(g_char.kitStep);
             Char_ModelChanged(page);
+            // The line of the Creator Kit comes and goes with an empty field.
+            if (!g_char.choosing && g_char.tab == CHAR_TAB_MODEL && hint != Char_KitHint())
+                Char_Relayout(page);
+        }
         break;
     case CHAR_ID_NAME:
         if (code == EN_CHANGE && !g_char.applying) {
@@ -12762,6 +13106,8 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             Char_DrawTab(di, id - CHAR_ID_TAB);
         else if (id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES)
             Char_DrawRouteCard(di, id - CHAR_ID_ROUTE);
+        else if (id == CHAR_ID_KIT_OPEN)
+            Char_DrawKitButton(di);
         else if (id >= CHAR_ID_PREVIEW_SWITCH && id < CHAR_ID_PREVIEW_SWITCH + 2)
             Char_DrawSwitch(di, Char_PreviewText(id - CHAR_ID_PREVIEW_SWITCH), (id - CHAR_ID_PREVIEW_SWITCH) == g_char.previewClassic);
         else if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
@@ -12847,6 +13193,11 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             Char_SizeScrolled(page, LOWORD(wParam));
             *handled = 1;
         }
+        return 0;
+    case RS_WM_HOST_RETURN:
+        // Back from the Creator Kit: step 0, every entry kept.
+        Char_ShowChoice(page);
+        *handled = 1;
         return 0;
     case RS_WM_PAGE_SHOWN: {
         // The game may have been chosen on the page Test meanwhile: the cue
@@ -12983,6 +13334,24 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  report: %ls", arg);
         return RS_AUTO_DONE;
     }
+    // THE CREATOR KIT: "kit" as a click on the way shown - "Creator Kit" of
+    // step 0, or "Open Creator Kit" of the step Model; neither shown: refused.
+    if (wcscmp(verb, L"kit") == 0) {
+        if (!Char_IsShown(g_char.kitOpen) && !Char_IsShown(g_char.kitLink)) {
+            Rs_AutoLog(L"  kit: not offered here - \"Creator Kit\" is on Build a character, \"Open Creator Kit\" on "
+                       L"the step Model of every route while no model is chosen");
+            return RS_AUTO_FAIL;
+        }
+        if (Char_IsShown(g_char.kitOpen)) {
+            Rs_AutoLog(L"  kit: Creator Kit (Build a character) - all three ways");
+            SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_KIT_OPEN, BN_CLICKED), (LPARAM)g_char.kitOpen);
+        } else {
+            const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
+            Rs_AutoLog(L"  kit: Open Creator Kit (step Model) - the way %ls", p ? p->title : L"?");
+            SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_KIT_LINK, BN_CLICKED), (LPARAM)g_char.kitLink);
+        }
+        return RS_AUTO_DONE;
+    }
     // Old scripts name no route ("model x.obj; build"): their first verb of
     // the page picks Vanilla, the page as it was. On step 0 with a route
     // chosen before ("Change type"), a verb goes back to its steps.
@@ -13108,20 +13477,22 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return RS_AUTO_DONE;
     }
     // "gamekart on|off|auto|change": "Kart: from the player's game data" of a
-    // CHRG route, exactly like "upscale" (on, off: the author's choice, kept
-    // for the model checked; auto: the choice forgotten, the suggestion again;
-    // change: a click on "Change" at the end of the line on the step Model).
+    // CHRG route, or of Vanilla with a .glb model (K6), exactly like "upscale"
+    // (on, off: the author's choice, kept for the model checked; auto: the
+    // choice forgotten, the suggestion again; change: a click on "Change" at
+    // the end of the line on the step Model).
     if (wcscmp(verb, L"gamekart") == 0) {
         int on = _wcsicmp(arg, L"on") == 0;
-        if (!Char_Chrg()) {
-            Rs_AutoLog(L"  gamekart: only Low-Poly and Hi-Res have \"Kart: from the player's game data\"");
+        if (!Char_Chrg() && !Char_KartBoxWanted()) {
+            Rs_AutoLog(L"  gamekart: \"Kart: from the player's game data\" is on Low-Poly and Hi-Res, and on Vanilla for a "
+                       L".glb model without a kart part");
             return RS_AUTO_FAIL;
         }
         if (_wcsicmp(arg, L"change") == 0)
             return Char_AutoChange(page, L"gamekart", CHAR_ID_GAMEKART_CHANGE, g_char.gameKartChange, g_char.gameKart,
                                    L"Kart: from the player's game data");
         if (_wcsicmp(arg, L"auto") == 0) {
-            Char_Remember(g_char.hiresPath, CHAR_CHOICE_GAMEKART, -1);
+            Char_Remember(Char_Chrg() ? g_char.hiresPath : g_char.vanKartPath, CHAR_CHOICE_GAMEKART, -1);
             Char_GameKartUpdate();
             g_char.builtFresh = 0;
             Char_UpdateButtons();
@@ -13187,7 +13558,7 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
                 if (_wcsicmp(arg, RsHires_ClipName(i)) == 0)
                     sel = i + 1;
             if (sel < 0) {
-                Rs_AutoLog(L"  hires-clip: unknown clip '%ls' (bind, idle .. menu)", arg);
+                Rs_AutoLog(L"  hires-clip: unknown clip '%ls' (bind, idle .. menu, finish_win, finish_lose)", arg);
                 return RS_AUTO_FAIL;
             }
             Char_ClipSelect(sel);

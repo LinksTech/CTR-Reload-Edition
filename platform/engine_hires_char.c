@@ -1615,17 +1615,19 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		c->hullMax[k] += grow;
 	}
 
-	// The summary of the clips for the ready line.
+	// The summary of the clips for the ready line: "n/12" and the missing ones
+	// of the clips every file is asked for (RLDHIRES_CLIP_BASE), as before the
+	// optional ones existed; an optional clip only when the file has it.
 	{
 		size_t used = 0;
 		int present = 0;
 
-		for (k = 0; k < ENGINE_HIRES_CLIPS; k++)
+		for (k = 0; k < RLDHIRES_CLIP_BASE; k++)
 		{
 			present += ((c->clipMask & (1u << (u32)k)) != 0u) ? 1 : 0;
 		}
 		used += (size_t)snprintf(c->clipText, sizeof(c->clipText), "%d/12", present);
-		for (k = 0; (k < ENGINE_HIRES_CLIPS) && (used < sizeof(c->clipText)); k++)
+		for (k = 0; (k < RLDHIRES_CLIP_BASE) && (used < sizeof(c->clipText)); k++)
 		{
 			if ((c->clipMask & (1u << (u32)k)) == 0u)
 			{
@@ -1636,9 +1638,16 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 				                         Engine_HiresClipName(r), full ? " full" : "");
 			}
 		}
-		if ((present < ENGINE_HIRES_CLIPS) && (used < sizeof(c->clipText)))
+		if ((present < RLDHIRES_CLIP_BASE) && (used < sizeof(c->clipText)))
 		{
-			snprintf(c->clipText + used, sizeof(c->clipText) - used, ")");
+			used += (size_t)snprintf(c->clipText + used, sizeof(c->clipText) - used, ")");
+		}
+		for (k = RLDHIRES_CLIP_BASE; (k < ENGINE_HIRES_CLIPS) && (used < sizeof(c->clipText)); k++)
+		{
+			if ((c->clipMask & (1u << (u32)k)) != 0u)
+			{
+				used += (size_t)snprintf(c->clipText + used, sizeof(c->clipText) - used, " + %s", Engine_HiresClipName(k));
+			}
 		}
 	}
 	return 1;
@@ -2459,6 +2468,7 @@ internal void EngHc_SeatTick(const struct GameTracker *gGT, int seat)
 	in.finished = ((d->actionsFlagSet & ACTION_RACE_FINISHED) != 0) ? 1 : 0;
 	in.rank = (int)d->driverRank;
 	in.kartPart = c->kartPart;
+	in.clips = c->clipMask;
 	EngHc_Advance(&run->st, in.elapsedMs);
 	state = EngHc_Decide(&run->st, &in, &forceClip);
 	if (EngHc_Changes(&run->st, state, forceClip))
@@ -4459,6 +4469,84 @@ int Engine_SelfTestHiresChar(int *checks)
 		in.finished = 0;
 		in.kartState = 0;
 		HC_CHECK((strcmp(EngHc_StateName(ENG_HC_STATE_DRIFT_LEFT), "drift_left") == 0) && (strcmp(EngHc_StateName(9), "?") == 0), "state names");
+
+		// The optional finish clips (4.3): 3 ranks x kart part yes/no x clip
+		// there/not = 12 cases, the clip each one draws. Present: finish_win
+		// (ranks 0..2) / finish_lose, with or without the kart part. Missing: what
+		// the game played before the clips existed - without the kart part
+		// podium_<place> / lose, with it the seated race states (base: idle).
+		{
+			static const int ranks[3] = {0, 2, 3};
+			static const int want[3][2][2] = {
+			    // {kart part 0: {missing, present}}, {kart part 1: {missing, present}}
+			    {{ENGINE_HIRES_CLIP_PODIUM_1, ENGINE_HIRES_CLIP_FINISH_WIN}, {ENGINE_HIRES_CLIP_IDLE, ENGINE_HIRES_CLIP_FINISH_WIN}},
+			    {{ENGINE_HIRES_CLIP_PODIUM_3, ENGINE_HIRES_CLIP_FINISH_WIN}, {ENGINE_HIRES_CLIP_IDLE, ENGINE_HIRES_CLIP_FINISH_WIN}},
+			    {{ENGINE_HIRES_CLIP_LOSE, ENGINE_HIRES_CLIP_FINISH_LOSE}, {ENGINE_HIRES_CLIP_IDLE, ENGINE_HIRES_CLIP_FINISH_LOSE}},
+			};
+			const u32 base = (1u << RLDHIRES_CLIP_BASE) - 1u;
+			const u32 finish = (1u << ENGINE_HIRES_CLIP_FINISH_WIN) | (1u << ENGINE_HIRES_CLIP_FINISH_LOSE);
+			int cases = 0;
+			int r;
+			int kp;
+			int has;
+
+			for (r = 0; r < 3; r++)
+			{
+				for (kp = 0; kp < 2; kp++)
+				{
+					for (has = 0; has < 2; has++)
+					{
+						EngHcSeatState fs;
+						int fc = -1;
+						int fst;
+						int clip;
+
+						EngHc_SeatReset(&fs, -1);
+						in.force = -1;
+						in.kartState = 0;
+						in.touch = 1;
+						in.finished = 1;
+						in.rank = ranks[r];
+						in.kartPart = kp;
+						in.clips = base | (has ? finish : 0u);
+						fst = EngHc_Decide(&fs, &in, &fc);
+						EngHc_Enter(&fs, fst, fc);
+						clip = EngHc_Resolve(in.clips, EngHc_StateClip(&fs), NULL);
+						cases += (clip == want[r][kp][has]) ? 1 : 0;
+						if (clip != want[r][kp][has])
+						{
+							printf("engine selftest: finish clips: rank %d, kart part %d, clip %s: drew %s, want %s\n", ranks[r], kp, has ? "present" : "missing",
+							       Engine_HiresClipName(clip), Engine_HiresClipName(want[r][kp][has]));
+						}
+					}
+				}
+			}
+			printf("engine selftest: finish clips: %d/12 cases draw the expected clip\n", cases);
+			HC_CHECK(cases == 12, "finish clips: 3 ranks x kart part x clip present - 12 of 12 expected clips");
+			// Only one of the two: rank 0 with finish_lose alone plays podium_1 (4.2).
+			{
+				EngHcSeatState fs;
+				int fc = -1;
+
+				EngHc_SeatReset(&fs, -1);
+				in.rank = 0;
+				in.kartPart = 0;
+				in.clips = base | (1u << ENGINE_HIRES_CLIP_FINISH_LOSE);
+				HC_CHECK((EngHc_Decide(&fs, &in, &fc) == ENG_HC_STATE_FINISHED) && (fc == ENGINE_HIRES_CLIP_PODIUM_1),
+				         "finish clips: finish_lose alone leaves place 1 on podium_1");
+			}
+			HC_CHECK((EngHc_Resolve(1u << ENGINE_HIRES_CLIP_PODIUM_1, ENGINE_HIRES_CLIP_FINISH_WIN, NULL) == ENGINE_HIRES_CLIP_PODIUM_1) &&
+			             (EngHc_Resolve(1u << ENGINE_HIRES_CLIP_LOSE, ENGINE_HIRES_CLIP_FINISH_LOSE, NULL) == ENGINE_HIRES_CLIP_LOSE) &&
+			             (EngHc_PlayOf(ENGINE_HIRES_CLIP_FINISH_WIN) == ENG_HC_PLAY_LOOP) && (EngHc_PlayOf(ENGINE_HIRES_CLIP_FINISH_LOSE) == ENG_HC_PLAY_LOOP) &&
+			             (strcmp(Engine_HiresClipName(ENGINE_HIRES_CLIP_FINISH_WIN), "finish_win") == 0) &&
+			             (strcmp(Engine_HiresClipName(ENGINE_HIRES_CLIP_FINISH_LOSE), "finish_lose") == 0),
+			         "finish clips: chains (finish_win -> podium_1, finish_lose -> lose), looped, names");
+			in.force = -1;
+			in.finished = 0;
+			in.kartState = 0;
+			in.kartPart = 0;
+			in.clips = 0u;
+		}
 
 		// A pause (elapsed 0) moves no time.
 		{

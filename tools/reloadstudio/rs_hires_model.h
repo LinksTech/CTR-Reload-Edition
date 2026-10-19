@@ -63,14 +63,28 @@
 struct RsHiresAnim;   // the corners, skeleton and clips (rs_hires_model.c)
 
 #define RS_HIRES_ROWS_MAX 64     // = RLDHIRES_REPORT_MAX
-#define RS_HIRES_CLIPS 12        // = RLDHIRES_CLIP_COUNT
+#define RS_HIRES_CLIPS 14        // = RLDHIRES_CLIP_COUNT
+// The clips every file is asked for are 0 .. RS_HIRES_CLIPS_BASE - 1; from it
+// on the optional finish clips of container format 4.3 (= RLDHIRES_CLIP_BASE,
+// RLDHIRES_CLIP_FINISH_WIN/LOSE; rs_hires_model.c checks the numbers).
+#define RS_HIRES_CLIPS_BASE 12   // = RLDHIRES_CLIP_BASE
+#define RS_HIRES_CLIP_FINISH_WIN 12
+#define RS_HIRES_CLIP_FINISH_LOSE 13
 #define RS_HIRES_TEXT_MAX 256
 
 // The state of one clip of the fixed list.
 enum RsHiresClipState {
     RS_HIRES_CLIP_PRESENT = 0,   // in the file
     RS_HIRES_CLIP_FALLBACK,      // missing: clipVia is played (fullLock: at its end)
-    RS_HIRES_CLIP_REST           // missing, no clip of its chain: the rest pose
+    RS_HIRES_CLIP_REST,          // missing, no clip of its chain: the rest pose
+    // An optional finish clip (finish_win, finish_lose) that is missing: says
+    // nothing. After the finish line the game plays what it played before the
+    // clip existed - with a kart (the kart part, or the game's kart put in
+    // from the player's game data) the seated race clips, without one
+    // podium_1..3 by place (finish_win) or lose (finish_lose). clipVia is what
+    // the preview shows for it (idle, podium_1 or lose as their chains resolve),
+    // clipSeated 1 = the seated race clips (parts bit 0 or 1).
+    RS_HIRES_CLIP_FINISH
 };
 
 struct RsHiresRow {
@@ -90,10 +104,12 @@ struct RsHiresCheck {
     wchar_t why[RS_HIRES_TEXT_MAX];  // read == 0: why not
 
     // The summary.
-    int clips;                       // clips in the file, of RS_HIRES_CLIPS
+    int clips;                       // clips in the file, of the RS_HIRES_CLIPS_BASE asked for ("clips n/12")
+    int finishClips;                 // the optional finish clips in the file, 0..2
     int clipState[RS_HIRES_CLIPS];   // RS_HIRES_CLIP_*
     int clipVia[RS_HIRES_CLIPS];     // the clip played instead, -1 = rest pose
     int clipFullLock[RS_HIRES_CLIPS];
+    int clipSeated[RS_HIRES_CLIPS];  // RS_HIRES_CLIP_FINISH: 1 = the seated race clips (kart part or game kart)
     float clipSeconds[RS_HIRES_CLIPS];
     int wheels;                      // usable wheel nodes found (0..4); 4 = the model's own wheels are drawn
     unsigned joints;                 // 0 = no skin
@@ -195,6 +211,16 @@ int RsHires_ColourModeOf(const wchar_t *word);
 // it was that mode already, or not a mode.
 int RsHires_SetColourMode(struct RsHiresCheck *c, int mode);
 
+// THE COUNTS IN THE MODE CHOSEN: the check runs in glTF (vcolChecked; it
+// decides the suggestion), where PS1-like vertex colours are a finding of
+// HRG-36. In PSX blend and off that finding does not exist - rldpack
+// hires-check --vertex-colors psx|off never says it -, so once the page has
+// chosen such a mode (vcolMode) neither its row nor its warning counts.
+// RsHires_RowInMode: 1 = row i is a finding in the mode chosen.
+// RsHires_WarningsInMode: the warnings in the mode chosen.
+int RsHires_RowInMode(const struct RsHiresCheck *c, int i);
+int RsHires_WarningsInMode(const struct RsHiresCheck *c);
+
 // One channel of the picture as the engine makes it, for the self-test: the
 // base colour texel (a byte on the display curve), COLOR_0 (linear 0..1; has0
 // 0 = the primitive has none), the material's base colour factor (linear) and
@@ -208,8 +234,16 @@ int RsHires_PreviewChannel(int mode, int has0, float colour0, unsigned texel, fl
 // as the engine lights a hi-res driver (THE LIGHT above).
 float RsHires_Light(const float n[3]);
 
-// The name of a clip (L"idle" .. L"menu"), L"?" outside the list.
+// The name of a clip (L"idle" .. L"menu", L"finish_win", L"finish_lose" -
+// the names of include/rldhires.inc), L"?" outside the list.
 const wchar_t *RsHires_ClipName(int clip);
+// 1 = an optional clip (finish_win, finish_lose: a missing one says nothing).
+int RsHires_ClipOptional(int clip);
+// What the game plays after the finish line for a missing finish clip of the
+// check, the words of the page (L"the seated race clips", L"podium_1..3 by
+// place", L"lose", the clip its chain ends at, or L"the rest pose"); L"" for
+// any clip that is not a missing finish clip.
+void RsHires_FinishText(const struct RsHiresCheck *c, int clip, wchar_t *out, int cap);
 
 // Checks a file: a .glb, or the CHRG of a .rldchar (told by the first bytes).
 // out is written in full; free it with RsHires_CheckFree. 1 = read (see
@@ -291,6 +325,13 @@ unsigned RsHires_PartsFor(int kartCase, int gameKart);
 // A .glb checked with this parts field (the page's choice: the game's kart on
 // a model without the kit's joint); kartCase stays what the model is.
 int RsHires_CheckFileParts(const wchar_t *path, unsigned parts, struct RsHiresCheck *out);
+// The kart case of a .glb alone (RS_KART_*, the rule of kartCase above),
+// without the rest of the check: the page Character asks it for a model of
+// the route Vanilla ("Kart: from the player's game data", make-char
+// --figure-only). -1 when the file cannot be read or is no .glb. skins: when
+// not NULL, the number of skins of the file (make-char takes a model with one
+// only with --rig bind-pose).
+int RsHires_KartCaseFile(const wchar_t *path, int *skins);
 
 // THE OPTION "Upscale small textures": before packing, rldpack hires-upscale
 // <model> -o <derived> --machine writes a new model (the source is only read;

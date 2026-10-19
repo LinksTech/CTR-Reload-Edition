@@ -29,7 +29,7 @@
 //   0x08 u32 glbOffset    = headerBytes, from the start of the chunk.
 //   0x0C u32 glbSize      glbOffset + glbSize = the chunk's size.
 //   0x10 u32 parts        only when headerBytes >= 20 (an ignorable extension of
-//                         version 1, proposed for 4.3, see THE PARTS below);
+//                         version 1, accepted in 4.3, see THE PARTS below);
 //                         0 with a 16-byte header.
 //
 // Stored uncompressed, SHA-256 like every chunk, at most RLDHIRES_CHUNK_LIMIT.
@@ -43,6 +43,9 @@
 // THE MODEL is glTF 2.0 binary with its BIN chunk embedded, no outside files.
 // Clips are animations found by NAME from a fixed list (RLDHIRES_CLIP_*), the
 // four wheels are nodes found by name (wheel_fl, wheel_fr, wheel_rl, wheel_rr).
+// The list grew once, ignorably, in 4.3: finish_win and finish_lose are
+// OPTIONAL clips (RLDHIRES_CLIP_BASE on) - a reader of 4.2 takes them for
+// unknown names (HRG-21, a note) and plays what it always played there.
 // Axes and units are the glTF ones: +Y up, +Z the kart's front, +X the kart's
 // left seen from behind, 1 metre = 64 kart model units, origin on the ground
 // under the kart.
@@ -55,8 +58,8 @@
 // include/rldhires_color.inc. Vertex colours that look like PS1 shading in a
 // glTF-mode file get a warning (HRG-36: the kart will look too dark).
 //
-// THE PARTS (field 0x10, proposed for 4.3, not yet accepted; Creator
-// Kit round 2026-10-18). Ignorable: an older reader skips the longer header and
+// THE PARTS (field 0x10, accepted in container format 4.3; Creator Kit
+// round 2026-10-18). Ignorable: an older reader skips the longer header and
 // draws the whole model everywhere. Bits:
 //   0 RLDHIRES_PART_KART       the subtree of the first node named "kart" is the
 //                              kart. Where the kart is not wanted (the podium
@@ -64,7 +67,8 @@
 //                              engine leaves it out together with the four
 //                              wheels; in a race it stays, and a finished driver
 //                              keeps the seated race clips (idle, steer) instead
-//                              of the standing podium_1..3 / lose. Opt-in by the
+//                              of the standing podium_1..3 / lose (or plays its
+//                              finish_win / finish_lose, 4.3). Opt-in by the
 //                              header, never by the name alone: a file of before
 //                              with a node "kart" by chance keeps its look
 //                              (HRG-39). No node "kart" (HRG-37) or a vertex
@@ -90,7 +94,7 @@
 // THE KIT MARK: what rldpack kit-extract made from the player's game data
 // carries glTF extras {"ctr_kit": "kart" | "steer_wheel" | "wheel"} on its nodes
 // and meshes and material names "ctrkit_<name>"; either in a file is HRG-41 (a
-// warning: the file holds the original kart from the game data - not to share).
+// warning: the file holds the original kart from the player's game files).
 //
 // THE RULES are HRG-1 .. HRG-42 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
@@ -101,9 +105,11 @@
 //
 // NOTHING HERE PRINTS. Findings go into an RldHiresReport.
 //
-// FORMAT VERSION 1, FROZEN (accepted 2026-10-17, container format 4.2).
-// docs/CONTAINER_FORMAT.md ("CHRG") describes it; this file is the code of it.
-// A later extension (e.g. emissive, planned for 4.3) takes one of two ways:
+// FORMAT VERSION 1, FROZEN (accepted 2026-10-17, container format 4.2), EXTENDED
+// IGNORABLY in 4.3 (2026-10-18: the parts field, the optional clips finish_win
+// and finish_lose). docs/CONTAINER_FORMAT.md ("CHRG") describes it; this file is
+// the code of it. A later extension (e.g. emissive, planned, not built) takes
+// one of two ways:
 //   - what an older reader may ignore: more header bytes (headerBytes > 16,
 //     version stays 1). An older reader skips them and draws the model.
 //   - what an older reader must not ignore: a new flag bit (HRG-3) or version
@@ -193,8 +199,25 @@ enum
 	RLDHIRES_CLIP_PODIUM_3,
 	RLDHIRES_CLIP_LOSE,
 	RLDHIRES_CLIP_MENU,
-	RLDHIRES_CLIP_COUNT // 12
+	RLDHIRES_CLIP_FINISH_WIN,  // 4.3, optional
+	RLDHIRES_CLIP_FINISH_LOSE, // 4.3, optional
+	RLDHIRES_CLIP_COUNT // 14
 };
+
+// The clips every file is asked for: 0 .. RLDHIRES_CLIP_BASE - 1. A missing one
+// is a warning (HRG-19) and the summary lines count them ("clips n/12"). The
+// clips from RLDHIRES_CLIP_BASE on are OPTIONAL (4.3): a missing one says
+// nothing, because without it the game plays exactly what it played before the
+// clip existed - otherwise every file of before would get a new warning.
+//   finish_win   a driver after the finish line (ACTION_RACE_FINISHED) on
+//                place 1..3 (driverRank 0..2), looped, the kart drives on
+//   finish_lose  the same from place 4 on
+// Missing, the finished driver plays what 4.2 plays: with the kart part
+// (RLDHIRES_PART_KART) the seated race clips, without it podium_<place> / lose
+// (platform/engine_hires_pose.c EngHc_Decide). Their chain below (podium_1,
+// lose) is that second case, for showing it; the podium scene, the menu and
+// the driver select never ask for them.
+#define RLDHIRES_CLIP_BASE 12
 
 // How the game plays a clip.
 //   LOOP  repeats.
@@ -212,7 +235,7 @@ enum
 // The names, exactly as written in the file (lower case), by RLDHIRES_CLIP_*.
 static const char *const s_rldHiresClipName[RLDHIRES_CLIP_COUNT] = {
     "idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right",
-    "hit", "podium_1", "podium_2", "podium_3", "lose", "menu"};
+    "hit", "podium_1", "podium_2", "podium_3", "lose", "menu", "finish_win", "finish_lose"};
 
 // The playback kind, by RLDHIRES_CLIP_*.
 static const u8 s_rldHiresClipPlay[RLDHIRES_CLIP_COUNT] = {
@@ -227,7 +250,9 @@ static const u8 s_rldHiresClipPlay[RLDHIRES_CLIP_COUNT] = {
     RLDHIRES_PLAY_LOOP, // podium_2
     RLDHIRES_PLAY_LOOP, // podium_3
     RLDHIRES_PLAY_LOOP, // lose
-    RLDHIRES_PLAY_LOOP  // menu
+    RLDHIRES_PLAY_LOOP, // menu
+    RLDHIRES_PLAY_LOOP, // finish_win
+    RLDHIRES_PLAY_LOOP  // finish_lose
 };
 
 // The fallback of a missing clip: the next clip of its chain, -1 = the rest
@@ -235,7 +260,8 @@ static const u8 s_rldHiresClipPlay[RLDHIRES_CLIP_COUNT] = {
 // state can end in a crash or an invisible driver:
 //   idle -> rest; steer_left, steer_right, jump, hit, podium_1, lose, menu -> idle;
 //   drift_left -> steer_left AT FULL LOCK; drift_right -> steer_right AT FULL LOCK;
-//   podium_2 -> podium_1; podium_3 -> podium_2.
+//   podium_2 -> podium_1; podium_3 -> podium_2;
+//   finish_win -> podium_1, finish_lose -> lose (optional, see RLDHIRES_CLIP_BASE).
 static const signed char s_rldHiresClipFallback[RLDHIRES_CLIP_COUNT] = {
     -1,                        // idle
     RLDHIRES_CLIP_IDLE,        // steer_left
@@ -248,7 +274,9 @@ static const signed char s_rldHiresClipFallback[RLDHIRES_CLIP_COUNT] = {
     RLDHIRES_CLIP_PODIUM_1,    // podium_2
     RLDHIRES_CLIP_PODIUM_2,    // podium_3
     RLDHIRES_CLIP_IDLE,        // lose
-    RLDHIRES_CLIP_IDLE         // menu
+    RLDHIRES_CLIP_IDLE,        // menu
+    RLDHIRES_CLIP_PODIUM_1,    // finish_win
+    RLDHIRES_CLIP_LOSE         // finish_lose
 };
 
 // The name of a clip, "?" outside the list.
@@ -267,6 +295,12 @@ static int RldHires_ClipPlay(int clip)
 static int RldHires_ClipFallback(int clip)
 {
 	return ((clip >= 0) && (clip < RLDHIRES_CLIP_COUNT)) ? (int)s_rldHiresClipFallback[clip] : -1;
+}
+
+// 1 = an optional clip (4.3, RLDHIRES_CLIP_BASE on): a missing one says nothing.
+static int RldHires_ClipOptional(int clip)
+{
+	return (clip >= RLDHIRES_CLIP_BASE) && (clip < RLDHIRES_CLIP_COUNT);
 }
 
 // The clip of a name, -1 for any other name (also NULL). Exact, case counts.
@@ -433,7 +467,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-16", RLDHIRES_ERROR, "a texture is not PNG (JPEG, WebP, KTX2, damaged)"},
     {"HRG-17", RLDHIRES_ERROR, "a texture edge above 2048"},
     {"HRG-18", RLDHIRES_ERROR, "bind pose, or the pose of a clip (include/rldhires_hull.inc), larger than 4 m on an axis, or not finite"},
-    {"HRG-19", RLDHIRES_WARNING, "a clip is missing: its fallback is used"},
+    {"HRG-19", RLDHIRES_WARNING, "a clip is missing: its fallback is used (the optional finish_win and finish_lose say nothing)"},
     {"HRG-20", RLDHIRES_WARNING, "wheels: not all four wheel nodes usable, standard wheels"},
     {"HRG-21", RLDHIRES_NOTE, "an animation name is not a clip name, or a clip name twice: ignored"},
     {"HRG-22", RLDHIRES_NOTE, "CUBICSPLINE is read linear between the key values"},
@@ -455,7 +489,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-38", RLDHIRES_WARNING, "kart part: a skinned vertex is weighted to joints inside and outside 'kart' - the kart is drawn everywhere"},
     {"HRG-39", RLDHIRES_NOTE, "kart part: a node 'kart' without the kart part in the header - drawn as before (hires-add --kart-part)"},
     {"HRG-40", RLDHIRES_NOTE, "parts field: an unknown bit, a second node 'kart', or both kart bits - ignored"},
-    {"HRG-41", RLDHIRES_WARNING, "the file contains the original kart from your game data - don't share it, or export without the kart"},
+    {"HRG-41", RLDHIRES_WARNING, "This file contains the kart from your game files."},
     {"HRG-42", RLDHIRES_NOTE, "the game's kart (parts bit 1): no wheel nodes - the game brings the kart and its wheels"},
 };
 
@@ -1725,7 +1759,7 @@ static void RldHires_CheckParts(RldHiresModel *m, RldHiresReport *rep, u32 parts
 		if (what[0] != '\0')
 		{
 			m->kitMarked = 1;
-			RldHires_Say(rep, "HRG-41", "this file contains the original kart from your game data (%s) - don't share it, or export without the kart", what);
+			RldHires_Say(rep, "HRG-41", "This file contains the kart from your game files.");
 		}
 	}
 }
@@ -2448,7 +2482,7 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 			char name[48];
 
 			RldHires_Name(name, sizeof(name), gd->animations[firstUnknown].name, firstUnknown);
-			RldHires_Say(rep, "HRG-21", "%d animation(s) have no clip name ('%s' first) - ignored; the names are idle, steer_left, steer_right, jump, drift_left, drift_right, hit, podium_1..3, lose, menu",
+			RldHires_Say(rep, "HRG-21", "%d animation(s) have no clip name ('%s' first) - ignored; the names are idle, steer_left, steer_right, jump, drift_left, drift_right, hit, podium_1..3, lose, menu and the optional finish_win, finish_lose",
 			             unknown, name);
 		}
 		if (cubic != 0)
@@ -2466,7 +2500,7 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 			if (present == 0)
 			{
 				// Not one clip: one warning, not twelve that all say the same.
-				RldHires_Say(rep, "HRG-19", "no clips - the driver stays in its rest pose (the clip names are idle, steer_left, steer_right, jump, drift_left, drift_right, hit, podium_1..3, lose, menu)");
+				RldHires_Say(rep, "HRG-19", "no clips - the driver stays in its rest pose (the clip names are idle, steer_left, steer_right, jump, drift_left, drift_right, hit, podium_1..3, lose, menu and the optional finish_win, finish_lose)");
 			}
 		}
 		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
@@ -2475,7 +2509,8 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 			int lock = 0;
 			const int got = RldHires_ClipResolve(m, (int)i, &via, &lock);
 
-			if ((m->clipAnim[i] >= 0) || (m->clipsPresent == 0))
+			// A missing optional clip says nothing (RLDHIRES_CLIP_BASE).
+			if ((m->clipAnim[i] >= 0) || (m->clipsPresent == 0) || RldHires_ClipOptional((int)i))
 			{
 				continue;
 			}

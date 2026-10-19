@@ -15,7 +15,7 @@ set(CTR_NATIVE_VERSION "0.7.5 Beta")
 # of both exes. The game keeps CTR_NATIVE_VERSION, the container format its own
 # numbers (RLD_VERSION_MAJOR/MINOR in include/rldtrack.inc). The parts
 # major.minor.patch are taken from this line for the version resources.
-set(CTR_TOOLS_VERSION "0.9.0")
+set(CTR_TOOLS_VERSION "0.9.5")
 if(NOT CTR_TOOLS_VERSION MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
     message(FATAL_ERROR "CTR_TOOLS_VERSION must be <major>.<minor>.<patch>, not '${CTR_TOOLS_VERSION}'")
 endif()
@@ -299,17 +299,20 @@ else()
 endif()
 target_compile_options(rldpack PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
 
-# The files of the Creator Kit that Reload Studio carries inside (page Creator
-# Kit, tools/reloadstudio/rs_kit.c): its Blender scripts and its guide, as
-# RCDATA (ids RS_RES_KIT_* in reloadstudio.h). A resource script of their full
-# paths in the build folder; a change of one of the files builds it again.
+# The files of the Creator Kit that Reload Studio carries inside (the Creator
+# Kit in the page Character, tools/reloadstudio/rs_kit.c): its Blender
+# scripts, its guide and its notice, as RCDATA (ids RS_RES_KIT_* in
+# reloadstudio.h, from 201 in this order). A
+# resource script of their full paths in the build folder; a change of one of
+# the files builds it again.
 set(CTR_KIT_RESOURCES
     templates/make_creator_kit.py
     templates/creator_kit_puppet.py
     templates/creator_kit_clips.py
     templates/creator_kit_standin.py
     docs/CREATOR_KIT.html
-    templates/creator_kit_classic.py)
+    templates/creator_kit_classic.py
+    templates/CREATOR_KIT_NOTICE.txt)
 set(ctr_kit_rc "// Made by CMakeLists.txt: the files of the Creator Kit (rs_kit.c).
 ")
 set(ctr_kit_id 201)
@@ -344,6 +347,7 @@ if(MSVC)
         tools/reloadstudio/rs_charhires.c
         tools/reloadstudio/rs_cards.c
         tools/reloadstudio/rs_kit.c
+        tools/reloadstudio/rs_expansions.c
         tools/reloadstudio/rs_rldpack.c
         tools/rldpack_image.c
         platform/native_disc_image.c
@@ -1256,7 +1260,7 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
     set_tests_properties(content_guard_package PROPERTIES
         PASS_REGULAR_EXPRESSION "content_guard: package self-test passed - [0-9]+ case"
         FAIL_REGULAR_EXPRESSION "FAIL")
-    # The page Creator Kit of Reload Studio (tools/reloadstudio/rs_kit.c) end to
+    # The Creator Kit of Reload Studio (tools/reloadstudio/rs_kit.c) end to
     # end without Blender and without game data: rs_kit_standin.exe stands in
     # for blender.exe and for the extractor, the game is a made-up folder
     # (cmake/run_rs_kit.cmake). Only with the tests.

@@ -2,59 +2,59 @@
 <rect width="800" height="396" rx="12" fill="#f2f3f5"/>
 <text x="400" y="34" font-size="16" text-anchor="middle" font-weight="bold" fill="#1f2933">Where to click in Blender</text>
 <rect x="6" y="52" width="788" height="128" rx="10" fill="#e6f7ea" stroke="#2f9e44" stroke-width="1.6"/>
-<text x="20" y="74" font-size="14" font-weight="bold" fill="#15803d">(a) the file to share: the figure alone</text>
-<rect x="13" y="86" width="140" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="83" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
-<text x="83" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select Figure</text>
-<circle cx="15" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="15" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
-<rect x="181" y="86" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="261" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
-<text x="261" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
-<circle cx="183" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="183" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
-<rect x="369" y="86" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="449" y="113.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
-<text x="449" y="130.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
-<circle cx="371" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="371" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
-<rect x="557" y="86" width="230" height="62" rx="8" fill="#b2f2bb" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="672" y="113.8" font-size="11" text-anchor="middle" fill="#5f6b7a">Result:</text>
-<text x="672" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-figure.glb</text>
-<path d="M157 117L169.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M177 117L168 120.8L168 113.2z" fill="#5f6b7a"/>
-<path d="M345 117L357.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M365 117L356 120.8L356 113.2z" fill="#5f6b7a"/>
-<path d="M533 117L545.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M553 117L544 120.8L544 113.2z" fill="#5f6b7a"/>
-<text x="672" y="166" font-size="12.5" text-anchor="middle" fill="#15803d">figure alone, no game data</text>
+<text x="20" y="74" font-size="14" font-weight="bold" fill="#15803d">(a) every way: the figure alone</text>
+<rect x="19" y="86" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="96" y="113.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
+<text x="96" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">select Figure</text>
+<circle cx="21" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="21" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="201" y="86" width="134" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="268" y="113.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
+<text x="268" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
+<circle cx="203" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="203" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="363" y="86" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="440" y="113.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
+<text x="440" y="129.3" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
+<circle cx="365" cy="88" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="365" y="92.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="545" y="86" width="236" height="62" rx="8" fill="#b2f2bb" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="663" y="114" font-size="12" text-anchor="middle" fill="#5f6b7a">Result:</text>
+<text x="663" y="128.4" font-size="12" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-&lt;way&gt;-figure.glb</text>
+<path d="M177 117L189.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M197 117L188 120.8L188 113.2z" fill="#5f6b7a"/>
+<path d="M339 117L351.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M359 117L350 120.8L350 113.2z" fill="#5f6b7a"/>
+<path d="M521 117L533.8 117" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M541 117L532 120.8L532 113.2z" fill="#5f6b7a"/>
+<text x="781" y="166" font-size="12.5" text-anchor="end" fill="#15803d">the figure alone, without the kart</text>
 <rect x="6" y="196" width="788" height="128" rx="10" fill="#fff0e0" stroke="#e8590c" stroke-width="1.6"/>
-<text x="20" y="218" font-size="14" font-weight="bold" fill="#c2410c">(b) for a test on your own PC</text>
-<rect x="13" y="230" width="140" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="83" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
-<text x="83" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">select CreatorKit</text>
-<circle cx="15" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="15" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
-<rect x="181" y="230" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="261" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
-<text x="261" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
-<circle cx="183" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="183" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
-<rect x="369" y="230" width="160" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="449" y="257.5" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
-<text x="449" y="274.3" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
-<circle cx="371" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
-<text x="371" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
-<rect x="557" y="230" width="230" height="62" rx="8" fill="#ffc078" stroke="#8a96a5" stroke-width="1.4"/>
-<text x="672" y="257.8" font-size="11" text-anchor="middle" fill="#5f6b7a">Result:</text>
-<text x="672" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
-<path d="M157 261L169.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M177 261L168 264.8L168 257.2z" fill="#5f6b7a"/>
-<path d="M345 261L357.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M365 261L356 264.8L356 257.2z" fill="#5f6b7a"/>
-<path d="M533 261L545.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<path d="M553 261L544 264.8L544 257.2z" fill="#5f6b7a"/>
-<text x="672" y="310" font-size="12.5" text-anchor="middle" fill="#c2410c">with your kart, keep it local</text>
-<rect x="200" y="342" width="400" height="40" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4" stroke-dasharray="6 4"/>
-<text x="400" y="367" font-size="14" text-anchor="middle" font-weight="bold" fill="#1f2933">or  File &gt; Export All Collections (writes both)</text>
+<text x="20" y="218" font-size="14" font-weight="bold" fill="#c2410c">(b) Hi-Res only: the figure with the kart, for a test</text>
+<rect x="19" y="230" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="96" y="257.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Outliner:</text>
+<text x="96" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">select CreatorKit</text>
+<circle cx="21" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="21" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">1</text>
+<rect x="201" y="230" width="134" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="268" y="257.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Properties:</text>
+<text x="268" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">Collection tab</text>
+<circle cx="203" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="203" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">2</text>
+<rect x="363" y="230" width="154" height="62" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="440" y="257.8" font-size="12" text-anchor="middle" fill="#5f6b7a">Exporters:</text>
+<text x="440" y="273.4" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">glTF 2.0 &gt; Export</text>
+<circle cx="365" cy="232" r="11" fill="#fff" stroke="#1f2933" stroke-width="1.4"/>
+<text x="365" y="236.5" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">3</text>
+<rect x="545" y="230" width="236" height="62" rx="8" fill="#ffc078" stroke="#8a96a5" stroke-width="1.4"/>
+<text x="663" y="258" font-size="12" text-anchor="middle" fill="#5f6b7a">Result:</text>
+<text x="663" y="272.4" font-size="12" text-anchor="middle" font-weight="bold" fill="#1f2933">creator-kit-demo-local.glb</text>
+<path d="M177 261L189.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M197 261L188 264.8L188 257.2z" fill="#5f6b7a"/>
+<path d="M339 261L351.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M359 261L350 264.8L350 257.2z" fill="#5f6b7a"/>
+<path d="M521 261L533.8 261" fill="none" stroke="#5f6b7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M541 261L532 264.8L532 257.2z" fill="#5f6b7a"/>
+<text x="781" y="310" font-size="12.5" text-anchor="end" fill="#c2410c">contains the kart from your game files</text>
+<rect x="90" y="342" width="620" height="40" rx="8" fill="#fff" stroke="#8a96a5" stroke-width="1.4" stroke-dasharray="6 4"/>
+<text x="400" y="367" font-size="13" text-anchor="middle" font-weight="bold" fill="#1f2933">or  File &gt; Export All Collections (writes every exporter of the file)</text>
 </svg>
