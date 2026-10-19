@@ -451,7 +451,7 @@ HOW_TO_EXPORT = [
     "Do not change the export settings of the exporters.",
     "Do not apply the Armature modifier and do not use scaled or mirrored objects.",
     "Keep the model under 64000 triangles.",
-    "The full guide is docs/CREATOR_KIT.md (in Reload Studio: page Creator Kit, button Guide).",
+    "The full guide is docs/CREATOR_KIT.md (in Reload Studio: page Character, Build a character, Creator Kit, button Guide).",
 ]
 
 

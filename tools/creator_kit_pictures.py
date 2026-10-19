@@ -670,7 +670,7 @@ def pic_studio_steps():
     x0 = (760 - (3 * w + 2 * gap)) / 2
     y1, y2 = 62, 196
     xs = [x0 + k * (w + gap) for k in range(3)]
-    specs1 = [(["Reload Studio:", "Creator Kit"], COL_STUDIO), (["Generate demo files"], COL_STUDIO),
+    specs1 = [(["Reload Studio: Character", "Creator Kit"], COL_STUDIO), (["Generate demo files"], COL_STUDIO),
               (["Blender:", "creator-kit.blend"], COL_BLENDER)]
     specs2 = [(["Export (test on your PC):", "creator-kit-demo-local.glb"], COL_BLENDER), (["Reload Studio:", "Character"], COL_STUDIO),
               (["Test in game"], COL_GAME)]

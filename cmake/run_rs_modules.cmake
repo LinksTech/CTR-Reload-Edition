@@ -18,6 +18,17 @@
 #      sidebar lists the good modules and not the crashed ones
 #   b  --no-modules: no module, no modules.log, one line in the log
 #   c  a modules folder that does not exist: no modules.log, one line
+#   d  the built-in modules in the sidebar: Track, Cups, Character, Test in
+#      game, at the bottom Expansions (its tooltip "CNK - coming soon" with
+#      an en dash, shown by "hover"; its page only the line "Coming soon"),
+#      then the scheme entry; no entry Creator Kit. "page kit" of old scripts
+#      opens the kit inside Character (Character stays marked) with one line
+#      saying where it is now, and is no failed step; Back on the kit's first
+#      step returns to Build a character; "kit" on Build a character opens it
+#   e  the line "No model yet? Start with the Creator Kit." of the step Model:
+#      Vanilla, Low-Poly and Hi-Res, each without and with a model (shown on
+#      Low-Poly and Hi-Res without a model only), "kit" through its button,
+#      Back to Build a character with the route kept
 #
 # Output: "modules passed: ..." or "FAILED: ...".
 
@@ -52,7 +63,10 @@ set(ENV{TMP} "${tempNative}")
 
 function(studio name expectExit)
     file(MAKE_DIRECTORY "${base}/${name}")
-    file(WRITE "${base}/${name}/rs.ini" "[reloadstudio]\r\ntest.exe=C:\\Windows\\System32\\hostname.exe\r\n")
+    # kit.blender: a Windows program as well, so that showing the Creator Kit
+    # never asks a Blender of this PC for its version.
+    file(WRITE "${base}/${name}/rs.ini"
+         "[reloadstudio]\r\ntest.exe=C:\\Windows\\System32\\hostname.exe\r\nkit.blender=C:\\Windows\\System32\\hostname.exe\r\n")
     execute_process(COMMAND "${STUDIO}" --settings "${base}/${name}/rs.ini" --log "${base}/${name}/auto.log" ${ARGN}
                     RESULT_VARIABLE rc TIMEOUT 120)
     if(NOT rc STREQUAL "${expectExit}")
@@ -135,4 +149,105 @@ if(EXISTS "${base}/c/modules.log")
 endif()
 expect("${base}/c/auto.log" "modules: no folder [^\n]*no-such-folder - built-in modules only")
 
-message("modules passed: ${fileCount} files, 4 loaded, 9 not loaded, 2 crashes caught, --no-modules and no folder")
+# --- d: the sidebar of the built-in modules, Expansions, the Creator Kit -------
+set(d "${base}/d")
+studio(d 0 --no-modules
+       --do "controls ${d}/side.tsv"
+       --do "page expansions" --do "controls ${d}/exp.tsv"
+       --do "hover expansions" --do "controls ${d}/hover.tsv" --do "hover none" --do "controls ${d}/unhover.tsv"
+       --do "page kit" --do "controls ${d}/kit.tsv"
+       --do "back" --do "controls ${d}/back.tsv" --do "report ${d}/char0.txt"
+       --do "kit" --do "controls ${d}/kit2.tsv" --do "quit")
+# The order from the top, nothing else, no Creator Kit.
+file(STRINGS "${d}/side.tsv" sideLines REGEX "^side\t")
+set(order "")
+foreach(line IN LISTS sideLines)
+    string(REGEX REPLACE "^side\t([^\t]+)\t.*$" "\\1" word "${line}")
+    if(NOT word STREQUAL "header" AND NOT word STREQUAL "footer")
+        list(APPEND order "${word}")
+    endif()
+endforeach()
+if(NOT order STREQUAL "track;cups;char;test;expansions;theme")
+    message(FATAL_ERROR "FAILED: run d: the sidebar from the top is '${order}', expected track;cups;char;test;expansions;theme")
+endif()
+# Expansions sits right above the scheme entry, below Test in game.
+foreach(word test expansions theme)
+    file(STRINGS "${d}/side.tsv" one REGEX "^side\t${word}\t")
+    string(REGEX REPLACE "^side\t[^\t]+\t-?[0-9]+\t(-?[0-9]+)\t-?[0-9]+\t(-?[0-9]+)\t.*$" "\\1;\\2" tb "${one}")
+    list(GET tb 0 top_${word})
+    list(GET tb 1 bottom_${word})
+endforeach()
+if(NOT top_expansions GREATER bottom_test OR NOT bottom_expansions LESS top_theme)
+    message(FATAL_ERROR "FAILED: run d: Expansions (${top_expansions}..${bottom_expansions}) is not between Test in game (to ${bottom_test}) and the scheme entry (from ${top_theme})")
+endif()
+# The tooltip, byte for byte: "CNK " U+2013 " coming soon" (UTF-8 e2 80 93).
+set(tipHex "434e4b20e2809320636f6d696e6720736f6f6e")
+foreach(f side hover unhover)
+    file(STRINGS "${d}/${f}.tsv" tipLine REGEX "^sidetip\texpansions\t")
+    if(NOT tipLine)
+        message(FATAL_ERROR "FAILED: run d: ${f}.tsv has no tooltip line for Expansions")
+    endif()
+endforeach()
+file(READ "${d}/hover.tsv" hoverHex HEX)
+string(FIND "${hoverHex}" "7369646574697009657870616e73696f6e73093109${tipHex}0a" at)
+if(at LESS 0)
+    message(FATAL_ERROR "FAILED: run d: hover.tsv has no open tooltip 'CNK - coming soon' (en dash) for Expansions")
+endif()
+expect("${d}/unhover.tsv" "\nsidetip\texpansions\t0\t")
+expect("${d}/side.tsv" "\nsidetip\texpansions\t0\t")
+expect_not("${d}/side.tsv" "\nside\tkit\t")
+# The page Expansions: one line "Coming soon" and nothing else.
+file(STRINGS "${d}/exp.tsv" expControls REGEX "^control\t")
+list(LENGTH expControls expCount)
+if(NOT expCount EQUAL 1)
+    message(FATAL_ERROR "FAILED: run d: the page Expansions has ${expCount} controls, expected 1")
+endif()
+expect("${d}/exp.tsv" "\ncontrol\t[0-9]+\tStatic\t[^\n]*\tComing soon\n")
+expect("${d}/exp.tsv" "\npage\texpansions\t")
+expect("${d}/exp.tsv" "\nsidemark\texpansions\n")
+# page kit: the kit, Character marked, the honest line, no failed step.
+expect("${d}/kit.tsv" "\npage\tkit\t")
+expect("${d}/kit.tsv" "\nsidemark\tchar\n")
+expect("${d}/auto.log" "  page kit: the Creator Kit is now under Character \\(Build a character -> Creator Kit\\)\n")
+expect("${d}/auto.log" "  back: to Character, Build a character\n")
+expect("${d}/back.tsv" "\npage\tchar\t")
+expect("${d}/back.tsv" "\nsidemark\tchar\n")
+expect("${d}/char0.txt" "\nstep: 0 choose")
+expect("${d}/char0.txt" "\nkit option: shown")
+expect("${d}/auto.log" "  kit: Creator Kit \\(Build a character\\)\n")
+expect("${d}/kit2.tsv" "\npage\tkit\t")
+expect("${d}/auto.log" "automation finished, 0 step\\(s\\) failed")
+
+# --- e: the line of the Creator Kit on the step Model ------------------------
+set(e "${base}/e")
+file(MAKE_DIRECTORY "${e}")
+file(WRITE "${e}/tri.obj" "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+studio(e 0 --no-modules --do "page char"
+       --do "route vanilla" --do "report ${e}/vanilla-0.txt" --do "model ${e}/tri.obj" --do "report ${e}/vanilla-1.txt"
+       --do "model none" --do "route lowpoly" --do "report ${e}/lowpoly-0.txt" --do "model ${e}/tri.obj"
+       --do "report ${e}/lowpoly-1.txt"
+       --do "model none" --do "route hires" --do "report ${e}/hires-0.txt" --do "model ${e}/tri.obj"
+       --do "report ${e}/hires-1.txt"
+       --do "model none" --do "kit" --do "controls ${e}/kit.tsv" --do "back" --do "report ${e}/back.txt" --do "quit")
+set(kitCases 0)
+foreach(route vanilla lowpoly hires)
+    foreach(m 0 1)
+        set(rep "${e}/${route}-${m}.txt")
+        expect("${rep}" "\nstep: 1 model")
+        if(m EQUAL 0 AND NOT route STREQUAL "vanilla")
+            expect("${rep}" "\nkit step line: No model yet\\? Start with the Creator Kit\\.\n")
+        else()
+            expect("${rep}" "\nkit step line: \\(none\\)\n")
+        endif()
+        math(EXPR kitCases "${kitCases} + 1")
+    endforeach()
+endforeach()
+expect("${e}/auto.log" "  kit: Open Creator Kit \\(step Model\\)\n")
+expect("${e}/kit.tsv" "\npage\tkit\t")
+expect("${e}/kit.tsv" "\nsidemark\tchar\n")
+expect("${e}/back.txt" "\nroute: hires \\(step 0 shown")
+expect("${e}/auto.log" "automation finished, 0 step\\(s\\) failed")
+
+message("modules passed: ${fileCount} files, 4 loaded, 9 not loaded, 2 crashes caught, --no-modules and no folder; "
+        "sidebar track cups char test | expansions theme, tooltip and page of Expansions, page kit inside Character, "
+        "the kit line ${kitCases}/6")

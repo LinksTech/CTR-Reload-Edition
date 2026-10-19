@@ -36,13 +36,34 @@ static const wchar_t *const k_needsCharTest[] = { L"char", L"test", NULL };
 // (Rs_TestGameExe, Rs_TestCharacter), so they need it; the Creator Kit builds
 // its demo driver as Character does (rs_charhires.c) and tests it there. The
 // icons are those the sidebar always had: Folder, BulletedList, Contact, Play;
-// the Creator Kit's is Package.
+// the Creator Kit's is Package (it has no entry of its own any more), that of
+// Expansions Puzzle.
 static const struct RsModuleDef g_builtin[RS_PAGE_BUILTIN_COUNT] = {
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"track", L"\xE8B7", 0, k_needsTest, &g_rsTrackPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"cups",  L"\xE8FD", 0, NULL,        &g_rsCupsPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"char",  L"\xE77B", 0, k_needsTest, &g_rsCharPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"test",  L"\xE768", 0, NULL,        &g_rsTestPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"kit",   L"\xE7B8", 0, k_needsCharTest, &g_rsKitPage },
+    { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"expansions", L"\xEA86", 0, NULL,   &g_rsExpansionsPage },
+};
+
+// The place of each built-in module beside its page (rs_module.h, BUILT-IN
+// MODULES), kept out of struct RsModuleDef so that the module interface of
+// the DLLs stays as it is (RS_MODULE_ABI 1). The Creator Kit is embedded in
+// Character (old scripts' "page kit" opens it there and says so, rs_shell.c);
+// Expansions is the bottom group.
+static const struct {
+    int host;                   // page ID of the host, -1 = an entry of its own
+    const wchar_t *where;       // embedded: how to reach it in the host
+    int bottom;                 // 1 = the bottom group of the sidebar
+    const wchar_t *tip;         // the tooltip of its entry, NULL = its name (narrow sidebar only)
+} g_builtinPlace[RS_PAGE_BUILTIN_COUNT] = {
+    { -1, NULL, 0, NULL },
+    { -1, NULL, 0, NULL },
+    { -1, NULL, 0, NULL },
+    { -1, NULL, 0, NULL },
+    { RS_PAGE_CHAR, L"Build a character -> Creator Kit", 0, NULL },
+    { -1, NULL, 1, g_rsExpansionsTip },
 };
 
 // A module DLL.
@@ -623,6 +644,26 @@ int Rs_ModuleByWord(const wchar_t *word)
         if (wcscmp(word, g_modules[i]->word) == 0)
             return i;
     return -1;
+}
+
+int Rs_ModuleHost(int id)
+{
+    return id >= 0 && id < RS_PAGE_BUILTIN_COUNT && id < g_moduleCount ? g_builtinPlace[id].host : -1;
+}
+
+const wchar_t *Rs_ModuleWhere(int id)
+{
+    return id >= 0 && id < RS_PAGE_BUILTIN_COUNT && id < g_moduleCount ? g_builtinPlace[id].where : NULL;
+}
+
+int Rs_ModuleBottom(int id)
+{
+    return id >= 0 && id < RS_PAGE_BUILTIN_COUNT && id < g_moduleCount ? g_builtinPlace[id].bottom : 0;
+}
+
+const wchar_t *Rs_ModuleNavTip(int id)
+{
+    return id >= 0 && id < RS_PAGE_BUILTIN_COUNT && id < g_moduleCount ? g_builtinPlace[id].tip : NULL;
 }
 
 int Rs_ModuleOn(int id)

@@ -1,4 +1,13 @@
-// rs_kit.c - page "Creator Kit": a Blender template made from the user's own game
+// rs_kit.c - the Creator Kit: a Blender template made from the user's own game
+//
+// ITS PLACE: a module of its own (word "kit", rs_module.c) without an entry in
+// the sidebar - it is embedded in the page Character (Rs_ModuleHost): Build a
+// character (step 0) has "Creator Kit" at its top right, and the step Model of
+// Low-Poly and Hi-Res, while no model is chosen, "No model yet? Start with the
+// Creator Kit." (rs_char.c). Its page is then shown in place of Character's,
+// whose entry stays marked; Back on its step 0 (and the verb "back" there)
+// returns to Build a character (Rs_ShowHost, RS_WM_HOST_RETURN). "page kit" of
+// old scripts opens it there and the log says where it is now (rs_shell.c).
 //
 // The kit is made ON THIS PC from the game files of the person using it, into
 // a folder they choose: the original kart and its wheels (extracted from the
@@ -59,7 +68,8 @@
 // THE GUIDE (docs/CREATOR_KIT.html, built into this exe) is written next to the
 // kit, or into Rs_TempDir before there is one, and opened in the browser.
 //
-// AUTOMATION (verbs of the page "kit"): step <0-4>, next, back, game <folder>,
+// AUTOMATION (verbs of the page "kit"): step <0-4>, next, back (on step 0: back
+// to Character, Build a character), game <folder>,
 // blender <exe>, out <folder>, demo on|off, generate (waits), cancel, open
 // guide|template|folder (logs, opens nothing), test-demo (logs the command,
 // starts nothing), report <file>. The report: one tab line per fact - step,
@@ -1286,7 +1296,8 @@ static void Kit_Update(void)
         Rs_SetText(g_kit.files, list);
     }
     // The bar.
-    Kit_Show(g_kit.back, s > 0 && !running);
+    // Back on step 0 leaves the kit for its host (Character, Build a character).
+    Kit_Show(g_kit.back, (s > 0 || Rs_ModuleHost(Rs_PageIdOf(g_kit.page)) >= 0) && !running);
     Kit_Show(g_kit.cancel, running);
     Kit_Show(g_kit.guide, s == 0 || s == 4);
     Kit_Show(g_kit.folder, s == 4);
@@ -1575,7 +1586,10 @@ static LRESULT Kit_Command(HWND page, WPARAM wParam, LPARAM lParam)
         Kit_Update();
         break;
     case KIT_ID_BACK:
-        Kit_GoStep(page, g_kit.step - 1);
+        if (g_kit.step == 0)
+            Rs_ShowHost(page);
+        else
+            Kit_GoStep(page, g_kit.step - 1);
         break;
     case KIT_ID_CANCEL:
         if (g_kit.job) {
@@ -1786,6 +1800,15 @@ static int Kit_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         }
         Kit_GoStep(page, n);
         return Kit_Busy(page) ? RS_AUTO_WAIT : RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"back") == 0 && g_kit.step == 0 && Rs_ModuleHost(Rs_PageIdOf(page)) >= 0) {
+        if (g_kit.job) {
+            Rs_AutoLog(L"  back: the kit is being made - Cancel first");
+            return RS_AUTO_FAIL;
+        }
+        Rs_AutoLog(L"  back: to Character, Build a character");
+        Rs_ShowHost(page);
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"next") == 0 || wcscmp(verb, L"back") == 0) {
         Kit_GoStep(page, g_kit.step + (verb[0] == L'n' ? 1 : -1));

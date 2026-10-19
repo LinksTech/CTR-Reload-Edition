@@ -18,7 +18,7 @@
 // `--do "<verb> <argument>"` (any number of times) plays back steps as if
 // someone had clicked: the same callbacks as the buttons. Meant so that acceptance
 // and repacking run reproducibly, without a second implementation. Shell
-// verbs: page, shot, wait, size <w> <h>, scroll, controls, theme, quit (all in
+// verbs: page, hover, shot, wait, size <w> <h>, scroll, controls, theme, quit (all in
 // --help). Everything else goes to the
 // current page (also "size <n>" with one number). `--log <file>` writes the
 // automation log. In automation
@@ -172,6 +172,8 @@ static HWND g_main;
 static HWND g_sidebar;
 static HWND g_host;                     // the scrolling view the pages sit in
 static HWND g_tips;                     // tooltips of the narrow sidebar
+static HWND g_navTip;                   // the tooltip of an entry with one of its own (Rs_ModuleNavTip)
+static int g_navTipShown = -1;          // the page whose entry's tooltip is open, -1 = none
 static HWND g_pageTips;                 // tooltips of page controls (Rs_SetTip)
 static HWND g_lastFocus;
 static int g_narrow;                    // sidebar with icons only
@@ -1463,6 +1465,8 @@ static void Rs_ApplyTheme(int dark, int save)
         // The tooltips are popups, not children: EnumChildWindows misses them.
         if (g_tips)
             SetWindowTheme(g_tips, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        if (g_navTip)
+            SetWindowTheme(g_navTip, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
         if (g_pageTips)
             SetWindowTheme(g_pageTips, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
         SetWindowPos(g_main, NULL, 0, 0, 0, 0,
@@ -3444,6 +3448,15 @@ void Rs_ShowPage(int id)
     Rs_ConfigSet(L"page", Rs_PageWord(id));
 }
 
+void Rs_ShowHost(HWND page)
+{
+    int id = Rs_PageIdOf(page), host = Rs_ModuleHost(id);
+    if (host < 0 || !g_pages[host])
+        return;
+    Rs_ShowPage(host);
+    SendMessageW(g_pages[host], RS_WM_HOST_RETURN, (WPARAM)id, 0);
+}
+
 // ---------------------------------------------------------------------------
 // Scrolling view
 //
@@ -3787,22 +3800,43 @@ static const wchar_t *Rs_NavIcon(int id)
     return m && m->icon ? m->icon : L"\xEA86";
 }
 
+// The pages the sidebar lists: the page of every module that is on (a module
+// that crashed is off) and has an entry of its own - an embedded page
+// (Rs_ModuleHost, the Creator Kit) has none, its host's entry stands for it.
+// A page that is not listed gets an empty entry (Rs_NavRect), the entries
+// below it move up.
+static int Rs_NavShown(int id)
+{
+    return id >= 0 && id < g_pageCount && Rs_ModuleOn(id) && Rs_ModuleHost(id) < 0;
+}
+
+// The entries listed in the upper group (bottom = 0) or in the bottom group
+// (bottom = 1, Rs_ModuleBottom: right above "Light mode" / "Dark mode").
+static int Rs_NavCount(int bottom)
+{
+    int i, n = 0;
+    for (i = 0; i < g_pageCount; i++)
+        n += Rs_NavShown(i) && (!Rs_ModuleBottom(i) == !bottom);
+    return n;
+}
+
 // 1 if the sidebar is too low for the version line and the footer: then the
-// entries move up and the scheme entry follows right below them.
+// entries move up and the bottom group and the scheme entry follow right below
+// them.
 static int Rs_SideCompact(void)
 {
     RECT client;
+    int listed = Rs_NavCount(0) + Rs_NavCount(1), more = listed > 4 ? listed - 4 : 0;
     GetClientRect(g_sidebar, &client);
-    int more = g_pageCount > 4 ? g_pageCount - 4 : 0;
     return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H + more * RS_SIDEBAR_ENTRY_H);
 }
 
-// The pages the sidebar lists: the page of every module that is on (a module
-// that crashed is off). A page that is not listed gets an empty entry
-// (Rs_NavRect), the entries below it move up.
-static int Rs_NavShown(int id)
+// The entry the sidebar marks: that of the page shown, or of its host when it
+// is an embedded page.
+static int Rs_NavCurrent(void)
 {
-    return id >= 0 && id < g_pageCount && Rs_ModuleOn(id);
+    int host = Rs_ModuleHost(g_current);
+    return host >= 0 ? host : g_current;
 }
 
 void Rs_ModuleTurnedOff(int id)
@@ -3811,17 +3845,21 @@ void Rs_ModuleTurnedOff(int id)
         PostMessageW(g_main, RS_WM_MODULE_OFF, (WPARAM)id, 0);
 }
 
-// The place of a listed page in the sidebar (0 = the first entry).
+// The place of a listed page in its group of the sidebar (0 = its first entry).
 static int Rs_NavSlot(int id)
 {
     int i, slot = 0;
     for (i = 0; i < id; i++)
-        slot += Rs_NavShown(i);
+        slot += Rs_NavShown(i) && (!Rs_ModuleBottom(i) == !Rs_ModuleBottom(id));
     return slot;
 }
 
+static RECT Rs_ThemeRect(void);
+
 // The entry of page i; an empty rectangle for a page the sidebar does not list
-// (nothing is drawn there, a click or a tooltip never lands on it).
+// (nothing is drawn there, a click or a tooltip never lands on it). The upper
+// group from the top; the bottom group right above the scheme entry, or in a
+// low sidebar (compact) right below the upper group.
 static RECT Rs_NavRect(int i)
 {
     RECT r;
@@ -3834,7 +3872,16 @@ static RECT Rs_NavRect(int i)
     GetClientRect(g_sidebar, &client);
     r.left = Rs_Px(g_narrow ? 8 : 12);
     r.right = client.right - r.left;
-    r.top = Rs_Px(compact ? 72 : 112) + Rs_NavSlot(i) * Rs_Px(compact ? 42 : 46);
+    if (!Rs_ModuleBottom(i)) {
+        r.top = Rs_Px(compact ? 72 : 112) + Rs_NavSlot(i) * Rs_Px(compact ? 42 : 46);
+    } else if (compact) {
+        int top = Rs_NavCount(0);
+        r.top = Rs_Px(72) + (top > 0 ? (top - 1) * Rs_Px(42) + Rs_Px(40) + Rs_Px(8) : 0) +
+                Rs_NavSlot(i) * Rs_Px(42);
+    } else {
+        RECT theme = Rs_ThemeRect();
+        r.top = theme.top - Rs_Px(46) - (Rs_NavCount(1) - 1 - Rs_NavSlot(i)) * Rs_Px(46);
+    }
     r.bottom = r.top + Rs_Px(40);
     return r;
 }
@@ -3851,10 +3898,11 @@ static RECT Rs_ThemeRect(void)
     r.left = Rs_Px(g_narrow ? 8 : 12);
     r.right = client.right - r.left;
     if (Rs_SideCompact()) {
-        int i, lastId = 0;
+        // Below the last entry listed: of the bottom group, else of the upper one.
+        int i, lastId = 0, bottom = Rs_NavCount(1) > 0;
         RECT last;
         for (i = 0; i < g_pageCount; i++)
-            if (Rs_NavShown(i))
+            if (Rs_NavShown(i) && (!Rs_ModuleBottom(i) == !bottom))
                 lastId = i;
         last = Rs_NavRect(lastId);
         r.top = last.bottom + Rs_Px(8);
@@ -3866,7 +3914,47 @@ static RECT Rs_ThemeRect(void)
     return r;
 }
 
-// The narrow sidebar shows only icons; the tooltips name them.
+// The tooltip of an entry with one of its own (Rs_ModuleNavTip: Expansions),
+// in the wide sidebar too: right of the entry, at once on hover (and by the
+// automation verb "hover"), gone when the mouse leaves it. id -1 or an entry
+// without one: closed.
+static void Rs_NavTipShow(int id)
+{
+    const wchar_t *text = Rs_NavShown(id) ? Rs_ModuleNavTip(id) : NULL;
+    TOOLINFOW ti;
+    if (!g_navTip)
+        return;
+    memset(&ti, 0, sizeof(ti));
+    ti.cbSize = sizeof(ti);
+    ti.hwnd = g_sidebar;
+    ti.uId = 1;
+    if (!text) {
+        if (g_navTipShown >= 0)
+            SendMessageW(g_navTip, TTM_TRACKACTIVATE, FALSE, (LPARAM)&ti);
+        g_navTipShown = -1;
+        return;
+    }
+    {
+        RECT r = Rs_NavRect(id), tr;
+        POINT pt;
+        ti.lpszText = (LPWSTR)text;
+        SendMessageW(g_navTip, TTM_UPDATETIPTEXTW, 0, (LPARAM)&ti);
+        pt.x = r.right + Rs_Px(8);
+        pt.y = r.top;
+        ClientToScreen(g_sidebar, &pt);
+        SendMessageW(g_navTip, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x, pt.y));
+        SendMessageW(g_navTip, TTM_TRACKACTIVATE, TRUE, (LPARAM)&ti);
+        // Shown, it has its size: centred on the entry.
+        if (GetWindowRect(g_navTip, &tr)) {
+            pt.y += (r.bottom - r.top - (tr.bottom - tr.top)) / 2;
+            SendMessageW(g_navTip, TTM_TRACKPOSITION, 0, MAKELPARAM(pt.x, pt.y));
+        }
+        g_navTipShown = id;
+    }
+}
+
+// The narrow sidebar shows only icons; the tooltips name them. An entry with
+// a tooltip of its own (Rs_NavTipShow) has none of these.
 static void Rs_TipsUpdate(void)
 {
     TOOLINFOW ti;
@@ -3878,10 +3966,18 @@ static void Rs_TipsUpdate(void)
         ti.cbSize = sizeof(ti);
         ti.hwnd = g_sidebar;
         ti.uId = (UINT_PTR)i + 1;
-        ti.rect = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
+        if (i == RS_NAV_THEME)
+            ti.rect = Rs_ThemeRect();
+        else if (Rs_ModuleNavTip(i))
+            SetRectEmpty(&ti.rect);
+        else
+            ti.rect = Rs_NavRect(i);
         SendMessageW(g_tips, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
     }
     SendMessageW(g_tips, TTM_ACTIVATE, (WPARAM)g_narrow, 0);
+    // An open tooltip of its own follows its entry (a new size of the window).
+    if (g_navTipShown >= 0)
+        Rs_NavTipShow(g_navTipShown);
 }
 
 static void Rs_TipsCreate(void)
@@ -3891,6 +3987,20 @@ static void Rs_TipsCreate(void)
     g_tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
                              CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                              g_main, NULL, g_inst, NULL);
+    g_navTip = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                               CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                               g_main, NULL, g_inst, NULL);
+    if (g_navTip) {
+        if (g_dark)
+            SetWindowTheme(g_navTip, L"DarkMode_Explorer", NULL);
+        memset(&ti, 0, sizeof(ti));
+        ti.cbSize = sizeof(ti);
+        ti.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+        ti.hwnd = g_sidebar;
+        ti.uId = 1;
+        ti.lpszText = (LPWSTR)L"";
+        SendMessageW(g_navTip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+    }
     Rs_PageTipsCreate();
     if (!g_tips)
         return;
@@ -3962,7 +4072,7 @@ static void Rs_SidebarPaint(HWND hwnd)
     for (i = 0; i < g_pageCount; i++) {
         RECT r = Rs_NavRect(i);
         RECT t;
-        int sel = i == g_current;
+        int sel = i == Rs_NavCurrent();
         if (!Rs_NavShown(i))
             continue;
         if (sel || i == g_hoverNav)
@@ -4090,6 +4200,7 @@ static LRESULT CALLBACK Rs_SidebarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         if (hit != g_hoverNav) {
             g_hoverNav = hit;
             InvalidateRect(hwnd, NULL, FALSE);
+            Rs_NavTipShow(hit >= 0 && hit < g_pageCount ? hit : -1);
         }
         return 0;
     }
@@ -4097,6 +4208,7 @@ static LRESULT CALLBACK Rs_SidebarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         g_trackingMouse = 0;
         g_hoverNav = -1;
         InvalidateRect(hwnd, NULL, FALSE);
+        Rs_NavTipShow(-1);
         return 0;
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT) {
@@ -4171,6 +4283,60 @@ static int Rs_ShotPrint(HDC mem, HBITMAP wbmp, const unsigned char *wbits, int w
     return !Rs_ShotFlat(bits, stride, w, h);
 }
 
+// A popup of the window that is open over it - the tooltip of a sidebar entry
+// (Rs_NavTipShow, the verb "hover") - drawn into the picture at its place:
+// PrintWindow of the main window does not see popups. A tooltip is topmost:
+// where it lies on the screen it is read from there - PrintWindow gives it
+// flat or without its colour scheme (light in dark mode); elsewhere (--screen
+// larger than the monitor) PrintWindow it is, and the log says so. Clipped to
+// the client area (origin = its top left corner on the screen).
+static void Rs_ShotPopup(HDC screen, HDC mem, HWND pop, POINT origin, unsigned char *bits, int stride, int w, int h)
+{
+    RECT pr, desk;
+    BITMAPINFO pbi;
+    void *pbits = NULL;
+    HBITMAP pbmp;
+    HGDIOBJ old;
+    int pw, ph, pstride, y, x0, x1;
+
+    if (!pop || !IsWindowVisible(pop) || !GetWindowRect(pop, &pr))
+        return;
+    pw = pr.right - pr.left;
+    ph = pr.bottom - pr.top;
+    if (pw <= 0 || ph <= 0)
+        return;
+    pbmp = Rs_ShotBitmap(screen, pw, ph, &pbi, &pbits);
+    if (!pbmp)
+        return;
+    pstride = (pw * 3 + 3) & ~3;
+    old = SelectObject(mem, pbmp);
+    desk.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    desk.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    desk.right = desk.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    desk.bottom = desk.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (pr.left >= desk.left && pr.top >= desk.top && pr.right <= desk.right && pr.bottom <= desk.bottom) {
+        BitBlt(mem, 0, 0, pw, ph, screen, pr.left, pr.top, SRCCOPY);
+    } else {
+        Rs_AutoLog(L"  shot: the tooltip of the sidebar does not lie on the screen - drawn by PrintWindow, "
+                   L"perhaps without its colour scheme");
+        PrintWindow(pop, mem, 0);
+    }
+    GdiFlush();
+    SelectObject(mem, old);
+    if (!Rs_ShotFlat((const unsigned char *)pbits, pstride, pw, ph)) {
+        x0 = pr.left - origin.x < 0 ? origin.x - pr.left : 0;
+        x1 = pr.left - origin.x + pw > w ? w - (pr.left - origin.x) : pw;
+        for (y = 0; y < ph && x1 > x0; y++) {
+            int cy = pr.top - origin.y + y;
+            if (cy < 0 || cy >= h)
+                continue;
+            memcpy((unsigned char *)bits + (size_t)(h - 1 - cy) * stride + (size_t)(pr.left - origin.x + x0) * 3,
+                   (const unsigned char *)pbits + (size_t)(ph - 1 - y) * pstride + (size_t)x0 * 3, (size_t)(x1 - x0) * 3);
+        }
+    }
+    DeleteObject(pbmp);
+}
+
 static int Rs_Shot(const wchar_t *path)
 {
     RECT wr, cr;
@@ -4228,6 +4394,8 @@ static int Rs_Shot(const wchar_t *path)
             GdiFlush();
             SelectObject(mem, old);
             SetWindowPos(g_main, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        } else if (g_navTipShown >= 0) {
+            Rs_ShotPopup(screen, mem, g_navTip, origin, (unsigned char *)bits, stride, w, h);
         }
         memset(&fh, 0, sizeof(fh));
         fh.bfType = 0x4D42;
@@ -4269,6 +4437,11 @@ done:
 //   focus    <id>                   the control with the keyboard focus, if on the page
 //   tip      <id> <text>            the tooltip of a control of the page (Rs_SetTip)
 //   side     <name> <l> <t> <r> <b> <text right edge>
+//            from the top: the upper group, the bottom group, then "theme"
+//   sidetip  <name> <open> <text>   the tooltip of an entry with one of its own
+//            (Rs_ModuleNavTip), right after its side line; open = 1 while shown
+//   sidemark <name>                 the entry marked: that of the page shown, or of
+//            its host when it is an embedded page (page kit: char)
 // need w / need h: what the text asks for in the control's font - for a label
 // the width on one line and the height wrapped at the control's width, for a
 // button or check box the width with its box or margin, for a one-line input
@@ -4352,7 +4525,7 @@ static int Rs_DumpControls(const wchar_t *path)
     HDC dc;
     FILE *f;
     HWND c;
-    int i;
+    int i, k;
 
     if (!st)
         return 0;
@@ -4399,19 +4572,27 @@ static int Rs_DumpControls(const wchar_t *path)
         fprintf(f, "tip\t%d\t", g_pageTip[i].id);
         Rs_DumpText(f, g_pageTip[i].text);
     }
-    // The entries the sidebar shows (a page it does not list has none).
-    for (i = 0; i <= RS_NAV_THEME; i++) {
-        RECT r = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
-        const wchar_t *name = i == RS_NAV_THEME ? (g_dark ? L"Light mode" : L"Dark mode") : Rs_Def(i)->navName;
-        long edge;
-        if (i != RS_NAV_THEME && !Rs_NavShown(i))
-            continue;
-        edge = g_narrow ? 0 : r.left + Rs_Px(46) +
-                    Rs_TextSize(dc, Rs_Font(i == g_current ? RS_FONT_BOLD : RS_FONT_BODY), name, 0,
-                                DT_SINGLELINE | DT_NOPREFIX).cx;
-        fprintf(f, "side\t%ls\t%ld\t%ld\t%ld\t%ld\t%ld\n", i == RS_NAV_THEME ? L"theme" : Rs_PageWord(i),
-                r.left, r.top, r.right, r.bottom, edge);
-    }
+    // The entries the sidebar shows (a page it does not list has none), from
+    // the top: the upper group, the bottom group, the scheme entry.
+    for (k = 0; k < 3; k++)
+        for (i = 0; i <= RS_NAV_THEME; i++) {
+            RECT r = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
+            const wchar_t *name = i == RS_NAV_THEME ? (g_dark ? L"Light mode" : L"Dark mode") : Rs_Def(i)->navName;
+            long edge;
+            if ((i == RS_NAV_THEME) != (k == 2) || (i != RS_NAV_THEME && (!Rs_NavShown(i) || !Rs_ModuleBottom(i) != !k)))
+                continue;
+            edge = g_narrow ? 0 : r.left + Rs_Px(46) +
+                        Rs_TextSize(dc, Rs_Font(i == Rs_NavCurrent() ? RS_FONT_BOLD : RS_FONT_BODY), name, 0,
+                                    DT_SINGLELINE | DT_NOPREFIX).cx;
+            fprintf(f, "side\t%ls\t%ld\t%ld\t%ld\t%ld\t%ld\n", i == RS_NAV_THEME ? L"theme" : Rs_PageWord(i),
+                    r.left, r.top, r.right, r.bottom, edge);
+            if (i != RS_NAV_THEME && Rs_ModuleNavTip(i)) {
+                fprintf(f, "sidetip\t%ls\t%d\t", Rs_PageWord(i),
+                        g_navTipShown == i && IsWindowVisible(g_navTip));
+                Rs_DumpText(f, Rs_ModuleNavTip(i));
+            }
+        }
+    fprintf(f, "sidemark\t%ls\n", Rs_PageWord(Rs_NavCurrent()));
     if (!g_narrow) {
         long edge = Rs_Px(40) + Rs_TextSize(dc, Rs_Font(RS_FONT_SECTION), L"Reload Studio", 0,
                                             DT_SINGLELINE | DT_NOPREFIX).cx;
@@ -4518,8 +4699,36 @@ static void Rs_AutoTick(void)
             Rs_AutoLog(L"  FAIL: the module '%ls' was turned off (see the log)", s->arg);
             g_autoFailed++;
         } else {
+            // An embedded page (the Creator Kit) has no entry of its own any
+            // more: old scripts still open it - inside its host - and are told
+            // where it is now. No failed step.
+            int host = Rs_ModuleHost(id);
+            if (host >= 0)
+                Rs_AutoLog(L"  page %ls: the %ls is now under %ls (%ls)", s->arg, Rs_Def(id)->navName,
+                           Rs_Def(host)->navName, Rs_ModuleWhere(id) ? Rs_ModuleWhere(id) : Rs_Def(id)->navName);
             Rs_ShowPage(id);
         }
+        g_autoSettleUntil = GetTickCount() + 200;
+        return;
+    }
+    // "hover <page word>": the sidebar as with the mouse on that entry - its
+    // hover mark and, for an entry with one of its own, its tooltip (in the
+    // picture of "shot"); "hover none" takes it back. The real mouse is not
+    // moved.
+    if (wcscmp(s->verb, L"hover") == 0) {
+        int id = wcscmp(s->arg, L"none") == 0 ? -1 : Rs_PageByWord(s->arg);
+        if (wcscmp(s->arg, L"none") != 0 && !Rs_NavShown(id)) {
+            Rs_AutoLog(L"  FAIL: the sidebar has no entry '%ls'", s->arg);
+            g_autoFailed++;
+            return;
+        }
+        g_hoverNav = id;
+        InvalidateRect(g_sidebar, NULL, FALSE);
+        UpdateWindow(g_sidebar);
+        Rs_NavTipShow(id);
+        if (id >= 0)
+            Rs_AutoLog(L"  hover: %ls%ls%ls", Rs_Def(id)->navName, g_navTipShown == id ? L" - tooltip: " : L"",
+                       g_navTipShown == id ? Rs_ModuleNavTip(id) : L"");
         g_autoSettleUntil = GetTickCount() + 200;
         return;
     }

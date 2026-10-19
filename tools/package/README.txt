@@ -311,6 +311,10 @@ move it to another one) and opens inside the screen. It can be made small;
 a page that does not fit then scrolls (scroll bars, mouse wheel). In a
 narrow window the sidebar shows only its icons.
 
+The sidebar lists Track, Cups, Character and Test in game. At the bottom are
+Expansions (a placeholder: "Coming soon", nothing to set yet) and Light mode /
+Dark mode.
+
 4.1 Page "Track" - build a track container
   Track       The folder with your export: .lev (geometry), .vrm (textures),
               optional .sca or .sndb (music), optional track.txt (settings).
@@ -366,6 +370,13 @@ for the game (and for cups).
   a cup with problems.
 
 4.3 Page "Character" - build a character
+The first screen, "Build a character", asks what to build: Vanilla, Low-Poly
+or Hi-Res. "Creator Kit" at its top right opens the Creator Kit there: a ready
+Blender template with a jointed puppet and the kart from your own game data
+(guide: docs/CREATOR_KIT.md). "Back" on the kit's first step returns to the
+three ways. On the step Model of Low-Poly and Hi-Res, while no model is chosen,
+"No model yet? Start with the Creator Kit." opens it too.
+
 The page goes in five steps, one tab each: 1 Model, 2 Driver, 3 In-game look,
 4 Voices, 5 Extras. The preview stays on the right and the bar with the
 messages and the build at the bottom; nothing has to be scrolled (from

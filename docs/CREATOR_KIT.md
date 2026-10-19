@@ -22,11 +22,13 @@ You replace the puppet with your own figure. You keep the skeleton, the clip nam
 You need **Blender 5.2**. Install Blender 5.2 from [blender.org](https://www.blender.org/download/). No other version is supported.
 
 1. Start **Reload Studio**.
-2. Open the page **Creator Kit**.
+2. Open the page **Character**. On **Build a character**, click **Creator Kit** at the top right.
 3. Choose your game data and the driver whose kart you want to use.
 4. Choose an empty folder for the files.
 5. Press the button **Generate demo files**.
 6. Wait until the Studio says it is done. This takes a short while.
+
+**Back** on the first step of the kit takes you back to the three ways of **Build a character**.
 
 You find these files in the folder:
 
@@ -252,7 +254,7 @@ If something looks wrong, go back to Blender, fix it, export again and test agai
 
 You can start from a character you made before (a .rldchar file).
 
-1. On the page **Creator Kit**, choose the old character at **Start from an old character**.
+1. Open the Creator Kit (page **Character**, **Build a character**, **Creator Kit** at the top right). Choose the old character at **Start from an old character**.
 2. Press **Generate demo files**.
 3. Open `creator-kit.blend`. The old model is in the collection **Classic**. Click the eye of Classic in the Outliner to show it.
 

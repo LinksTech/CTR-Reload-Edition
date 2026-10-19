@@ -26,7 +26,11 @@
 //   rs_anim.c     card "Animations" of the page "Character" (shape keys of a glTF, rs_anim.h)
 //   rs_hires_model.c  the check and the picture of a hi-res model (page Character, routes Low-Poly and Hi-Res)
 //   rs_test.c     page "Test in game"
-//   rs_kit.c      page "Creator Kit": a Blender template from the user's own game files
+//   rs_kit.c      the Creator Kit: a Blender template from the user's own game files
+//                 (its own module, shown inside the page Character: Build a character,
+//                 "Creator Kit" at the top right)
+//   rs_expansions.c  the entry "Expansions" at the bottom of the sidebar: a page
+//                 "Coming soon" for now, the place a later function moves into
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
 // argument: the rldpack face), `--do "<verb> <argument>"` (automation, any
@@ -795,10 +799,14 @@ extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
 extern const struct RsPageDef g_rsCharPage;    // rs_char.c
 extern const struct RsPageDef g_rsTestPage;    // rs_test.c
 extern const struct RsPageDef g_rsKitPage;     // rs_kit.c
+extern const struct RsPageDef g_rsExpansionsPage;  // rs_expansions.c
+extern const wchar_t g_rsExpansionsTip[];      // rs_expansions.c: the tooltip of its sidebar entry
 
 // The page IDs of the built-in modules (rs_module.c, in this order); the
-// pages of other modules follow them.
-enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_KIT, RS_PAGE_BUILTIN_COUNT };
+// pages of other modules follow them. New ones go at the end: the IDs before
+// stay what they were (RS_PAGE_KIT is still 4).
+enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_KIT, RS_PAGE_EXPANSIONS,
+                RS_PAGE_BUILTIN_COUNT };
 
 // The files of the Creator Kit built into this exe (RCDATA, reloadstudio_kit.rc
 // made by CMakeLists.txt): its Blender scripts (templates/) and its guide
@@ -820,6 +828,12 @@ int  Rs_ModuleBuiltinCount(void);
 const struct RsModuleDef *Rs_ModuleAt(int id);   // NULL outside 0..Rs_ModuleCount()-1
 int  Rs_ModuleByWord(const wchar_t *word);       // page ID, -1 if no module has this word
 int  Rs_ModuleOn(int id);                        // 0 = no such page, or its module crashed and is off
+// The place of a module beside its page (rs_module.h, BUILT-IN MODULES); a
+// module DLL has none of them.
+int  Rs_ModuleHost(int id);                      // embedded: the page ID it is shown inside, else -1
+const wchar_t *Rs_ModuleWhere(int id);           // embedded: how to reach it there, e.g. L"Build a character -> Creator Kit"
+int  Rs_ModuleBottom(int id);                    // 1 = its entry is in the bottom group of the sidebar
+const wchar_t *Rs_ModuleNavTip(int id);          // the tooltip of its entry, NULL = its name (narrow sidebar only)
 // One line to modules.log (when this start writes one) and the automation log.
 void __cdecl Rs_ModuleLog(const wchar_t *fmt, ...);
 // The shell's side (rs_shell.c): the page ID of a page window (-1 if it is
@@ -831,7 +845,12 @@ void Rs_ModuleTurnedOff(int id);
 // The own messages to page windows (RS_WM_JOB_LINE ... RS_WM_JOB_BUSY) are in rs_module.h.
 
 // Switch page (also from within a page, e.g. "Test in game" after the build).
+// An embedded page (Rs_ModuleHost) is shown in place of its host's, and the
+// sidebar keeps the host's entry marked.
 void Rs_ShowPage(int id);
+// Back from an embedded page: its host is shown again and gets
+// RS_WM_HOST_RETURN (wParam = the ID of page). Nothing for another page.
+void Rs_ShowHost(HWND page);
 HWND Rs_PageWindow(int id);
 HWND Rs_MainWindow(void);
 

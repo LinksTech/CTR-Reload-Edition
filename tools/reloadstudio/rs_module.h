@@ -7,9 +7,15 @@
 // rs_shell.c, rldpack inside the exe (the checks and the packer), the preview
 // (rs_view.c, rs_tex.c) and the version.
 //
-// BUILT-IN MODULES - Track, Cups, Character, Test in game, Creator Kit - are a
-// table in rs_module.c; their order is the order of the sidebar and their page
-// IDs (enum RsPageId in reloadstudio.h).
+// BUILT-IN MODULES - Track, Cups, Character, Test in game, Creator Kit,
+// Expansions - are a table in rs_module.c; their order is that of their page
+// IDs (enum RsPageId in reloadstudio.h) and of the sidebar. A built-in module
+// can have a place of its own beside its page (rs_module.c, g_builtinPlace):
+// EMBEDDED - no entry in the sidebar, its page is shown inside a host page,
+// whose entry stays marked (the Creator Kit inside Character) -, or in the
+// BOTTOM group of the sidebar, right above "Light mode" / "Dark mode", with a
+// tooltip of its own (Expansions). A module DLL has neither: its entry is in
+// the upper group, after those of the built-in modules.
 //
 // OTHER MODULES are 32-bit DLLs (Reload Studio is a 32-bit program) in the
 // folder "modules" next to ReloadStudio.exe (for tests: --modules-dir
@@ -132,6 +138,8 @@ struct RsPageDef {
 #define RS_WM_JOB_PROGRESS (WM_APP + 7) // wParam = job, lParam = struct RsJobProgress* (Rs_Free)
 #define RS_WM_JOB_BUSY     (WM_APP + 8) // a job could not start, all slots taken: wParam = jobs
                                         // running, lParam = wchar_t* "busy: N jobs running" (Rs_Free)
+#define RS_WM_HOST_RETURN  (WM_APP + 9) // to a host page: its embedded page was left with Back
+                                        // (wParam = the embedded page's ID); built-in pages only
 // WM_APP + 64 and up: a page's own messages to itself (rs_char.c: CHAR_WM_ACTIVATED, posted by its
 // subclass of the main window when Reload Studio becomes the active program again).
 

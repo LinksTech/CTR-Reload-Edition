@@ -169,6 +169,14 @@
 //   Hi-Res    fallback) and the .glb itself in the chunk CHRG (THE BUILD OF A
 //             CHRG ROUTE); the presets and the plain-English messages are
 //             rs_charhires.c's
+// THE CREATOR KIT (rs_kit.c, a module of its own embedded in this page): step
+// 0 has "Creator Kit" at the top right, beside "What do you want to build?",
+// and the step Model of Low-Poly and Hi-Res, while no model is chosen (the
+// field empty), the line "No model yet? Start with the Creator Kit." with
+// "Open Creator Kit" at its end - never on Vanilla. Either shows the kit's
+// page in place of this one (the sidebar keeps Character marked); Back on the
+// kit's first step comes back here to step 0 (RS_WM_HOST_RETURN), every entry
+// kept. The automation verb "kit" clicks the one that is shown.
 // Then only the steps of the route, the tabs of before: Model, Driver, In-game
 // look, Voices (optional: Next skips it), Build. What a route does not need is
 // hidden, not greyed out (Char_RouteHides). "Change type" in the head of the
@@ -550,6 +558,10 @@
 #define CHAR_ID_GAMEKART_NOTE  249   // the line below the box: the suggestion, or the author's choice
 #define CHAR_ID_GAMEKART_STEP  250   // the line of the switch on the step Model itself (outside Advanced)
 #define CHAR_ID_GAMEKART_CHANGE 251  // "Change" at its end: opens Advanced at the box
+// THE CREATOR KIT: its button on step 0 and its line on the step Model.
+#define CHAR_ID_KIT_OPEN       252   // "Creator Kit" at the top right of step 0
+#define CHAR_ID_KIT_STEP       253   // "No model yet? Start with the Creator Kit." (CHRG routes, no model)
+#define CHAR_ID_KIT_LINK       254   // "Open Creator Kit" at its end
 #define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode, upscale or PNG conversion the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
@@ -946,6 +958,7 @@ static struct {
     int route;                      // RS_ROUTE_NONE until chosen
     int choosing;                   // step 0 "What do you want to build?" is shown
     HWND routeAsk, routeCard[RS_ROUTES], routeLabel, changeType;
+    HWND kitOpen, kitStep, kitLink; // THE CREATOR KIT: step 0's button, the line of the step Model
     HBITMAP routeImage[RS_ROUTES];  // the pictures of the cards (Rs_RouteImage), NULL = none
     int routeImageW, routeImageH;   // the size they were made for
     int advOpen;                    // Advanced of the step Model is open
@@ -1309,6 +1322,21 @@ static void Char_ExtrasFix(void)
             g_char.extrasCard = g_charExtrasOrder[i];
             return;
         }
+}
+
+// THE CREATOR KIT: its line on the step Model is wanted on Low-Poly and Hi-Res
+// while the model field is empty (spaces only count as empty).
+static int Char_KitHint(void)
+{
+    wchar_t model[8];
+    int i;
+    if (!Char_Chrg() || !g_char.model)
+        return 0;
+    GetWindowTextW(g_char.model, model, 8);
+    for (i = 0; model[i]; i++)
+        if (model[i] != L' ' && model[i] != L'\t')
+            return 0;
+    return 1;
 }
 
 // The controls a route does not need: hidden (not greyed out). Vanilla has
@@ -2763,6 +2791,10 @@ static int Char_TabOfId(int id, int *card)
     }
     if ((id >= CHAR_ID_CLASSIC_LABEL && id <= CHAR_ID_CLASSIC_HELP) || id == CHAR_ID_CHAR_NOTE) {
         *card = CHAR_EXTRAS_OPTIONS;
+        return CHAR_TAB_MODEL;
+    }
+    if (id == CHAR_ID_KIT_STEP || id == CHAR_ID_KIT_LINK) {
+        *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
     if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE ||
@@ -9250,6 +9282,11 @@ static void Char_ReportFlow(FILE *f)
         Char_Put(f, L"step: 0 choose");
     else
         Char_Put(f, L"step: %d %ls", g_char.tab + 1, g_charTabWords[g_char.tab]);
+    // THE CREATOR KIT: its button of step 0 and its line of the step Model.
+    Char_Put(f, L"kit option: %ls", Char_IsShown(g_char.kitOpen) ? L"shown (\"Creator Kit\", top right of step 0)" : L"not shown");
+    text = Rs_GetText(g_char.kitStep);
+    Char_Put(f, L"kit step line: %ls", Char_IsShown(g_char.kitStep) && Char_IsShown(g_char.kitLink) ? text : L"(none)");
+    Rs_Free(text);
     Char_Put(f, L"advanced: %ls%ls (cards on this route: %d)", g_char.advOpen ? L"open, card " : L"closed",
              g_char.advOpen ? g_charExtrasWords[g_char.extrasCard] : L"", Char_ExtrasCount());
     {
@@ -10746,6 +10783,14 @@ static void Char_Create(HWND page)
     SetWindowLongPtrW(g_char.routeLabel, GWL_STYLE, GetWindowLongPtrW(g_char.routeLabel, GWL_STYLE) | SS_RIGHT | SS_ENDELLIPSIS);
     g_char.changeType = Rs_Button(page, CHAR_ID_CHANGE_TYPE, L"Change type");
     Rs_SetTip(g_char.changeType, L"Back to \"What do you want to build?\" - everything entered stays.");
+    // THE CREATOR KIT.
+    g_char.kitOpen = Rs_Button(page, CHAR_ID_KIT_OPEN, L"Creator Kit");
+    Rs_SetTip(g_char.kitOpen, L"A ready Blender template for a driver of your own: a jointed puppet, its clips and the kart "
+                              L"from your own game files.");
+    g_char.kitStep = Rs_Label(page, CHAR_ID_KIT_STEP, L"No model yet? Start with the Creator Kit.", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.kitStep, RS_COL_MUTED);
+    g_char.kitLink = Rs_Button(page, CHAR_ID_KIT_LINK, L"Open Creator Kit");
+    Rs_SetTip(g_char.kitLink, L"Opens the Creator Kit: a Blender template with a puppet to start your model from.");
     g_char.advanced = Rs_Button(page, CHAR_ID_ADVANCED, L"Advanced options");
     g_char.upscale = Rs_Check(page, CHAR_ID_UPSCALE, L"Upscale small textures");
     g_char.upscaleHelp = Rs_Label(page, CHAR_ID_UPSCALE_HELP,
@@ -10976,6 +11021,8 @@ static void Char_Create(HWND page)
     SetWindowPos(g_char.routeAsk, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     for (i = RS_ROUTES - 1; i >= 0; i--)
         SetWindowPos(g_char.routeCard[i], g_char.routeAsk, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // "Creator Kit" right after the three cards.
+    SetWindowPos(g_char.kitOpen, g_char.routeCard[RS_ROUTES - 1], 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 // Label left, field right of it.
@@ -11086,9 +11133,12 @@ static int Char_LayStrip(int left, int right, int top)
 // of the field when the text wraps); returns the y below it.
 static int Char_LayStepLine(HWND label, HWND change, int x, int y, int fieldW)
 {
-    int bh = Rs_Px(g_char.compact ? 24 : 28), cw = Char_TextWidth(change, L"Change") + Rs_Px(28);
-    int lw = fieldW - cw - Rs_Px(8), tw, off, rowH, noteH;
-    wchar_t *text = Rs_GetText(label);
+    int bh = Rs_Px(g_char.compact ? 24 : 28), cw, lw, tw, off, rowH, noteH;
+    wchar_t *text = Rs_GetText(change);
+    cw = Char_TextWidth(change, text) + Rs_Px(28);
+    lw = fieldW - cw - Rs_Px(8);
+    Rs_Free(text);
+    text = Rs_GetText(label);
     tw = Char_TextWidth(label, text) + Rs_Px(4);
     Rs_Free(text);
     if (tw < lw)
@@ -11120,6 +11170,9 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         infoH = Rs_Px(18);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH, TRUE);
     y += infoH + Rs_Px(g_char.compact ? 4 : 8);
+    // THE CREATOR KIT: Low-Poly and Hi-Res without a model.
+    if (Char_KitHint())
+        y = Char_LayStepLine(g_char.kitStep, g_char.kitLink, x, y, fieldW);
     // A CHRG route, a model with COLOR_0: "Vertex color blending" and its line.
     if (chrg && g_char.vcolMode >= 0) {
         int bw = Char_CheckWidth(g_char.vblend);
@@ -11906,7 +11959,12 @@ static void Char_LayChoose(HWND page, int left, int right, int top, int bottom)
     int w, h, i;
 
     (void)page;
-    MoveWindow(g_char.routeAsk, left, top, right - left, askH, TRUE);
+    {
+        // "Creator Kit" at the top right, a plain button: the way beside the three.
+        int kw = Char_TextWidth(g_char.kitOpen, L"Creator Kit") + Rs_Px(28), bh = Rs_Px(g_char.compact ? 24 : 28);
+        MoveWindow(g_char.kitOpen, right - kw, top + (askH - bh) / 2, kw, bh, TRUE);
+        MoveWindow(g_char.routeAsk, left, top, right - kw - Rs_Px(12) - left, askH, TRUE);
+    }
     top += askH + Rs_Px(g_char.compact ? 4 : 12);
     w = (right - left - 2 * gap) / 3;
     h = bottom - top;
@@ -11929,7 +11987,7 @@ static int Char_Wanted(HWND c)
     wchar_t *text;
     int on;
 
-    if ((id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES) || id == CHAR_ID_ROUTE_ASK)
+    if ((id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES) || id == CHAR_ID_ROUTE_ASK || id == CHAR_ID_KIT_OPEN)
         return g_char.choosing;
     if (g_char.choosing || c == g_char.check || Char_RouteHides(c))
         return 0;
@@ -11967,6 +12025,8 @@ static int Char_Wanted(HWND c)
         // instead, and their lines on the step go too.
         if (c == g_char.charNote)
             return Char_ModelIsCharacter();
+        if (c == g_char.kitStep || c == g_char.kitLink)
+            return Char_KitHint();
         if (Char_ModelIsCharacter() &&
             (c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
              c == g_char.upscaleChange || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) ||
@@ -12360,6 +12420,11 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED)
             Char_ShowChoice(page);
         break;
+    case CHAR_ID_KIT_OPEN:
+    case CHAR_ID_KIT_LINK:
+        if (code == BN_CLICKED)
+            Rs_ShowPage(RS_PAGE_KIT);
+        break;
     case CHAR_ID_ADVANCED:
         if (code == BN_CLICKED) {
             g_char.advOpen = !g_char.advOpen;
@@ -12485,8 +12550,13 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_Cancel(page);
         break;
     case CHAR_ID_MODEL:
-        if (code == EN_CHANGE)
+        if (code == EN_CHANGE) {
+            const int hint = Char_IsShown(g_char.kitStep);
             Char_ModelChanged(page);
+            // The line of the Creator Kit comes and goes with an empty field.
+            if (!g_char.choosing && g_char.tab == CHAR_TAB_MODEL && hint != Char_KitHint())
+                Char_Relayout(page);
+        }
         break;
     case CHAR_ID_NAME:
         if (code == EN_CHANGE && !g_char.applying) {
@@ -12879,6 +12949,11 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             *handled = 1;
         }
         return 0;
+    case RS_WM_HOST_RETURN:
+        // Back from the Creator Kit: step 0, every entry kept.
+        Char_ShowChoice(page);
+        *handled = 1;
+        return 0;
     case RS_WM_PAGE_SHOWN: {
         // The game may have been chosen on the page Test meanwhile: the cue
         // follows, and a check again when the default output has moved.
@@ -13012,6 +13087,19 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
             return RS_AUTO_FAIL;
         }
         Rs_AutoLog(L"  report: %ls", arg);
+        return RS_AUTO_DONE;
+    }
+    // THE CREATOR KIT: "kit" as a click on the way shown - "Creator Kit" of
+    // step 0, or "Open Creator Kit" of the step Model; neither shown: refused.
+    if (wcscmp(verb, L"kit") == 0) {
+        if (!Char_IsShown(g_char.kitOpen) && !Char_IsShown(g_char.kitLink)) {
+            Rs_AutoLog(L"  kit: not offered here - \"Creator Kit\" is on Build a character, \"Open Creator Kit\" on "
+                       L"the step Model of Low-Poly and Hi-Res while no model is chosen");
+            return RS_AUTO_FAIL;
+        }
+        Rs_AutoLog(L"  kit: %ls", Char_IsShown(g_char.kitOpen) ? L"Creator Kit (Build a character)"
+                                                               : L"Open Creator Kit (step Model)");
+        Rs_ShowPage(RS_PAGE_KIT);
         return RS_AUTO_DONE;
     }
     // Old scripts name no route ("model x.obj; build"): their first verb of
