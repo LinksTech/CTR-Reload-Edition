@@ -211,6 +211,16 @@ int RsHires_ColourModeOf(const wchar_t *word);
 // it was that mode already, or not a mode.
 int RsHires_SetColourMode(struct RsHiresCheck *c, int mode);
 
+// THE COUNTS IN THE MODE CHOSEN: the check runs in glTF (vcolChecked; it
+// decides the suggestion), where PS1-like vertex colours are a finding of
+// HRG-36. In PSX blend and off that finding does not exist - rldpack
+// hires-check --vertex-colors psx|off never says it -, so once the page has
+// chosen such a mode (vcolMode) neither its row nor its warning counts.
+// RsHires_RowInMode: 1 = row i is a finding in the mode chosen.
+// RsHires_WarningsInMode: the warnings in the mode chosen.
+int RsHires_RowInMode(const struct RsHiresCheck *c, int i);
+int RsHires_WarningsInMode(const struct RsHiresCheck *c);
+
 // One channel of the picture as the engine makes it, for the self-test: the
 // base colour texel (a byte on the display curve), COLOR_0 (linear 0..1; has0
 // 0 = the primitive has none), the material's base colour factor (linear) and

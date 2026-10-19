@@ -271,9 +271,11 @@
 // a CHRG route), and nothing where it has none. Vanilla: make-char's @msg
 // lines by their id (Char_TabOfCode, as before); a CHRG route: those of
 // RsCharHires_Messages by their place - a model without clips or wheel nodes
-// is one line each - and of the classic fallback's make-char only its errors
-// about the model; its other lines about the model (the reduction, the fit,
-// rig-bind-pose) stay behind "Show details" (Char_ChrgMessages). The head of
+// is one line each - and of the classic fallback's make-char its errors and
+// warnings about the model; its notes and infos about the model (the
+// reduction, the fit, rig-bind-pose) stay behind "Show details"
+// (Char_ChrgMessages; the warnings are shown since the check counted them
+// while the step had none of them). The head of
 // each step keeps its number in red, amber or green.
 //
 // THE PREVIEW is shown from step 1 on, on every step. Vanilla: the classic
@@ -1028,6 +1030,7 @@ static struct {
     // preview switch Low-Poly/Hi-Res | Classic fallback, the idle clip playing.
     struct RsHiresCheck hires;
     int hiresChecked;               // hires holds the check of hiresPath
+    int hiresLogDue;                // its line in the automation log is still to be written (Char_HiresLog)
     int hiresPng;                   // ... as converted to PNG ("Convert JPEG textures to PNG" was on)
     int hiresGameKart;              // ... with the author's choice of "Kart: from the player's game data" (-1 none, 0, 1)
     wchar_t hiresPath[CHAR_VAL];
@@ -3040,6 +3043,16 @@ static void Char_MsgAdd(int tab, int severity, const wchar_t *text, const wchar_
 
 // A message of the list opens its step (and its card of Advanced).
 static void Char_MsgOpen(HWND page, int i);
+
+// The messages of the page of one severity, every step: what the page shows
+// (the automation log counts these, so that log and page agree).
+static int Char_CountPageMsgs(int severity)
+{
+    int i, n = 0;
+    for (i = 0; i < g_char.pageMsgCount; i++)
+        n += g_char.pageMsg[i].severity == severity;
+    return n;
+}
 
 // The errors and warnings of the last run per tab, for the heads.
 static void Char_CountTabs(void)
@@ -5932,11 +5945,14 @@ static void Char_ReduceFitShow(HWND page, int show)
 // THE MESSAGES OF A CHRG ROUTE: those of RsCharHires_Messages at their place
 // (the model, its animations, its wheels, its size on the step Model; the
 // build on the step Build), each with its "How to fix" and rule ID; a line
-// when the model could not be read; of the classic fallback's make-char only
-// its errors about the model ("Classic fallback: ..."; its warnings, notes and
-// infos about the model - the reduction, the fit, rig-bind-pose - stay behind
-// Show details) and, as for Vanilla, everything it says about the other
-// steps (name, icon, voices). Returns the errors.
+// when the model could not be read; of the classic fallback's make-char its
+// errors and warnings about the model ("Classic fallback: ..."; its notes and
+// infos about the model - the reduction, the fit, rig-bind-pose, which every
+// fallback says - stay behind Show details) and, as for Vanilla, everything
+// it says about the other steps (name, icon, voices). Returns the errors.
+// The warnings were behind Show details too until the check counted them
+// while the step showed none ("Ready to build" with warnings no one could
+// see): what the check counts as a warning is shown at its place.
 // The part of the hi-res check alone (also without make-char, Char_ChrgNoMake).
 static int Char_ChrgHiresMessages(void)
 {
@@ -5987,7 +6003,8 @@ static int Char_ChrgMessages(int exitCode, int makeOk)
         for (i = 0; i < g_charJob.msgCount; i++) {
             const struct CharMsg *m = &g_charJob.msgs[i];
             int tab = Char_TabOfCode(m->code);
-            if (m->severity != order[s] || (tab == CHAR_TAB_MODEL && m->severity != RS_SEV_ERROR))
+            if (m->severity != order[s] ||
+                (tab == CHAR_TAB_MODEL && m->severity != RS_SEV_ERROR && m->severity != RS_SEV_WARNING))
                 continue;
             if (tab == CHAR_TAB_MODEL)
                 swprintf(text, 2 * RS_WIZ_TEXT_MAX + 32, L"Classic fallback: %ls", m->text ? m->text : L"");
@@ -6080,7 +6097,7 @@ static void Char_ShowCheckResult(int exitCode)
     if (Rs_Automating()) {
         if (ok)
             Rs_AutoLog(L"  check: ready to build, %d warning(s), %d note(s)",
-                       Char_CountMsgs(RS_SEV_WARNING), Char_CountMsgs(RS_SEV_NOTE));
+                       Char_CountPageMsgs(RS_SEV_WARNING), Char_CountPageMsgs(RS_SEV_NOTE));
         else
             Rs_AutoLog(L"  check: cannot build yet, %d problem(s)", errors);
         if (over)
@@ -6311,14 +6328,27 @@ static void Char_HiresEnsure(const wchar_t *model)
     g_char.animSeconds = 0.0f;
     g_char.animWheel = 0.0f;
     Char_ClipFill();
-    if (Rs_Automating()) {
-        if (g_char.hires.read)
-            Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
-                       g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
-                       g_char.hires.wheels, g_char.hires.errors, g_char.hires.warnings);
-        else
-            Rs_AutoLog(L"  hires check: not read - %ls", g_char.hires.why);
-    }
+    // Its line in the automation log once the colour mode is chosen
+    // (Char_VcolUpdate): the warnings are those of that mode.
+    g_char.hiresLogDue = 1;
+}
+
+// The line of a new hi-res check in the automation log, in the colour mode
+// chosen (RsHires_WarningsInMode: HRG-36 only in glTF, as rldpack hires-check
+// --vertex-colors says it).
+static void Char_HiresLog(void)
+{
+    if (!g_char.hiresLogDue)
+        return;
+    g_char.hiresLogDue = 0;
+    if (!Rs_Automating())
+        return;
+    if (g_char.hires.read)
+        Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
+                   g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
+                   g_char.hires.wheels, g_char.hires.errors, RsHires_WarningsInMode(&g_char.hires));
+    else
+        Rs_AutoLog(L"  hires check: not read - %ls", g_char.hires.why);
 }
 
 // The check of another model or none: the hi-res check goes.
@@ -6423,6 +6453,7 @@ static void Char_VcolUpdate(void)
     }
     if ((was < 0) != (g_char.vcolMode < 0) && g_char.view)
         Char_Relayout(GetParent(g_char.view));
+    Char_HiresLog();
     if (Rs_Automating() && s >= 0 && was != g_char.vcolMode)
         Rs_AutoLog(L"  vertex colors: %ls (%ls; suggested %ls)", RsHires_ColourWord(g_char.vcolMode),
                    g_char.vcolChosen ? L"the author's choice" : L"the suggestion", RsHires_ColourWord(s));
@@ -9412,9 +9443,11 @@ static void Char_ReportChrg(FILE *f)
     Char_Put(f, L"hires summary: clips %d/%d wheels %d/4 joints %u triangles %llu textures %d bytes %llu of %llu edge %u of %u finish clips %d/%d",
              c->clips, RS_HIRES_CLIPS_BASE, c->wheels, c->joints, c->triangles, c->textures, c->textureBytes, c->budgetTextureBytes,
              c->textureEdge, c->budgetEdge, c->finishClips, RS_HIRES_CLIPS - RS_HIRES_CLIPS_BASE);
+    // The findings in the colour mode chosen (RsHires_RowInMode: HRG-36 only in glTF).
     for (i = 0; i < c->rowCount; i++)
-        Char_Put(f, L"hires row: %ls %ls %ls", Char_SeverityWord(c->rows[i].severity), c->rows[i].rule[0] ? c->rows[i].rule : L"-",
-                 c->rows[i].text);
+        if (RsHires_RowInMode(c, i))
+            Char_Put(f, L"hires row: %ls %ls %ls", Char_SeverityWord(c->rows[i].severity), c->rows[i].rule[0] ? c->rows[i].rule : L"-",
+                     c->rows[i].text);
     if (c->rowsDropped > 0)
         Char_Put(f, L"hires rows not listed: %d", c->rowsDropped);
     for (i = 0; i < RS_HIRES_CLIPS; i++) {
@@ -9552,7 +9585,7 @@ static void Char_ReportFlow(FILE *f)
                      g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.budgetTriangles,
                      g_char.hires.textureEdge, g_char.hires.budgetEdge, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
                      g_char.hires.finishClips, RS_HIRES_CLIPS - RS_HIRES_CLIPS_BASE, g_char.hires.wheels,
-                     g_char.hires.errors, g_char.hires.warnings, g_char.hires.animReady ? L"plays" : L"none");
+                     g_char.hires.errors, RsHires_WarningsInMode(&g_char.hires), g_char.hires.animReady ? L"plays" : L"none");
         else
             Char_Put(f, L"hires check: %ls", g_char.hiresChecked ? g_char.hires.why : L"(none)");
         Char_ReportChrg(f);

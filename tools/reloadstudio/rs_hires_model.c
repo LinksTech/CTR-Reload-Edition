@@ -1674,6 +1674,25 @@ int RsHires_SetColourMode(struct RsHiresCheck *c, int mode)
     return 1;
 }
 
+int RsHires_RowInMode(const struct RsHiresCheck *c, int i)
+{
+    if (!c || i < 0 || i >= c->rowCount)
+        return 0;
+    return !(c->vcolChecked == RS_HIRES_VCOL_GLTF && c->vcolMode != RS_HIRES_VCOL_GLTF &&
+             wcscmp(c->rows[i].rule, L"HRG-36") == 0);
+}
+
+int RsHires_WarningsInMode(const struct RsHiresCheck *c)
+{
+    int i, n;
+    if (!c)
+        return 0;
+    n = c->warnings;
+    for (i = 0; i < c->rowCount; i++)
+        n -= c->rows[i].severity == RS_SEV_WARNING && !RsHires_RowInMode(c, i);
+    return n < 0 ? 0 : n;
+}
+
 int RsHires_UpscaleArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args)
 {
     args[0] = L"hires-upscale";

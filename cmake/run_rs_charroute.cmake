@@ -478,6 +478,70 @@ if(PAGE)
             "with its bytes of before, a plain skinned one, the author's off)")
     message("charroute page passed: vertex colours psx off gltf")
 
+    # THE COUNTS IN THE MODE CHOSEN (HRG-36): the page's hi-res check counts
+    # what rldpack hires-check --vertex-colors <mode> counts - in PSX blend and
+    # off no HRG-36 (no row, no warning), in glTF its row and warning.
+    foreach(mode psx off gltf)
+        run("rldpack hires-check (route-vcol, ${mode})" "${PACKER}" hires-check "${DIR}/route-vcol.glb" --vertex-colors ${mode})
+        string(REGEX MATCH "hires check: [0-9]+ errors, ([0-9]+) warnings" ignored "${out}")
+        set(packWarn "${CMAKE_MATCH_1}")
+        if(packWarn STREQUAL "")
+            message(FATAL_ERROR "charroute FAILED: rldpack hires-check (${mode}) printed no count\n${out}")
+        endif()
+        if(mode STREQUAL "psx")
+            page_check(count-${mode} hires route-vcol.glb "")
+        else()
+            page_check(count-${mode} hires route-vcol.glb "--do;vcolor ${mode}")
+        endif()
+        file(READ "${DIR}/page-count-${mode}-report.txt" text)
+        if(NOT text MATCHES "\nhires check: usable, [^\n]*, 0 error\\(s\\), ${packWarn} warning\\(s\\), ")
+            message(FATAL_ERROR "charroute FAILED: the page's hi-res check (${mode}) does not count ${packWarn} warning(s) as rldpack does\n${text}")
+        endif()
+        string(FIND "${out}" "HRG-36" packHas)
+        string(FIND "${text}" "hires row: warning HRG-36 " pageHas)
+        if((packHas LESS 0) AND NOT (pageHas LESS 0))
+            message(FATAL_ERROR "charroute FAILED: the page lists HRG-36 in ${mode}, rldpack does not\n${text}")
+        endif()
+        if(NOT (packHas LESS 0) AND (pageHas LESS 0))
+            message(FATAL_ERROR "charroute FAILED: the page does not list HRG-36 in ${mode}, rldpack does\n${text}")
+        endif()
+    endforeach()
+    page_says(count-psx "hires check: usable - [^\n]*, 0 error\\(s\\), 2 warning\\(s\\)" "the log of the check (psx) does not count as rldpack")
+    message("charroute page passed: the hi-res check counts in the mode chosen (psx off gltf as rldpack hires-check)")
+
+    # THE CLASSIC FALLBACK'S WARNINGS: on a CHRG route what the check counts
+    # is shown - make-char's warnings about the model on the step Model as
+    # "Classic fallback: ..." (its notes and infos stay behind Show details),
+    # and the log's "check: ready to build, W warning(s), N note(s)" counts
+    # exactly the warnings and notes the page shows.
+    foreach(name hires-off lowpoly-tex64 kartjoint count-psx van-noskin)
+        file(READ "${DIR}/page-${name}-report.txt" text)
+        string(REGEX MATCHALL "\npage message: [^\t\n]+\t3\t" shownWarn "${text}")
+        string(REGEX MATCHALL "\npage message: [^\t\n]+\t2\t" shownNote "${text}")
+        list(LENGTH shownWarn nWarn)
+        list(LENGTH shownNote nNote)
+        # The last check before the report was written.
+        file(READ "${DIR}/page-${name}.log" logText)
+        string(FIND "${logText}" "page-${name}-report.txt" reportAt)
+        string(SUBSTRING "${logText}" 0 ${reportAt} logText)
+        string(REGEX MATCHALL "check: ready to build, [0-9]+ warning\\(s\\), [0-9]+ note\\(s\\)" checkLines "${logText}")
+        if(NOT checkLines)
+            message(FATAL_ERROR "charroute FAILED: the log of the page (${name}) has no check line before its report\n${logText}")
+        endif()
+        list(GET checkLines -1 lastCheck)
+        if(NOT lastCheck MATCHES "check: ready to build, ${nWarn} warning\\(s\\), ${nNote} note\\(s\\)")
+            message(FATAL_ERROR "charroute FAILED: the page (${name}) shows ${nWarn} warning(s) and ${nNote} note(s), its log says '${lastCheck}'\n${text}")
+        endif()
+    endforeach()
+    file(READ "${DIR}/page-hires-off-report.txt" text)
+    if(NOT text MATCHES "\npage message: model\t3\tClassic fallback: Fitted to Crash size")
+        message(FATAL_ERROR "charroute FAILED: the classic fallback's warning (ply-axes) is not shown on the step Model (hires-off)\n${text}")
+    endif()
+    if(text MATCHES "\npage message: model\t[0-9]\tClassic fallback: The rig was ignored")
+        message(FATAL_ERROR "charroute FAILED: the fallback's info rig-bind-pose is on the step (it stays behind Show details)\n${text}")
+    endif()
+    message("charroute page passed: the classic fallback's warnings on the step, page and log count the same")
+
     # The JPEG kart without the click: refused, the button offered, the
     # HRG-16 line with its fix on the step Model.
     page_check(jpeg-refused hires route-jpeg.glb "")

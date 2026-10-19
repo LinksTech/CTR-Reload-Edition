@@ -759,6 +759,23 @@ static void Kt_SelfTestColours(void)
         }
         n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
         Check(!Kt_HasRule(m, n, L"HRG-36"), "PS1-like kart in PSX blend: no HRG-36");
+        // The counts in the mode chosen, as rldpack hires-check --vertex-colors
+        // says them: HRG-36 is a row and a warning in glTF only.
+        {
+            int row36 = -1, k, warnPsx = RsHires_WarningsInMode(&c), warnOff, warnGltf;
+            for (k = 0; k < c.rowCount; k++)
+                if (wcscmp(c.rows[k].rule, L"HRG-36") == 0)
+                    row36 = k;
+            Check(row36 >= 0 && c.warnings >= 1 && !RsHires_RowInMode(&c, row36) && warnPsx == c.warnings - 1,
+                  "PS1-like kart in PSX blend: the HRG-36 row and its warning do not count (RsHires_RowInMode, RsHires_WarningsInMode)");
+            RsHires_SetColourMode(&c, RS_HIRES_VCOL_OFF);
+            warnOff = RsHires_WarningsInMode(&c);
+            RsHires_SetColourMode(&c, RS_HIRES_VCOL_GLTF);
+            warnGltf = RsHires_WarningsInMode(&c);
+            Check(warnOff == c.warnings - 1 && warnGltf == c.warnings && RsHires_RowInMode(&c, row36),
+                  "PS1-like kart: off counts as PSX blend, glTF counts HRG-36 again");
+            RsHires_SetColourMode(&c, RS_HIRES_VCOL_PSX);
+        }
         Check(RsCharHires_SuggestColours(&c, RS_ROUTE_HIRES, &why) == RS_HIRES_VCOL_PSX && why == RS_VCOL_WHY_PS1,
               "the suggestion does not change with the mode drawn");
         RsHires_CheckFree(&c);
