@@ -10,7 +10,7 @@ The kit is made from your own copy of the game. It stays on your computer.
 
 - A Blender file with the kart, four wheels and a placeholder figure, the **puppet**.
 - A skeleton called `creator_rig` that fits the puppet.
-- All 12 clips the game can play. They already work with the puppet.
+- All 14 clips the game can play, two of them optional. They already work with the puppet.
 - Export settings that are already stored in the file.
 
 You replace the puppet with your own figure. You keep the skeleton, the clip names and the export settings.
@@ -119,7 +119,7 @@ The bones `kart` and `kart_steer` belong to the kart. The kart body and the whee
 
 ![A key pose of each clip](assets/kit-guide-clips.svg)
 
-The game plays 12 clips. Each clip is one **action** in Blender. The game finds a clip by its name, so use the names exactly as written.
+The game plays 14 clips. Two of them, `finish_win` and `finish_lose`, are optional. Each clip is one **action** in Blender. The game finds a clip by its name, so use the names exactly as written.
 
 | Name | When the game plays it | Pose | Type | Length |
 |---|---|---|---|---|
@@ -135,6 +135,8 @@ The game plays 12 clips. Each clip is one **action** in Blender. The game finds 
 | `podium_3` | Third place on the podium | Standing, no kart | Loop | 2.0 s |
 | `lose` | Fourth place or worse, where the game shows the figure without kart | Standing, no kart | Loop | 2.0 s |
 | `menu` | In the character select | Standing, no kart | Loop | 3.0 s |
+| `finish_win` | After the finish line on places 1 to 3, while the kart drives on (optional) | Seated in the kart | Loop | 2.0 s |
+| `finish_lose` | After the finish line on place 4 or worse, while the kart drives on (optional) | Seated in the kart | Loop | 2.0 s |
 
 The game hides the kart in the podium scene and in the character select. So the four podium clips, `lose` and `menu` are standing clips. While you work on a standing clip, **hide the collection Kart** in the Outliner.
 
@@ -154,7 +156,8 @@ Follow these rules:
 - **Loops end as they begin.** The last pose must match the first pose.
 - **Steering clips start at the neutral pose and end at full lock.** The first pose is the same as `idle` at the start. The last pose is the figure turned fully into the curve. The motion goes in one direction.
 - **No moving away.** The figure stays over its spot in the kart. Do not move `root`. A standing clip lifts `pelvis` up to the standing height, nothing more.
-- **Hands stay on the wheel** in `idle`, the steering clips and the drift clips. The steering wheel turns with the bone `kart_steer`.
+- **Hands stay on the wheel** in `idle`, the steering clips and the drift clips. The steering wheel turns with the bone `kart_steer`. In `finish_win` the hands may leave the wheel.
+- **The finish clips are seated.** The hips stay on the seat, as in the race clips.
 - A standing clip puts the feet on the ground at z = 0, where the kart was.
 
 If a clip is missing, the game uses another one:
@@ -163,6 +166,7 @@ If a clip is missing, the game uses another one:
 - `drift_left` uses `steer_left` at full lock. `drift_right` uses `steer_right` at full lock.
 - `podium_1` uses `idle`. `podium_2` uses `podium_1`. `podium_3` uses `podium_2`.
 - If `idle` is missing, the rest pose is used. This is the seated pose.
+- `finish_win` and `finish_lose` are optional. A file without them is fine. Without them the game plays what earlier versions played after the finish line. Files from this kit keep the seated race clips. An older file without the kart part plays `podium_1`, `podium_2` or `podium_3` (places 1 to 3) or `lose`.
 
 You can start with fewer clips and add the rest later.
 
@@ -216,7 +220,7 @@ To export:
 Older versions of the game and the PS1 path cannot show a skeleton. The Studio builds a **classic model** for them from your file, automatically.
 
 - The Studio reads your model as it stands in its **bind pose**. It ignores the skeleton and the clips.
-- A game without hi-res drivers shows your figure in a simple grey kart, because the figure file has no kart of its own.
+- The figure file has no kart of its own. From format 4.3 the game puts the original kart from the player's game data under the classic model too. A game before 4.3, or a game without that game data, shows it in a plain grey kart.
 - This is why you bind your figure **seated in the kart**. A standing figure gives a bad classic model.
 - The game makes the classic steering and jump poses itself.
 
@@ -238,6 +242,7 @@ The figure alone holds no game data. The game adds the original kart to it from 
    - Drifting both ways.
    - A jump.
    - Getting hit.
+   - After the finish line: `finish_win` or `finish_lose`, if your file has them.
 4. Finish the race and check the podium. The figure stands without the kart.
 5. Open the character select. The figure stands there without the kart.
 
@@ -260,6 +265,8 @@ The old model has the right size and sits where the puppet sits. When the file h
 ## 12. Sharing
 
 Share only files without the kit kart. The game puts the kart in on the player's side.
+
+From format 4.3 the game puts the original kart from the player's game data in for both models: the hi-res figure and the classic model. A game before 4.3 shows the classic model in a plain grey kart.
 
 ## 13. If something is wrong
 

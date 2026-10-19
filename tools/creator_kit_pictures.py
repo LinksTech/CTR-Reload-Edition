@@ -14,7 +14,7 @@
 #
 # How it works: the generator templates/make_creator_kit.py is run in memory
 # (--stand-in --no-glb); the scene then holds the rig, the puppet, the kart
-# parts, the wheels and the 12 actions. For each picture the objects are put
+# parts, the wheels and the 14 actions. For each picture the objects are put
 # in a pose, evaluated (armature applied), reduced with a Decimate modifier
 # (for the picture only), projected with a fixed camera, culled at the back,
 # sorted far to near (painter's order) and written as flat-shaded SVG paths.
@@ -995,15 +995,17 @@ def pic_weights(kit, f):
 
 def pic_clips(kit, f):
     from_names = ["idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit",
-                  "podium_1", "podium_2", "podium_3", "lose", "menu"]
+                  "podium_1", "podium_2", "podium_3", "lose", "menu", "finish_win", "finish_lose"]
     frac = {"idle": 0.25, "steer_left": 1.0, "steer_right": 1.0, "jump": 1.0, "drift_left": 0.25,
             "drift_right": 0.25, "hit": 0.3, "podium_1": 0.25, "podium_2": 0.3, "podium_3": 0.25,
-            "lose": 0.6, "menu": 0.3}
+            "lose": 0.6, "menu": 0.3, "finish_win": 0.25, "finish_lose": 0.25}
     standing = {"podium_1", "podium_2", "podium_3", "lose", "menu"}
+    optional = {"finish_win", "finish_lose"}
     np = np_()
     TW, TH, GAP, MX = 185, 200, 12, 12
     W = MX * 2 + 4 * TW + 3 * GAP
-    H = MX * 2 + 3 * TH + 2 * GAP
+    rows = (len(from_names) + 3) // 4
+    H = MX * 2 + rows * TH + (rows - 1) * GAP
     svg = Svg(W, H)
     cam = Cam(32, 12, (0.0, 0.0, 0.7), 9.0, True)
     soups = {}
@@ -1037,7 +1039,8 @@ def pic_clips(kit, f):
         for s in soups[name]:
             svg.add(render_soup(s, cam, view, 0, 0.0, 0.3))
         svg.text(tx + TW / 2, ty + TH - 30, name, 15, "middle", INK, True)
-        svg.text(tx + TW / 2, ty + TH - 12, "standing" if name in standing else "seated", 12, "middle",
+        svg.text(tx + TW / 2, ty + TH - 12, "standing" if name in standing else
+                 "seated, optional" if name in optional else "seated", 12, "middle",
                  "#c2410c" if name in standing else GREY)
     return svg.done("clips")
 
