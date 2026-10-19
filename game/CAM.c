@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 
 enum
@@ -652,13 +653,13 @@ void CAM_FindClosestQuadblock(struct ScratchpadStruct *sps, struct CameraDC *cDC
 
 	gGT = sdata->gGT;
 
-	if ((gGT->level1 == NULL) || (gGT->level1->ptr_mesh_info == NULL) || (gGT->level1->ptr_mesh_info->bspRoot == NULL))
+	if ((gGT->level1 == NULL) || (COLL_WorldMesh(gGT->level1) == NULL) || (COLL_WorldMesh(gGT->level1)->bspRoot == NULL))
 	{
 		sps->ptr_mesh_info = NULL;
 		return;
 	}
 
-	meshInfo = gGT->level1->ptr_mesh_info;
+	meshInfo = COLL_WorldMesh(gGT->level1);
 	sps->ptr_mesh_info = meshInfo;
 
 	if (cDC->ptrQuadBlock != NULL)
@@ -693,7 +694,7 @@ void CAM_StartLine_FlyIn_FixY(SVec3 *posRot)
 	sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND | QUADBLOCK_FLAG_COLLISION_SURFACE;
 	sps->Union.QuadBlockColl.quadFlagsIgnored = 0;
 	sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_HIGH_LOD;
-	sps->ptr_mesh_info = sdata->gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(sdata->gGT->level1);
 
 	pos.x = posRot->x;
 	pos.y = posRot->y;
@@ -2390,7 +2391,7 @@ LAB_8001c150:
 		if ((psVar11 != 0) && (piVar12 = psVar11->visLeafSrc, piVar12 != 0))
 		{
 			cDC->visLeafSrc = piVar12;
-			gGT->unk1cac[1] = cDC->ptrQuadBlock - gGT->level1->ptr_mesh_info->ptrQuadBlockArray;
+			gGT->unk1cac[1] = cDC->ptrQuadBlock - COLL_WorldMesh(gGT->level1)->ptrQuadBlockArray;
 		}
 		if (cDC->ptrQuadBlock != 0)
 		{

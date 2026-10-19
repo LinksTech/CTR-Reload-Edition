@@ -178,6 +178,7 @@ typedef enum
 	ENGINE_BLEND_PSX_SUBTRACT,  // PS1 mode 2: B - F
 	ENGINE_BLEND_PSX_ADD_QUARTER, // PS1 mode 3: B + F/4
 	ENGINE_BLEND_MULTIPLY,      // B * F (NIGHT)
+	ENGINE_BLEND_ALPHA,         // F * a + B * (1 - a), straight texel alpha (the external track's BLEND materials)
 	ENGINE_BLEND_COUNT
 } EngineBlend;
 
@@ -1319,11 +1320,23 @@ typedef struct
 	void *user;
 	u64 size;
 	const char *baseDir; // folder of the .glb for image uris ("" or NULL: none)
+	// THE NODE FILTER (round of 2026-10-19, the external track): which nodes of
+	// the scene count. ENGINE_STATIC_NODES_ALL (0, every source made with
+	// memset or EngineStatic_SourceFile) takes every node with a mesh; the
+	// others compare the node's name with nodeName. Set after
+	// EngineStatic_SourceFile, before EngineStatic_Open.
+	const char *nodeName;
+	int nodeMatch; // ENGINE_STATIC_NODES_*
 } EngineStaticSource;
 // The file source (fopen/seek); 0 when the file does not open. Close it with
 // EngineStatic_SourceFileClose.
 int EngineStatic_SourceFile(const char *path, EngineStaticSource *out);
 void EngineStatic_SourceFileClose(EngineStaticSource *src);
+
+#define ENGINE_STATIC_NODES_ALL 0        // every node with a mesh
+#define ENGINE_STATIC_NODES_PREFIX 1     // only nodes whose name starts with nodeName
+#define ENGINE_STATIC_NODES_NOT_PREFIX 2 // only nodes whose name does not start with nodeName (a node without a name counts)
+#define ENGINE_STATIC_NODES_EXACT 3      // only the node(s) named exactly nodeName
 
 #define ENGINE_STATIC_ALPHA_OPAQUE 0
 #define ENGINE_STATIC_ALPHA_MASK 1
@@ -1479,6 +1492,24 @@ int ExtTrack_LevInstanceCount(int levelID, int count); // game/MAIN/MainInit.c: 
 void ExtTrack_OnRaceStart(void);                       // game/MAIN/MainMain.c, the build after a load or a restart
 void ExtTrack_OnRestart(void);                         // game/MAIN/MainMain.c, the race lets go of its state
 void ExtTrack_OnLogicFrame(void);                      // game/MAIN/MainMain.c, after the game logic of a frame
+void ExtTrack_OnAudioPause(int paused);                // game/MAIN/MainFrame.c, MainFrame_TogglePauseAudio: 1 paused, 0 going on
+// 1 while the game's audio is paused (MainFrame_TogglePauseAudio); safe to
+// read from the audio thread (one aligned int). 0 without --ext-track.
+int ExtTrack_AudioPaused(void);
+
+// THE DRAWING (engine_exttrack.c, round of 2026-10-19). The render section of
+// exttrack.json names track.glb (world units and axes) and sky.glb (relative to
+// the eye); uv_anims the nodes whose texture coordinates move. Read once per run
+// at the first load of the slot, registered per level; drawn like the static
+// model (OT cells of the track) and the sky (cell 0x3ff, the rotation of the
+// camera only, no depth). Each returns at once without --ext-track.
+void Engine_ExtTrackLoad(void);                        // load stage 8, next to Engine_StaticLoad
+void Engine_ExtTrackSkyCollect(struct GameTracker *gGT); // from Engine_FrameCollect, BEFORE Engine_SkyCollect (drawn after its backdrop)
+void Engine_ExtTrackCollect(struct GameTracker *gGT);  // from Engine_FrameCollect, after Engine_StaticCollect
+// The UV offset of an animation at time t (seconds): the keys times[0..count)
+// (ascending) and offset[2 * count], linear between keys, repeated with the
+// period (> 0; else the last key holds). Pure, for the selftest.
+void ExtTrack_UvOffsetAt(const float *times, const float *offset, int count, float period, float t, float out[2]);
 
 // THE JSON READER (one for every part): a parsed document as a node table.
 // Node 0 is the root. Objects and arrays chain their children (first, next);

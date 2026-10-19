@@ -3,8 +3,10 @@
 
 // THE EXTERNAL TRACK'S RACE LOGIC (platform/native_exttrack_race.c; --ext-track,
 // see platform/engine_exttrack.c): start grid, checkpoints and laps, respawn.
-// SKELETON (round of 2026-10-19): every function is an empty stub that says so
-// in the log once; without --ext-track none of them is reached.
+// The section "race" of exttrack.json replaces the donor level's
+// DriverSpawn[8] and checkpoint table and clears its underwater bit; the game
+// logic reads them unchanged. Logs for D4/D6/D7 and the one trigger of
+// --dev-ext-respawn. Without --ext-track none of these is reached.
 
 struct Level;
 

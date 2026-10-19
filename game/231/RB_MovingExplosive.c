@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 static void RB_MovingExplosive_CallThCollide(struct Thread *hitTh, struct Thread *sourceTh)
 {
@@ -254,7 +255,7 @@ LAB_800adc08:;
 		sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_TEST_INSTANCES | COLL_SEARCH_HIGH_LOD | COLL_SEARCH_FORCE_INSTANCE_HIT;
 	}
 
-	sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 
 	COLL_SearchBSP_CallbackQUADBLK(&posA, &posB, sps, 0);
 

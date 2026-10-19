@@ -45,6 +45,20 @@ int NativeAudio_PlayPcmLine(const u8 *samples, int frameCount, int sampleRate, i
 int NativeAudio_PlayPcmShort(const u8 *samples, int frameCount, int sampleRate, int gain, int volumeLeft, int volumeRight);
 // Both places silent at once, before the caller lets the samples go.
 void NativeAudio_StopPcmClips(void);
+// The music place (--ext-track, platform/native_extmusic.c): a host track, s16
+// stereo interleaved at the output rate (44 100 Hz, nothing else is accepted),
+// looping over the whole buffer. Not the CD channel: it does not count as XA
+// playing and nothing of the XA touches it. Volume as an SPU voice volume
+// (0..0x7fff) times the master volume, no reverb, never in a snapshot. The
+// samples stay the caller's. Start: silent at frame 0, only on a mixer that runs
+// (0 = refused). SetState once per logic frame; a state holds half a second of
+// output, then the place falls silent by itself. Rewind: back to frame 0.
+int NativeAudio_MusicStart(const s16 *frames, int frameCount, int sampleRate);
+void NativeAudio_MusicRewind(void);
+void NativeAudio_MusicSetState(int playing, int volume);
+void NativeAudio_MusicStop(void);
+void NativeAudio_MusicStats(u64 *framesMixed, u32 *loops, u64 *framesSilent);
+void NativeAudio_MusicSelftest(int *checks, int *failures);
 int NativeAudio_IsXAPlaying(void);
 int NativeAudio_GetXACurrOffset(void);
 int NativeAudio_GetXAMaxSample(void);

@@ -1,5 +1,6 @@
 #include <platform/engine.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -982,9 +983,1070 @@ void ExtTrack_OnLogicFrame(void)
 	{
 		return;
 	}
+	ExtColl_OnLogicFrame();
 	ExtRace_OnLogicFrame();
 	ExtCrates_OnLogicFrame();
 	ExtMusic_OnLogicFrame();
+}
+
+// The game's audio pause (MainFrame_TogglePauseAudio): kept for the parts, read
+// from any thread (the music mixer polls it).
+global_variable volatile int s_extTrackAudioPaused;
+
+void ExtTrack_OnAudioPause(int paused)
+{
+	if (!ExtTrack_Active())
+	{
+		return;
+	}
+	s_extTrackAudioPaused = (paused != 0) ? 1 : 0;
+}
+
+int ExtTrack_AudioPaused(void)
+{
+	return ExtTrack_Active() ? s_extTrackAudioPaused : 0;
+}
+
+// --------------------------------------------------------------------------
+// THE DRAWING (round of 2026-10-19)
+//
+// TWO FILES from the render and sky sections of exttrack.json:
+//   track.glb  world units and axes (as --engine-static-model). Its nodes whose
+//              names begin with EXT_UV_PREFIX belong to an entry of uv_anims;
+//              every other node is static.
+//   sky.glb    every node drawn on its own, in the order of sky.order (a node
+//              not named there is not drawn). sky.follow "xyz": the positions
+//              are relative to the eye (the camera's rotation only); anything
+//              else ("none", the default): world units like the track.
+// LOAD, ONCE PER RUN (the first stage 8 of the slot):
+//   textures   one per (image, wrap) of each file, as the static model makes
+//              them (Engine_TextureCreate, full resolution, mip chain);
+//   static     the static nodes of track.glb as pieces (EngineStatic_BuildPieces
+//              with THE NODE FILTER NOT_PREFIX), one GPU vertex buffer each, one
+//              index buffer; each piece keeps its ranges split in two lists:
+//              opaque/mask and blend;
+//   nodes      every uv node of track.glb and every node of sky.glb as one piece
+//              of its own (filter EXACT), kept on the CPU (u16 indices, one
+//              material): drawn as dynamic geometry, the texture coordinates
+//              moved by their animation each frame (no shader of its own).
+// PER LEVEL (each stage 8 of the slot): the materials are registered (OPAQUE,
+// MASK with the file's cutoff, BLEND as ENGINE_BLEND_ALPHA without depth write)
+// and each piece becomes up to two external meshes.
+// DRAW (Engine_FrameCollect, view 0 of the one-player race of the slot):
+//   sky        cell 0x3ff, linked BEFORE Engine_SkyCollect so the cell draws it
+//              after the engine sky's backdrop (the donor's sky is hidden by the
+//              switch, the backdrop is its key colour: any hole shows); the
+//              camera of the view (or its rotation only, sky.follow "xyz"), no
+//              depth test, no depth write;
+//   static     opaque ranges in cell 0x3fe (the track's opaque cell), blend
+//              ranges in cell 0x3fc (after every opaque cell of the track), each
+//              piece with the view test of the static model;
+//   uv nodes   as dynamic geometry in the cell of their material.
+// Time of the animations: the frame's game time (Engine_FrameTime, the logic
+// timer / 30), so a pause stops them and two runs are the same.
+// DRAW TIME ONLY: nothing of the game is written.
+
+#define EXT_UV_PREFIX "uv"
+#define EXT_CELL_SKY 0x3ff
+#define EXT_CELL_OPAQUE 0x3fe
+#define EXT_CELL_BLEND 0x3fc
+#define EXT_TEXTURES_MAX 256
+#define EXT_RANGES_MAX 1024 // per piece
+#define EXT_NODES_MAX 64    // uv nodes of the track plus sky nodes
+#define EXT_NODE_NAME_MAX 96
+#define EXT_BLEND_CUTOFF (1.0f / 255.0f) // a texel with alpha 0 is not drawn in a blend
+
+typedef struct
+{
+	int image;
+	int wrapU;
+	int wrapV;
+	u32 texture; // 0xffffffff = missing
+} ExtDrawTexture;
+
+// The materials and textures of one file.
+typedef struct
+{
+	int materialCount;
+	EngineStaticMaterial *materials;
+	int *materialTexture; // index into textures, -1 none
+	int *levelMaterial;   // per level: Engine_MaterialRegister index
+	int textureCount;
+	ExtDrawTexture textures[EXT_TEXTURES_MAX];
+	u32 texturesMade;
+	u32 texturesMissing;
+	u32 counts[3]; // opaque, mask, blend
+} ExtDrawFile;
+
+// One node drawn as dynamic geometry (a uv node of the track, a sky node).
+typedef struct
+{
+	char name[EXT_NODE_NAME_MAX];
+	int sky;      // 1 = of sky.glb
+	int material; // of its file
+	EngineVertex *base;
+	EngineVertex *work;
+	u32 vertexCount;
+	u16 *indices;
+	u32 indexCount;
+	float boxMin[3];
+	float boxMax[3];
+	// Its animation (uv_anims), keyCount 0 = none.
+	float *times;
+	float *offset; // 2 per key
+	int keyCount;
+	float period;
+} ExtDrawNode;
+
+global_variable struct
+{
+	int tried;
+	int ok;
+	int reportOn;
+	ExtDrawFile file[2]; // 0 track, 1 sky
+	// The static pieces of track.glb.
+	int pieceCount;
+	u32 vb[ENGINE_STATIC_PIECES_MAX];
+	u32 ib;
+	u32 pieceVertices[ENGINE_STATIC_PIECES_MAX];
+	EngineRange *ranges[ENGINE_STATIC_PIECES_MAX]; // opaque ranges first, then the blend ranges
+	u32 opaqueRanges[ENGINE_STATIC_PIECES_MAX];
+	u32 blendRanges[ENGINE_STATIC_PIECES_MAX];
+	u32 pieceTriangles[ENGINE_STATIC_PIECES_MAX];
+	float boxMin[ENGINE_STATIC_PIECES_MAX][3];
+	float boxMax[ENGINE_STATIC_PIECES_MAX][3];
+	u32 staticTriangles;
+	u32 staticPrimitives;
+	// The nodes drawn as dynamic geometry, sky nodes in their drawing order.
+	int nodeCount;
+	ExtDrawNode nodes[EXT_NODES_MAX];
+	int uvNodes;
+	int skyNodes;
+	int skyEyeRelative; // sky.follow "xyz": the camera's rotation only
+	int uvAnimsNamed; // nodes named by uv_anims
+	int uvAnimsFound;
+	// Per level
+	int levelReady;
+	int levelId;
+	const void *level1;
+	int meshOpaque[ENGINE_STATIC_PIECES_MAX];
+	int meshBlend[ENGINE_STATIC_PIECES_MAX];
+	// Counters (the exit line)
+	u64 frames;
+	u64 skyDraws;
+	u64 staticDraws;
+	u64 nodeDraws;
+	u64 culled;
+	u64 refused;
+} s_extDraw;
+
+// --------------------------------------------------------------------------
+// Pure helpers
+
+void ExtTrack_UvOffsetAt(const float *times, const float *offset, int count, float period, float t, float out[2])
+{
+	int k;
+
+	out[0] = 0.0f;
+	out[1] = 0.0f;
+	if ((times == NULL) || (offset == NULL) || (count <= 0))
+	{
+		return;
+	}
+	if (period > 0.0f)
+	{
+		t = fmodf(t, period);
+		t = (t < 0.0f) ? (t + period) : t;
+	}
+	if ((count == 1) || (t <= times[0]))
+	{
+		out[0] = offset[0];
+		out[1] = offset[1];
+		return;
+	}
+	for (k = 0; k + 1 < count; k++)
+	{
+		if (t < times[k + 1])
+		{
+			const float span = times[k + 1] - times[k];
+			const float f = (span > 0.0f) ? ((t - times[k]) / span) : 0.0f;
+
+			out[0] = offset[2 * k] + (offset[2 * (k + 1)] - offset[2 * k]) * f;
+			out[1] = offset[2 * k + 1] + (offset[2 * (k + 1) + 1] - offset[2 * k + 1]) * f;
+			return;
+		}
+	}
+	out[0] = offset[2 * (count - 1)];
+	out[1] = offset[2 * (count - 1) + 1];
+}
+
+internal double ExtDraw_Ms(u64 from)
+{
+	return (double)(SDL_GetPerformanceCounter() - from) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+}
+
+// --------------------------------------------------------------------------
+// Load: materials and textures of one file
+
+internal int ExtDraw_TextureSlot(ExtDrawFile *f, int image, int wrapU, int wrapV)
+{
+	int i;
+
+	if (image < 0)
+	{
+		return -1;
+	}
+	for (i = 0; i < f->textureCount; i++)
+	{
+		if ((f->textures[i].image == image) && (f->textures[i].wrapU == wrapU) && (f->textures[i].wrapV == wrapV))
+		{
+			return i;
+		}
+	}
+	if (f->textureCount >= EXT_TEXTURES_MAX)
+	{
+		return -1;
+	}
+	i = f->textureCount++;
+	f->textures[i].image = image;
+	f->textures[i].wrapU = wrapU;
+	f->textures[i].wrapV = wrapV;
+	f->textures[i].texture = 0xffffffffu;
+	return i;
+}
+
+// The materials of the open model and their textures. 1 = done.
+internal int ExtDraw_FileMaterials(ExtDrawFile *f, const EngineStaticModel *model, const char *label)
+{
+	int i;
+
+	f->materialCount = model->materialCount;
+	f->materials = (EngineStaticMaterial *)malloc((size_t)model->materialCount * sizeof(EngineStaticMaterial));
+	f->materialTexture = (int *)malloc((size_t)model->materialCount * sizeof(int));
+	f->levelMaterial = (int *)malloc((size_t)model->materialCount * sizeof(int));
+	if ((model->materialCount < 1) || (f->materials == NULL) || (f->materialTexture == NULL) || (f->levelMaterial == NULL))
+	{
+		Platform_Log("[CTR ExtTrack] draw: %s: out of memory (material tables)\n", label);
+		return 0;
+	}
+	memcpy(f->materials, model->materials, (size_t)model->materialCount * sizeof(EngineStaticMaterial));
+	for (i = 0; i < model->materialCount; i++)
+	{
+		const EngineStaticMaterial *m = &f->materials[i];
+
+		f->materialTexture[i] = ExtDraw_TextureSlot(f, m->image, m->wrapU, m->wrapV);
+		f->levelMaterial[i] = -1;
+		f->counts[((m->alphaMode >= 0) && (m->alphaMode <= 2)) ? m->alphaMode : 0]++;
+	}
+	for (i = 0; i < f->textureCount; i++)
+	{
+		ExtDrawTexture *t = &f->textures[i];
+		EngineStaticImage img;
+		EngineTextureDesc desc;
+		char imgWhy[96];
+		char name[40];
+
+		memset(&img, 0, sizeof(img));
+		imgWhy[0] = 0;
+		if (!EngineStatic_ReadImage(model, t->image, &img, imgWhy, (int)sizeof(imgWhy)))
+		{
+			f->texturesMissing++;
+			Platform_Log("[CTR ExtTrack] draw: %s: image %d missing: %s\n", label, t->image, imgWhy);
+			continue;
+		}
+		memset(&desc, 0, sizeof(desc));
+		snprintf(name, sizeof(name), "ext %s image %d", label, t->image);
+		desc.width = img.width;
+		desc.height = img.height;
+		desc.rgba = img.rgba;
+		desc.filter = ENGINE_TEXTURE_FILTERED;
+		desc.wrapU = t->wrapU;
+		desc.wrapV = t->wrapV;
+		desc.name = name;
+		t->texture = Engine_TextureCreate(&desc);
+		if (t->texture == 0xffffffffu)
+		{
+			f->texturesMissing++;
+			Platform_Log("[CTR ExtTrack] draw: %s: image %d (%dx%d) refused by the texture manager\n", label, t->image, img.width, img.height);
+		}
+		else
+		{
+			f->texturesMade++;
+		}
+		EngineStatic_FreeImage(&img);
+	}
+	return 1;
+}
+
+// --------------------------------------------------------------------------
+// Load: the static pieces of track.glb
+
+typedef struct
+{
+	u32 *indices;
+	u32 indexCap;
+	u32 indexCount;
+	const ExtDrawFile *file;
+	char why[96];
+} ExtDrawBuild;
+
+internal int ExtDraw_OnStaticPiece(void *user, const EngineStaticPiece *piece)
+{
+	ExtDrawBuild *b = (ExtDrawBuild *)user;
+	const int p = s_extDraw.pieceCount;
+	u32 r;
+	u32 opaque = 0;
+	u32 at = 0;
+
+	if ((p >= ENGINE_STATIC_PIECES_MAX) || (piece->indexCount > (b->indexCap - b->indexCount)) || (piece->rangeCount == 0u) ||
+	    (piece->rangeCount > EXT_RANGES_MAX))
+	{
+		snprintf(b->why, sizeof(b->why), "piece %d does not fit the tables (%u ranges)", p, piece->rangeCount);
+		return 0;
+	}
+	s_extDraw.ranges[p] = (EngineRange *)malloc((size_t)piece->rangeCount * sizeof(EngineRange));
+	if (s_extDraw.ranges[p] == NULL)
+	{
+		snprintf(b->why, sizeof(b->why), "out of memory (ranges of piece %d)", p);
+		return 0;
+	}
+	s_extDraw.vb[p] = Engine_RenderStaticVertexBuffer(piece->vertices, piece->vertexCount);
+	if (s_extDraw.vb[p] == 0xffffffffu)
+	{
+		free(s_extDraw.ranges[p]);
+		s_extDraw.ranges[p] = NULL;
+		snprintf(b->why, sizeof(b->why), "the vertex buffer of piece %d (%u vertices) was refused", p, piece->vertexCount);
+		return 0;
+	}
+	memcpy(&b->indices[b->indexCount], piece->indices, (size_t)piece->indexCount * sizeof(u32));
+	// Opaque and mask ranges first, then the blend ranges (the file's order inside each).
+	for (r = 0; r < piece->rangeCount; r++)
+	{
+		const int m = (int)piece->ranges[r].material;
+
+		if ((m < b->file->materialCount) && (b->file->materials[m].alphaMode != ENGINE_STATIC_ALPHA_BLEND))
+		{
+			s_extDraw.ranges[p][at] = piece->ranges[r];
+			s_extDraw.ranges[p][at++].firstIndex += b->indexCount;
+			opaque++;
+		}
+	}
+	for (r = 0; r < piece->rangeCount; r++)
+	{
+		const int m = (int)piece->ranges[r].material;
+
+		if ((m < b->file->materialCount) && (b->file->materials[m].alphaMode == ENGINE_STATIC_ALPHA_BLEND))
+		{
+			s_extDraw.ranges[p][at] = piece->ranges[r];
+			s_extDraw.ranges[p][at++].firstIndex += b->indexCount;
+		}
+	}
+	s_extDraw.opaqueRanges[p] = opaque;
+	s_extDraw.blendRanges[p] = at - opaque;
+	s_extDraw.pieceVertices[p] = piece->vertexCount;
+	s_extDraw.pieceTriangles[p] = piece->indexCount / 3u;
+	memcpy(s_extDraw.boxMin[p], piece->boxMin, sizeof(piece->boxMin));
+	memcpy(s_extDraw.boxMax[p], piece->boxMax, sizeof(piece->boxMax));
+	b->indexCount += piece->indexCount;
+	s_extDraw.pieceCount = p + 1;
+	return 1;
+}
+
+// The static nodes of track.glb (every node not beginning with EXT_UV_PREFIX). 1 = done
+// (also with no static node at all).
+internal int ExtDraw_LoadStatic(const char *path)
+{
+	EngineStaticSource src;
+	EngineStaticModel model;
+	ExtDrawBuild build;
+	char why[160];
+	int pieces;
+
+	memset(&model, 0, sizeof(model));
+	memset(&build, 0, sizeof(build));
+	why[0] = 0;
+	if (!EngineStatic_SourceFile(path, &src))
+	{
+		Platform_Log("[CTR ExtTrack] draw: '%s' does not open\n", path);
+		return 0;
+	}
+	src.nodeName = EXT_UV_PREFIX;
+	src.nodeMatch = ENGINE_STATIC_NODES_NOT_PREFIX;
+	if (!EngineStatic_Open(&src, &model, why, (int)sizeof(why)))
+	{
+		// No static node is no error (a track made of uv nodes only).
+		Platform_Log("[CTR ExtTrack] draw: '%s': no static nodes (%s)\n", path, why);
+		EngineStatic_SourceFileClose(&src);
+		return 1;
+	}
+	build.file = &s_extDraw.file[0];
+	build.indexCap = model.triangles * 3u;
+	build.indices = (model.triangles <= (0xffffffffu / 3u)) ? (u32 *)malloc((size_t)build.indexCap * sizeof(u32)) : NULL;
+	if (build.indices == NULL)
+	{
+		Platform_Log("[CTR ExtTrack] draw: '%s': out of memory (%u triangles)\n", path, model.triangles);
+		EngineStatic_Close(&model);
+		EngineStatic_SourceFileClose(&src);
+		return 0;
+	}
+	pieces = EngineStatic_BuildPieces(&model, ENGINE_STATIC_PIECE_TRIANGLES, 0u, ExtDraw_OnStaticPiece, &build, why, (int)sizeof(why));
+	if ((pieces < 0) || (pieces != s_extDraw.pieceCount) || (build.indexCount != build.indexCap))
+	{
+		Platform_Log("[CTR ExtTrack] draw: '%s': the pieces were refused: %s\n", path, (build.why[0] != 0) ? build.why : why);
+		free(build.indices);
+		EngineStatic_Close(&model);
+		EngineStatic_SourceFileClose(&src);
+		return 0;
+	}
+	s_extDraw.ib = Engine_RenderStaticIndexBuffer(build.indices, build.indexCount);
+	free(build.indices);
+	s_extDraw.staticTriangles = model.triangles;
+	s_extDraw.staticPrimitives = model.primitives;
+	EngineStatic_Close(&model);
+	EngineStatic_SourceFileClose(&src);
+	if (s_extDraw.ib == 0xffffffffu)
+	{
+		Platform_Log("[CTR ExtTrack] draw: '%s': the index buffer was refused\n", path);
+		return 0;
+	}
+	return 1;
+}
+
+// --------------------------------------------------------------------------
+// Load: one node as dynamic geometry
+
+typedef struct
+{
+	ExtDrawNode *node;
+	int pieces;
+	char why[96];
+} ExtDrawNodeBuild;
+
+internal int ExtDraw_OnNodePiece(void *user, const EngineStaticPiece *piece)
+{
+	ExtDrawNodeBuild *b = (ExtDrawNodeBuild *)user;
+	ExtDrawNode *n = b->node;
+	u32 i;
+
+	b->pieces++;
+	if ((b->pieces > 1) || (piece->rangeCount != 1u) || (piece->vertexCount > 0xffffu))
+	{
+		snprintf(b->why, sizeof(b->why), "%s (%u vertices, %u materials)", (piece->vertexCount > 0xffffu) ? "too many vertices for u16" : "more than one material",
+		         piece->vertexCount, piece->rangeCount);
+		return 0;
+	}
+	n->base = (EngineVertex *)malloc((size_t)piece->vertexCount * sizeof(EngineVertex));
+	n->work = (EngineVertex *)malloc((size_t)piece->vertexCount * sizeof(EngineVertex));
+	n->indices = (u16 *)malloc((size_t)piece->indexCount * sizeof(u16));
+	if ((n->base == NULL) || (n->work == NULL) || (n->indices == NULL))
+	{
+		snprintf(b->why, sizeof(b->why), "out of memory");
+		return 0;
+	}
+	memcpy(n->base, piece->vertices, (size_t)piece->vertexCount * sizeof(EngineVertex));
+	memcpy(n->work, piece->vertices, (size_t)piece->vertexCount * sizeof(EngineVertex));
+	for (i = 0; i < piece->indexCount; i++)
+	{
+		n->indices[i] = (u16)piece->indices[i];
+	}
+	n->vertexCount = piece->vertexCount;
+	n->indexCount = piece->indexCount;
+	n->material = (int)piece->ranges[0].material;
+	memcpy(n->boxMin, piece->boxMin, sizeof(piece->boxMin));
+	memcpy(n->boxMax, piece->boxMax, sizeof(piece->boxMax));
+	return 1;
+}
+
+internal void ExtDraw_FreeNode(ExtDrawNode *n)
+{
+	free(n->base);
+	free(n->work);
+	free(n->indices);
+	free(n->times);
+	free(n->offset);
+	memset(n, 0, sizeof(*n));
+}
+
+// The node `name` of the file at path into the next node slot. 1 = done.
+internal int ExtDraw_LoadNode(const char *path, const char *name, int sky)
+{
+	EngineStaticSource src;
+	EngineStaticModel model;
+	ExtDrawNodeBuild build;
+	ExtDrawNode *n;
+	char why[160];
+	int pieces;
+
+	if (s_extDraw.nodeCount >= EXT_NODES_MAX)
+	{
+		Platform_Log("[CTR ExtTrack] draw: node '%s' left out: more than %d nodes\n", name, EXT_NODES_MAX);
+		return 0;
+	}
+	n = &s_extDraw.nodes[s_extDraw.nodeCount];
+	memset(n, 0, sizeof(*n));
+	memset(&build, 0, sizeof(build));
+	why[0] = 0;
+	if (!EngineStatic_SourceFile(path, &src))
+	{
+		return 0;
+	}
+	src.nodeName = name;
+	src.nodeMatch = ENGINE_STATIC_NODES_EXACT;
+	if (!EngineStatic_Open(&src, &model, why, (int)sizeof(why)))
+	{
+		EngineStatic_SourceFileClose(&src);
+		return 0;
+	}
+	build.node = n;
+	pieces = EngineStatic_BuildPieces(&model, ENGINE_STATIC_PIECE_TRIANGLES, 0u, ExtDraw_OnNodePiece, &build, why, (int)sizeof(why));
+	EngineStatic_Close(&model);
+	EngineStatic_SourceFileClose(&src);
+	if (pieces != 1)
+	{
+		Platform_Log("[CTR ExtTrack] draw: node '%s' refused: %s\n", name, (build.why[0] != 0) ? build.why : why);
+		ExtDraw_FreeNode(n);
+		return 0;
+	}
+	snprintf(n->name, sizeof(n->name), "%s", name);
+	n->sky = sky;
+	s_extDraw.nodeCount++;
+	return 1;
+}
+
+// The node by name, NULL none.
+internal ExtDrawNode *ExtDraw_FindNode(const char *name)
+{
+	int i;
+
+	for (i = 0; i < s_extDraw.nodeCount; i++)
+	{
+		if (strcmp(s_extDraw.nodes[i].name, name) == 0)
+		{
+			return &s_extDraw.nodes[i];
+		}
+	}
+	return NULL;
+}
+
+// The animation of uv_anims entry `entry` onto node n. 1 = done.
+internal int ExtDraw_TakeAnimation(ExtDrawNode *n, const ExtJsonDoc *doc, int entry)
+{
+	const int times = ExtJson_Get(doc, entry, "times");
+	const int offset = ExtJson_Get(doc, entry, "offset");
+	const int count = ExtJson_Count(doc, times);
+	int child;
+	int k;
+
+	if ((count < 1) || (ExtJson_Count(doc, offset) != count))
+	{
+		return 0;
+	}
+	n->times = (float *)malloc((size_t)count * sizeof(float));
+	n->offset = (float *)malloc((size_t)count * 2u * sizeof(float));
+	if ((n->times == NULL) || (n->offset == NULL))
+	{
+		free(n->times);
+		free(n->offset);
+		n->times = NULL;
+		n->offset = NULL;
+		return 0;
+	}
+	for (k = 0, child = ExtJson_First(doc, times); (child >= 0) && (k < count); child = ExtJson_Next(doc, child), k++)
+	{
+		n->times[k] = (float)ExtJson_Number(doc, child, 0.0);
+	}
+	for (k = 0, child = ExtJson_First(doc, offset); (child >= 0) && (k < count); child = ExtJson_Next(doc, child), k++)
+	{
+		double uv[2] = {0.0, 0.0};
+
+		(void)ExtJson_Numbers(doc, child, uv, 2);
+		n->offset[2 * k] = (float)uv[0];
+		n->offset[2 * k + 1] = (float)uv[1];
+	}
+	n->keyCount = count;
+	n->period = (float)ExtJson_Number(doc, ExtJson_Get(doc, entry, "period"), 0.0);
+	return 1;
+}
+
+internal void ExtDraw_Report(void)
+{
+	Platform_Log("[CTR ExtTrack] draw at exit: frames %llu; sky draws %llu, static draws %llu, node draws %llu, left out by the view test %llu, refused %llu\n",
+	             (unsigned long long)s_extDraw.frames, (unsigned long long)s_extDraw.skyDraws, (unsigned long long)s_extDraw.staticDraws,
+	             (unsigned long long)s_extDraw.nodeDraws, (unsigned long long)s_extDraw.culled, (unsigned long long)s_extDraw.refused);
+}
+
+// The two files, once per run. Sets s_extDraw.ok; one line either way.
+internal void ExtDraw_ReadOnce(void)
+{
+	const ExtJsonDoc *doc = ExtTrack_Json();
+	const int render = ExtTrack_Section("render");
+	const int sky = ExtTrack_Section("sky");
+	const int uvAnims = ExtTrack_Section("uv_anims");
+	const u64 started = SDL_GetPerformanceCounter();
+	const u32 stagingBefore = NativeGfx_StagingBytes();
+	char trackPath[ENGINE_EXTTRACK_PATH_MAX + 64];
+	char skyPath[ENGINE_EXTTRACK_PATH_MAX + 64];
+	const char *trackName;
+	const char *skyName;
+	int haveSky;
+	int entry;
+	int f;
+
+	s_extDraw.tried = 1;
+	if (doc == NULL)
+	{
+		Platform_Log("[CTR ExtTrack] draw: no exttrack.json - nothing drawn\n");
+		return;
+	}
+	trackName = ExtJson_String(doc, ExtJson_Get(doc, render, "glb"), NULL);
+	skyName = ExtJson_String(doc, ExtJson_Get(doc, sky, "glb"), NULL);
+	if ((trackName == NULL) || !ExtTrack_FilePath(trackName, trackPath, (int)sizeof(trackPath)))
+	{
+		Platform_Log("[CTR ExtTrack] draw: render.glb missing or too long - nothing drawn\n");
+		return;
+	}
+	haveSky = (skyName != NULL) && ExtTrack_FilePath(skyName, skyPath, (int)sizeof(skyPath));
+	s_extDraw.skyEyeRelative = (strcmp(ExtJson_String(doc, ExtJson_Get(doc, sky, "follow"), "none"), "xyz") == 0) ? 1 : 0;
+
+	// The materials and textures of each file (all nodes: materials are the file's).
+	for (f = 0; f < 2; f++)
+	{
+		EngineStaticSource src;
+		EngineStaticModel model;
+		char why[160];
+		const char *path = (f == 0) ? trackPath : skyPath;
+
+		if ((f == 1) && !haveSky)
+		{
+			continue;
+		}
+		why[0] = 0;
+		if (!EngineStatic_SourceFile(path, &src))
+		{
+			Platform_Log("[CTR ExtTrack] draw: '%s' does not open%s\n", path, (f == 0) ? " - nothing drawn" : " - no sky");
+			if (f == 0)
+			{
+				return;
+			}
+			haveSky = 0;
+			continue;
+		}
+		if (!EngineStatic_Open(&src, &model, why, (int)sizeof(why)))
+		{
+			Platform_Log("[CTR ExtTrack] draw: '%s' refused: %s%s\n", path, why, (f == 0) ? " - nothing drawn" : " - no sky");
+			EngineStatic_SourceFileClose(&src);
+			if (f == 0)
+			{
+				return;
+			}
+			haveSky = 0;
+			continue;
+		}
+		if (!ExtDraw_FileMaterials(&s_extDraw.file[f], &model, (f == 0) ? "track" : "sky"))
+		{
+			EngineStatic_Close(&model);
+			EngineStatic_SourceFileClose(&src);
+			return;
+		}
+		EngineStatic_Close(&model);
+		EngineStatic_SourceFileClose(&src);
+	}
+
+	// The static pieces of the track.
+	if (!ExtDraw_LoadStatic(trackPath))
+	{
+		return;
+	}
+
+	// The sky's nodes, in the order of sky.order, then the rest of the file's
+	// nodes is not looked for: a node not named there is not drawn (counted).
+	if (haveSky)
+	{
+		const int order = ExtJson_Get(doc, sky, "order");
+		int child;
+
+		for (child = ExtJson_First(doc, order); child >= 0; child = ExtJson_Next(doc, child))
+		{
+			const char *name = ExtJson_String(doc, child, NULL);
+
+			if ((name != NULL) && ExtDraw_LoadNode(skyPath, name, 1))
+			{
+				s_extDraw.skyNodes++;
+			}
+			else
+			{
+				Platform_Log("[CTR ExtTrack] draw: sky node '%s' not found in '%s'\n", (name != NULL) ? name : "?", skyPath);
+			}
+		}
+	}
+
+	// The uv nodes: each entry's nodes, from the track (or a sky node already loaded).
+	for (entry = ExtJson_First(doc, uvAnims); entry >= 0; entry = ExtJson_Next(doc, entry))
+	{
+		const int nodes = ExtJson_Get(doc, entry, "nodes");
+		int child;
+
+		for (child = ExtJson_First(doc, nodes); child >= 0; child = ExtJson_Next(doc, child))
+		{
+			const char *name = ExtJson_String(doc, child, NULL);
+			ExtDrawNode *n;
+
+			if (name == NULL)
+			{
+				continue;
+			}
+			s_extDraw.uvAnimsNamed++;
+			n = ExtDraw_FindNode(name);
+			if ((n == NULL) && ExtDraw_LoadNode(trackPath, name, 0))
+			{
+				n = &s_extDraw.nodes[s_extDraw.nodeCount - 1];
+				s_extDraw.uvNodes++;
+			}
+			if ((n == NULL) || !ExtDraw_TakeAnimation(n, doc, entry))
+			{
+				Platform_Log("[CTR ExtTrack] draw: uv node '%s' not found or its keys unusable - not animated\n", name);
+				continue;
+			}
+			s_extDraw.uvAnimsFound++;
+		}
+	}
+
+	s_extDraw.ok = 1;
+	{
+		const u32 given = NativeGfx_ShrinkStaging(stagingBefore);
+		const ExtDrawFile *t = &s_extDraw.file[0];
+		const ExtDrawFile *k = &s_extDraw.file[1];
+		u32 nodeTriangles = 0;
+		int i;
+
+		for (i = 0; i < s_extDraw.nodeCount; i++)
+		{
+			nodeTriangles += s_extDraw.nodes[i].indexCount / 3u;
+		}
+		Platform_Log("[CTR ExtTrack] draw: track '%s': static %u triangles of %u nodes in %d pieces; uv nodes %d; materials %d (opaque %u, mask %u, blend %u), "
+		             "textures made %u (missing %u); sky '%s' (%s): nodes %d, materials %d, textures made %u (missing %u); node triangles %u; "
+		             "uv animations %d of %d named nodes; staging given back %u KB; load %.0f ms\n",
+		             trackPath, s_extDraw.staticTriangles, s_extDraw.staticPrimitives, s_extDraw.pieceCount, s_extDraw.uvNodes, t->materialCount - 1, t->counts[0],
+		             t->counts[1], t->counts[2], t->texturesMade, t->texturesMissing, haveSky ? skyPath : "-",
+		             s_extDraw.skyEyeRelative ? "relative to the eye" : "world", s_extDraw.skyNodes,
+		             (k->materialCount > 0) ? (k->materialCount - 1) : 0, k->texturesMade, k->texturesMissing, nodeTriangles, s_extDraw.uvAnimsFound,
+		             s_extDraw.uvAnimsNamed, given / 1024u, ExtDraw_Ms(started));
+	}
+	{
+		const int counts = ExtTrack_Section("counts");
+
+		Platform_Log("[CTR ExtTrack] draw: the data's counts: meshes track %d, sky %d, triangles track %d, sky %d, uv_anims %d\n",
+		             (int)ExtJson_Number(doc, ExtJson_Get(doc, counts, "meshes_track"), -1.0), (int)ExtJson_Number(doc, ExtJson_Get(doc, counts, "meshes_sky"), -1.0),
+		             (int)ExtJson_Number(doc, ExtJson_Get(doc, counts, "triangles_track"), -1.0),
+		             (int)ExtJson_Number(doc, ExtJson_Get(doc, counts, "triangles_sky"), -1.0), (int)ExtJson_Number(doc, ExtJson_Get(doc, counts, "uv_anims"), -1.0));
+	}
+}
+
+// The materials of one file for this level. 1 = done.
+internal int ExtDraw_RegisterFile(ExtDrawFile *f)
+{
+	int i;
+
+	for (i = 0; i < f->materialCount; i++)
+	{
+		const EngineStaticMaterial *m = &f->materials[i];
+		const int slot = f->materialTexture[i];
+		EngineMaterial em;
+
+		memset(&em, 0, sizeof(em));
+		if (m->alphaMode == ENGINE_STATIC_ALPHA_BLEND)
+		{
+			em.blend = ENGINE_BLEND_ALPHA;
+			em.alphaCutoff = EXT_BLEND_CUTOFF;
+			em.flags = ENGINE_MATERIAL_NO_DEPTH_WRITE;
+		}
+		else
+		{
+			em.blend = (m->alphaMode == ENGINE_STATIC_ALPHA_MASK) ? ENGINE_BLEND_MASK : ENGINE_BLEND_OPAQUE;
+			em.alphaCutoff = (m->alphaMode == ENGINE_STATIC_ALPHA_MASK) ? m->alphaCutoff : 0.0f;
+		}
+		memcpy(em.tint, m->baseColor, sizeof(em.tint));
+		em.flags |= (m->doubleSided != 0) ? (u16)ENGINE_MATERIAL_DOUBLE_SIDED : (u16)0u;
+		em.program = ENGINE_PROGRAM_NE;
+		if ((slot >= 0) && (f->textures[slot].texture != 0xffffffffu))
+		{
+			Engine_TextureMaterial(&em, f->textures[slot].texture);
+		}
+		f->levelMaterial[i] = Engine_MaterialRegister(&em);
+		if (f->levelMaterial[i] < 0)
+		{
+			Platform_Log("[CTR ExtTrack] draw: the material table is full at material %d - not drawn in this level\n", i);
+			return 0;
+		}
+	}
+	return 1;
+}
+
+// This level's materials and the static pieces' meshes. 1 = ready.
+internal int ExtDraw_RegisterLevel(void)
+{
+	EngineRange ranges[EXT_RANGES_MAX];
+	int p;
+
+	if (!ExtDraw_RegisterFile(&s_extDraw.file[0]) || ((s_extDraw.file[1].materialCount > 0) && !ExtDraw_RegisterFile(&s_extDraw.file[1])))
+	{
+		return 0;
+	}
+	for (p = 0; p < s_extDraw.pieceCount; p++)
+	{
+		int list;
+
+		s_extDraw.meshOpaque[p] = -1;
+		s_extDraw.meshBlend[p] = -1;
+		for (list = 0; list < 2; list++)
+		{
+			const u32 first = (list == 0) ? 0u : s_extDraw.opaqueRanges[p];
+			const u32 count = (list == 0) ? s_extDraw.opaqueRanges[p] : s_extDraw.blendRanges[p];
+			EngineExternalMeshDesc desc;
+			u32 r;
+			int mesh;
+
+			if (count == 0u)
+			{
+				continue;
+			}
+			for (r = 0; r < count; r++)
+			{
+				ranges[r] = s_extDraw.ranges[p][first + r];
+				ranges[r].material = (u16)s_extDraw.file[0].levelMaterial[ranges[r].material];
+			}
+			memset(&desc, 0, sizeof(desc));
+			desc.vertexBuffer = s_extDraw.vb[p];
+			desc.indexBuffer = s_extDraw.ib;
+			desc.verticesPerFrame = s_extDraw.pieceVertices[p];
+			desc.frames = 1;
+			desc.ranges = ranges;
+			desc.rangeCount = count;
+			desc.name = (list == 0) ? "ext track piece" : "ext track piece blend";
+			mesh = Engine_MeshCreateExternal(&desc);
+			if (mesh < 0)
+			{
+				Platform_Log("[CTR ExtTrack] draw: the mesh table refused piece %d - not drawn in this level\n", p);
+				return 0;
+			}
+			if (list == 0)
+			{
+				s_extDraw.meshOpaque[p] = mesh;
+			}
+			else
+			{
+				s_extDraw.meshBlend[p] = mesh;
+			}
+		}
+	}
+	return 1;
+}
+
+void Engine_ExtTrackLoad(void)
+{
+	struct GameTracker *gGT = sdata->gGT;
+
+	if (!ExtTrack_Active())
+	{
+		return;
+	}
+	s_extDraw.levelReady = 0;
+	if (!g_cfg_engine || (gGT == NULL) || (gGT->level1 == NULL) || ((gGT->gameMode1 & MAIN_MENU) != 0) || !ExtTrack_ActiveForLevel(gGT->levelID))
+	{
+		return;
+	}
+	if (!s_extDraw.reportOn)
+	{
+		s_extDraw.reportOn = 1;
+		Platform_AtExitReport(ExtDraw_Report);
+	}
+	if (!s_extDraw.tried)
+	{
+		ExtDraw_ReadOnce();
+	}
+	if (!s_extDraw.ok || !ExtDraw_RegisterLevel())
+	{
+		return;
+	}
+	s_extDraw.levelReady = 1;
+	s_extDraw.levelId = gGT->levelID;
+	s_extDraw.level1 = gGT->level1;
+	Platform_Log("[CTR ExtTrack] draw: level %d - %d + %d materials, %d pieces, %d nodes registered\n", gGT->levelID, s_extDraw.file[0].materialCount,
+	             s_extDraw.file[1].materialCount, s_extDraw.pieceCount, s_extDraw.nodeCount);
+}
+
+// 1 = this frame draws the external track in view 0.
+internal int ExtDraw_Eligible(const struct GameTracker *gGT)
+{
+	return ExtTrack_Active() && g_cfg_engine && s_extDraw.levelReady && (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) &&
+	       (gGT->numPlyrCurrGame == 1) && ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) != 0) && ((const void *)gGT->level1 == s_extDraw.level1) &&
+	       ((int)gGT->levelID == s_extDraw.levelId);
+}
+
+// One node as dynamic geometry: its texture coordinates moved by its animation at time t.
+internal void ExtDraw_NodeDraw(ExtDrawNode *n, float t, const EngineMat4 *clip, int cell, u16 flags, EngineDraw *draw)
+{
+	const ExtDrawFile *f = &s_extDraw.file[n->sky ? 1 : 0];
+	float uv[2] = {0.0f, 0.0f};
+	u32 i;
+
+	if (n->keyCount > 0)
+	{
+		ExtTrack_UvOffsetAt(n->times, n->offset, n->keyCount, n->period, t, uv);
+	}
+	for (i = 0; i < n->vertexCount; i++)
+	{
+		n->work[i].texcoord[0] = n->base[i].texcoord[0] + uv[0];
+		n->work[i].texcoord[1] = n->base[i].texcoord[1] + uv[1];
+	}
+	memset(draw, 0, sizeof(*draw));
+	draw->mesh = -1;
+	draw->clipFromModel = *clip;
+	draw->tint[0] = draw->tint[1] = draw->tint[2] = draw->tint[3] = 1.0f;
+	draw->materialOverride = -1;
+	draw->otCell = (u32)cell;
+	draw->flags = flags;
+	draw->dynVertices = n->work;
+	draw->dynVertexCount = n->vertexCount;
+	draw->dynIndices = n->indices;
+	draw->dynIndexCount = n->indexCount;
+	draw->dynMaterial = ((n->material >= 0) && (n->material < f->materialCount)) ? f->levelMaterial[n->material] : -1;
+}
+
+void Engine_ExtTrackSkyCollect(struct GameTracker *gGT)
+{
+	EngineDraw draws[EXT_NODES_MAX];
+	const EngineCamera *cam;
+	EngineCamera skyCam;
+	EngineMat4 clip;
+	float t;
+	int count = 0;
+	int i;
+
+	if (!ExtTrack_Active() || !ExtDraw_Eligible(gGT) || (s_extDraw.skyNodes == 0))
+	{
+		return;
+	}
+	cam = Engine_FrameCamera(0);
+	if (cam == NULL)
+	{
+		return;
+	}
+	// sky.follow "xyz": the camera's rotation only (as the engine sky), the sky is
+	// relative to the eye; else the view's camera, the sky is in world units.
+	skyCam = *cam;
+	if (s_extDraw.skyEyeRelative)
+	{
+		skyCam.viewFromWorld.m[12] = 0.0f;
+		skyCam.viewFromWorld.m[13] = 0.0f;
+		skyCam.viewFromWorld.m[14] = 0.0f;
+	}
+	Engine_CameraScreenFromWorld(&skyCam, &clip);
+	t = Engine_FrameTime(Engine_SceneBank());
+	for (i = 0; i < s_extDraw.nodeCount; i++)
+	{
+		if (s_extDraw.nodes[i].sky)
+		{
+			ExtDraw_NodeDraw(&s_extDraw.nodes[i], t, &clip, EXT_CELL_SKY, ENGINE_DRAW_NO_DEPTH, &draws[count++]);
+		}
+	}
+	// Linked in reverse: the cell draws them in the order of sky.order.
+	for (i = count - 1; i >= 0; i--)
+	{
+		if (Engine_RenderSubmitLinked(0, &draws[i], gGT->pushBuffer[0].ptrOT, EXT_CELL_SKY))
+		{
+			s_extDraw.skyDraws++;
+		}
+		else
+		{
+			s_extDraw.refused++;
+		}
+	}
+}
+
+void Engine_ExtTrackCollect(struct GameTracker *gGT)
+{
+	const EngineCamera *cam;
+	EngineMat4 screen;
+	float t;
+	int p;
+	int i;
+
+	if (!ExtTrack_Active() || !ExtDraw_Eligible(gGT))
+	{
+		return;
+	}
+	cam = Engine_FrameCamera(0);
+	if (cam == NULL)
+	{
+		return;
+	}
+	s_extDraw.frames++;
+	Engine_CameraScreenFromWorld(cam, &screen);
+	t = Engine_FrameTime(Engine_SceneBank());
+	for (p = 0; p < s_extDraw.pieceCount; p++)
+	{
+		int list;
+
+		if (!Engine_StaticBoxVisible(cam, s_extDraw.boxMin[p], s_extDraw.boxMax[p]))
+		{
+			s_extDraw.culled++;
+			continue;
+		}
+		for (list = 0; list < 2; list++)
+		{
+			const int mesh = (list == 0) ? s_extDraw.meshOpaque[p] : s_extDraw.meshBlend[p];
+			const int cell = (list == 0) ? EXT_CELL_OPAQUE : EXT_CELL_BLEND;
+			EngineDraw draw;
+
+			if (mesh < 0)
+			{
+				continue;
+			}
+			memset(&draw, 0, sizeof(draw));
+			draw.mesh = mesh;
+			draw.clipFromModel = screen; // the model is in world units
+			draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
+			draw.materialOverride = -1;
+			draw.otCell = (u32)cell;
+			draw.dynMaterial = -1;
+			if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+			{
+				s_extDraw.staticDraws++;
+			}
+			else
+			{
+				s_extDraw.refused++;
+			}
+		}
+	}
+	for (i = 0; i < s_extDraw.nodeCount; i++)
+	{
+		ExtDrawNode *n = &s_extDraw.nodes[i];
+		const ExtDrawFile *f = &s_extDraw.file[0];
+		const int blend = (n->material >= 0) && (n->material < f->materialCount) && (f->materials[n->material].alphaMode == ENGINE_STATIC_ALPHA_BLEND);
+		const int cell = blend ? EXT_CELL_BLEND : EXT_CELL_OPAQUE;
+		EngineDraw draw;
+
+		if (n->sky)
+		{
+			continue;
+		}
+		if (!Engine_StaticBoxVisible(cam, n->boxMin, n->boxMax))
+		{
+			s_extDraw.culled++;
+			continue;
+		}
+		ExtDraw_NodeDraw(n, t, &screen, cell, 0u, &draw);
+		if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+		{
+			s_extDraw.nodeDraws++;
+		}
+		else
+		{
+			s_extDraw.refused++;
+		}
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -1239,6 +2301,27 @@ int ExtJson_Selftest(void)
 		g_cfg_extTrackSlot = savedSlot;
 	}
 	ExtJson_Check(ExtTrack_Selftest("nothing") == -1, "an unknown selftest name", &n, &failures);
+
+	// The UV offset of an animation: linear between keys, repeated with the period.
+	{
+		static const float times[3] = {0.0f, 1.0f, 3.0f};
+		static const float offset[6] = {0.0f, 0.0f, 0.0f, -1.0f, 2.0f, -3.0f};
+		float o[2];
+
+		ExtTrack_UvOffsetAt(times, offset, 3, 4.0f, 0.5f, o);
+		ExtJson_Check((fabsf(o[0]) < 1e-6f) && (fabsf(o[1] + 0.5f) < 1e-6f), "uv offset between keys 0 and 1", &n, &failures);
+		ExtTrack_UvOffsetAt(times, offset, 3, 4.0f, 2.0f, o);
+		ExtJson_Check((fabsf(o[0] - 1.0f) < 1e-6f) && (fabsf(o[1] + 2.0f) < 1e-6f), "uv offset between keys 1 and 2", &n, &failures);
+		ExtTrack_UvOffsetAt(times, offset, 3, 4.0f, 3.5f, o);
+		ExtJson_Check((fabsf(o[0] - 2.0f) < 1e-6f) && (fabsf(o[1] + 3.0f) < 1e-6f), "uv offset after the last key holds it", &n, &failures);
+		ExtTrack_UvOffsetAt(times, offset, 3, 4.0f, 4.5f, o);
+		ExtJson_Check((fabsf(o[0]) < 1e-6f) && (fabsf(o[1] + 0.5f) < 1e-6f), "uv offset repeats with the period", &n, &failures);
+		ExtTrack_UvOffsetAt(times, offset, 3, 0.0f, 100.0f, o);
+		ExtJson_Check((fabsf(o[0] - 2.0f) < 1e-6f) && (fabsf(o[1] + 3.0f) < 1e-6f), "uv offset without a period holds the last key", &n, &failures);
+		ExtTrack_UvOffsetAt(NULL, offset, 3, 4.0f, 1.0f, o);
+		ExtJson_Check((o[0] == 0.0f) && (o[1] == 0.0f), "uv offset without keys is zero", &n, &failures);
+	}
+	ExtJson_Check(ExtTrack_AudioPaused() == 0, "audio pause is 0 without the switch", &n, &failures);
 
 	if (failures == 0)
 	{

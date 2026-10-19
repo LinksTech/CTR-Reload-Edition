@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_mods.h>
+#include <platform/native_extcoll.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
 // the [CTR Race] line names them, a measurement run must show "cheats none".
@@ -1715,8 +1716,8 @@ internal void DebugMenu_DriveLogTick(struct GameTracker *gGT)
 		{
 			reason = 0;
 		}
-		else if ((level->ptr_mesh_info != NULL) && (level->ptr_mesh_info->bspRoot != NULL) &&
-		         (v[2] < (level->ptr_mesh_info->bspRoot->box.min.y - 0x40)))
+		else if ((COLL_WorldMesh(level) != NULL) && (COLL_WorldMesh(level)->bspRoot != NULL) &&
+		         (v[2] < (COLL_WorldMesh(level)->bspRoot->box.min.y - 0x40)))
 		{
 			reason = 1;
 		}

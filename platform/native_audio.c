@@ -295,6 +295,34 @@ struct NativeAudioPcmClip
 	s16 volumeRight;
 };
 
+// The music place (--ext-track, platform/native_extmusic.c): a host track, s16
+// stereo interleaved at the output rate, looping over the whole buffer, beside
+// the XA, the clips and the SPU voices. Not the CD channel: it does not count as
+// XA playing and nothing of the XA touches it. Never part of a snapshot, and
+// kept outside struct NativeAudioState so that the state's layout stays as it
+// was. Without a buffer (active 0 - every run without --ext-track) it mixes
+// nothing.
+//
+// THE LEASE. The owner states "playing" once per logic frame
+// (NativeAudio_MusicSetState); each state holds for NATIVE_AUDIO_MUSIC_LEASE
+// output frames. When no new state comes - the race was left, a load runs -
+// the place falls silent by itself instead of playing on into the menu.
+#define NATIVE_AUDIO_MUSIC_LEASE (NATIVE_AUDIO_SAMPLE_RATE / 2)
+
+struct NativeAudioMusic
+{
+	const s16 *frames;
+	int frameCount;
+	b32 active;    // a buffer is set
+	b32 playing;   // the last state of the owner
+	u32 position;  // the next frame
+	u32 leaseLeft; // output frames the last state still holds
+	s16 volume;    // 0..0x7fff, as an SPU voice volume
+	u64 framesMixed;
+	u64 framesSilent;
+	u32 loops;
+};
+
 struct NativeAudioState
 {
 	b32 init;
@@ -390,6 +418,7 @@ struct NativeAudioSnapshot
 };
 
 global_variable struct NativeAudioState s_audio;
+global_variable struct NativeAudioMusic s_audioMusic; // see struct NativeAudioMusic
 
 internal b32 NativeAudio_OutputOpen(void)
 {
@@ -2700,6 +2729,28 @@ internal void NativeAudio_MixPcmClipNoLock(struct NativeAudioPcmClip *pcm, b32 l
 	}
 }
 
+// One output frame of the music place: the buffer frame at the place's volume
+// times the master volume, no reverb; while the owner's state says "silent" or
+// its lease ran out, the place keeps its position and counts the frame silent.
+internal void NativeAudio_MixMusicNoLock(struct NativeAudioMusic *m, s16 masterLeft, s16 masterRight, int *mixLeft, int *mixRight)
+{
+	if (!m->playing || (m->leaseLeft == 0))
+	{
+		m->framesSilent++;
+		return;
+	}
+	m->leaseLeft--;
+	NativeAudio_MixSample(mixLeft, mixRight, NativeAudio_ApplyVolume(m->frames[m->position * 2u], m->volume, masterLeft),
+	                      NativeAudio_ApplyVolume(m->frames[m->position * 2u + 1u], m->volume, masterRight));
+	m->framesMixed++;
+	m->position++;
+	if (m->position >= (u32)m->frameCount)
+	{
+		m->position = 0;
+		m->loops++;
+	}
+}
+
 internal void NativeAudio_MixFrame(s16 *outLeft, s16 *outRight)
 {
 	int mixLeft = 0;
@@ -2747,6 +2798,11 @@ internal void NativeAudio_MixFrame(s16 *outLeft, s16 *outRight)
 	if (s_audio.pcmShort.active)
 	{
 		NativeAudio_MixPcmClipNoLock(&s_audio.pcmShort, 0, &mixLeft, &mixRight, &reverbSendLeft, &reverbSendRight);
+	}
+
+	if (s_audioMusic.active)
+	{
+		NativeAudio_MixMusicNoLock(&s_audioMusic, s_audio.masterVolumeLeft, s_audio.masterVolumeRight, &mixLeft, &mixRight);
 	}
 
 	if (!s_audio.muted)
@@ -2958,6 +3014,9 @@ void NativeAudio_Shutdown(void)
 
 	NativeAudio_CloseXANoLock();
 	memset(&s_audio.pcmShort, 0, sizeof(s_audio.pcmShort));
+	// The music place goes quiet; its counters stay for the exit line.
+	s_audioMusic.active = 0;
+	s_audioMusic.frames = NULL;
 	SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
@@ -3546,6 +3605,142 @@ void NativeAudio_StopPcmClips(void)
 	memset(&s_audio.pcmLine, 0, sizeof(s_audio.pcmLine));
 	memset(&s_audio.pcmShort, 0, sizeof(s_audio.pcmShort));
 	NativeAudio_UnlockOutput();
+}
+
+internal int NativeAudio_MusicUsable(const s16 *frames, int frameCount, int sampleRate)
+{
+	return (frames != NULL) && (frameCount > 0) && (sampleRate == NATIVE_AUDIO_SAMPLE_RATE);
+}
+
+int NativeAudio_MusicStart(const s16 *frames, int frameCount, int sampleRate)
+{
+	// As an SPU voice: only on a mixer that runs, the device is never opened here.
+	if (!NativeAudio_MusicUsable(frames, frameCount, sampleRate) || !s_audio.init)
+	{
+		return 0;
+	}
+
+	NativeAudio_LockOutput();
+	memset(&s_audioMusic, 0, sizeof(s_audioMusic));
+	s_audioMusic.frames = frames;
+	s_audioMusic.frameCount = frameCount;
+	s_audioMusic.active = 1;
+	NativeAudio_UnlockOutput();
+
+	return 1;
+}
+
+void NativeAudio_MusicRewind(void)
+{
+	NativeAudio_LockOutput();
+	s_audioMusic.position = 0;
+	NativeAudio_UnlockOutput();
+}
+
+void NativeAudio_MusicSetState(int playing, int volume)
+{
+	NativeAudio_LockOutput();
+	s_audioMusic.playing = s_audioMusic.active && (playing != 0);
+	s_audioMusic.volume = (s16)((volume < 0) ? 0 : ((volume > 0x7fff) ? 0x7fff : volume));
+	s_audioMusic.leaseLeft = NATIVE_AUDIO_MUSIC_LEASE;
+	NativeAudio_UnlockOutput();
+}
+
+void NativeAudio_MusicStop(void)
+{
+	NativeAudio_LockOutput();
+	s_audioMusic.active = 0;
+	s_audioMusic.playing = 0;
+	s_audioMusic.frames = NULL;
+	NativeAudio_UnlockOutput();
+}
+
+void NativeAudio_MusicStats(u64 *framesMixed, u32 *loops, u64 *framesSilent)
+{
+	NativeAudio_LockOutput();
+	*framesMixed = s_audioMusic.framesMixed;
+	*loops = s_audioMusic.loops;
+	*framesSilent = s_audioMusic.framesSilent;
+	NativeAudio_UnlockOutput();
+}
+
+// The music place without a device (ext selftest music): a made-up buffer of
+// three frames through NativeAudio_MixMusicNoLock. Counts checks and failures.
+void NativeAudio_MusicSelftest(int *checks, int *failures)
+{
+	static const s16 buffer[6] = {1000, -1000, 2000, -2000, 3000, -3000};
+	struct NativeAudioMusic m;
+	int left;
+	int right;
+	int i;
+
+#define MUSIC_CHECK(cond)                                                                                                                            \
+	do                                                                                                                                               \
+	{                                                                                                                                                \
+		(*checks)++;                                                                                                                                 \
+		if (!(cond))                                                                                                                                 \
+		{                                                                                                                                            \
+			(*failures)++;                                                                                                                           \
+			printf("ext selftest music: FAILED %s (line %d)\n", #cond, __LINE__);                                                                    \
+		}                                                                                                                                            \
+	} while (0)
+
+	MUSIC_CHECK(!NativeAudio_MusicUsable(buffer, 3, 48000));
+	MUSIC_CHECK(!NativeAudio_MusicUsable(NULL, 3, NATIVE_AUDIO_SAMPLE_RATE));
+	MUSIC_CHECK(!NativeAudio_MusicUsable(buffer, 0, NATIVE_AUDIO_SAMPLE_RATE));
+	MUSIC_CHECK(NativeAudio_MusicUsable(buffer, 3, NATIVE_AUDIO_SAMPLE_RATE));
+
+	memset(&m, 0, sizeof(m));
+	m.frames = buffer;
+	m.frameCount = 3;
+	m.active = 1;
+
+	// Not playing: silent, position kept.
+	left = right = 0;
+	NativeAudio_MixMusicNoLock(&m, 0x7fff, 0x7fff, &left, &right);
+	MUSIC_CHECK((left == 0) && (right == 0) && (m.position == 0) && (m.framesSilent == 1));
+
+	// Full volume, full master: (s * 0x7fff * 0x7fff) / 0x8000^2, one step below s.
+	m.playing = 1;
+	m.volume = 0x7fff;
+	m.leaseLeft = 10;
+	left = right = 0;
+	NativeAudio_MixMusicNoLock(&m, 0x7fff, 0x7fff, &left, &right);
+	MUSIC_CHECK((left == NativeAudio_ApplyVolume(1000, 0x7fff, 0x7fff)) && (right == NativeAudio_ApplyVolume(-1000, 0x7fff, 0x7fff)));
+	MUSIC_CHECK((left > 990) && (left <= 1000) && (right < -990) && (right >= -1000));
+	MUSIC_CHECK((m.position == 1) && (m.framesMixed == 1) && (m.leaseLeft == 9));
+
+	// Half volume: half the sample.
+	m.volume = 0x4000;
+	left = right = 0;
+	NativeAudio_MixMusicNoLock(&m, 0x7fff, 0x7fff, &left, &right);
+	MUSIC_CHECK((left > 990) && (left <= 1000));
+
+	// The loop: after the last frame back to the first.
+	m.volume = 0x7fff;
+	left = right = 0;
+	NativeAudio_MixMusicNoLock(&m, 0x7fff, 0x7fff, &left, &right);
+	MUSIC_CHECK((m.position == 0) && (m.loops == 1) && (left > 2900));
+
+	// The lease runs out: silent without a new state, position kept.
+	m.leaseLeft = 2;
+	for (i = 0; i < 5; i++)
+	{
+		left = right = 0;
+		NativeAudio_MixMusicNoLock(&m, 0x7fff, 0x7fff, &left, &right);
+	}
+	MUSIC_CHECK((m.position == 2) && (m.leaseLeft == 0) && (left == 0) && (m.framesSilent == 4));
+
+	// Master volume 0: mixes zero but advances (the game's mute, as for SPU voices).
+	m.leaseLeft = 1;
+	left = right = 0;
+	NativeAudio_MixMusicNoLock(&m, 0, 0, &left, &right);
+	MUSIC_CHECK((left == 0) && (right == 0) && (m.position == 0) && (m.loops == 2));
+
+	// The place of the running game is untouched by all of this.
+	MUSIC_CHECK(s_audioMusic.active == 0);
+
+#undef MUSIC_CHECK
 }
 
 int NativeAudio_GetXACurrOffset(void)

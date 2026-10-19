@@ -3489,7 +3489,18 @@ int main(int argc, char *argv[])
 		// reason: no window, no data. The name was checked by the gate.
 		if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && ((argIndex + 1) < argc))
 		{
-			const int result = ExtTrack_Selftest(argv[argIndex + 1]);
+			int result;
+
+			// A --ext-track on the same line names the data folder for a part's
+			// selftest on real files (ExtTrack_Dir); the gate has checked it.
+			for (int dirIndex = 1; (dirIndex + 1) < argc; dirIndex++)
+			{
+				if (strcmp(argv[dirIndex], "--ext-track") == 0)
+				{
+					snprintf(g_cfg_extTrackDir, sizeof(g_cfg_extTrackDir), "%s", argv[dirIndex + 1]);
+				}
+			}
+			result = ExtTrack_Selftest(argv[argIndex + 1]);
 
 			return (result < 0) ? 2 : result;
 		}

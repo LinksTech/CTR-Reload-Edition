@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 static const s16 s_warpballFadeScale[6 * 3] = {
     4505, 5120, 4096, 5226, 8192, 4096, 5600, 5501, 4096, 5272, 3183, 4096, 4242, 1411, 3337, 2878, 437, 1668,
@@ -696,7 +697,7 @@ void RB_Warpball_ThTick(struct Thread *t)
 		sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_TEST_INSTANCES | COLL_SEARCH_HIGH_LOD | COLL_SEARCH_FORCE_INSTANCE_HIT;
 	}
 
-	sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 	COLL_SearchBSP_CallbackQUADBLK(&posTop, &posBottom, sps, 0);
 	RB_MakeInstanceReflective(sps, inst);
 

@@ -347,7 +347,35 @@ typedef struct
 	u32 count;
 	u32 visited;
 	u32 cap;
+	const char *nodeName; // THE NODE FILTER of the source (EngineStaticSource)
+	int nodeMatch;
 } EngStaticLoadWalk;
+
+// THE NODE FILTER: 1 = node n counts (ENGINE_STATIC_NODES_*). A filter without
+// a name keeps every node, as ENGINE_STATIC_NODES_ALL does.
+internal int EngStaticLoad_NodeKept(const cgltf_node *n, const char *name, int match)
+{
+	const char *own = (n->name != NULL) ? n->name : "";
+	const size_t length = (name != NULL) ? strlen(name) : 0u;
+
+	if ((match == ENGINE_STATIC_NODES_ALL) || (name == NULL))
+	{
+		return 1;
+	}
+	if (match == ENGINE_STATIC_NODES_PREFIX)
+	{
+		return strncmp(own, name, length) == 0;
+	}
+	if (match == ENGINE_STATIC_NODES_NOT_PREFIX)
+	{
+		return strncmp(own, name, length) != 0;
+	}
+	if (match == ENGINE_STATIC_NODES_EXACT)
+	{
+		return strcmp(own, name) == 0;
+	}
+	return 1;
+}
 
 internal int EngStaticLoad_Visit(const cgltf_node *n, int depth, EngStaticLoadWalk *w)
 {
@@ -358,7 +386,7 @@ internal int EngStaticLoad_Visit(const cgltf_node *n, int depth, EngStaticLoadWa
 		return 0;
 	}
 	w->visited++;
-	if (n->mesh != NULL)
+	if ((n->mesh != NULL) && EngStaticLoad_NodeKept(n, w->nodeName, w->nodeMatch))
 	{
 		w->list[w->count++] = n;
 	}
@@ -372,8 +400,9 @@ internal int EngStaticLoad_Visit(const cgltf_node *n, int depth, EngStaticLoadWa
 	return 1;
 }
 
-// The nodes with a mesh in visit order (parents before children, siblings in file order).
-internal int EngStaticLoad_BuildNodeList(EngStaticLoadGltf *g, char *why, int whySize)
+// The nodes with a mesh in visit order (parents before children, siblings in
+// file order) that THE NODE FILTER of src keeps.
+internal int EngStaticLoad_BuildNodeList(EngStaticLoadGltf *g, const EngineStaticSource *src, char *why, int whySize)
 {
 	const cgltf_data *d = g->data;
 	EngStaticLoadWalk w;
@@ -384,6 +413,8 @@ internal int EngStaticLoad_BuildNodeList(EngStaticLoadGltf *g, char *why, int wh
 	w.cap = (u32)d->nodes_count;
 	w.count = 0;
 	w.visited = 0;
+	w.nodeName = (src != NULL) ? src->nodeName : NULL;
+	w.nodeMatch = (src != NULL) ? src->nodeMatch : ENGINE_STATIC_NODES_ALL;
 	w.list = (const cgltf_node **)EngStaticLoad_Alloc((u64)w.cap * sizeof(*w.list));
 	if (w.list == NULL)
 	{
@@ -1173,7 +1204,7 @@ int EngineStatic_Open(EngineStaticSource *src, EngineStaticModel *out, char *why
 	EngStaticLoad_FillMaterial(gdata, NULL, &out->materials[gdata->materials_count]);
 	out->imageCount = (int)gdata->images_count;
 
-	if (!EngStaticLoad_BuildNodeList(g, why, whySize))
+	if (!EngStaticLoad_BuildNodeList(g, src, why, whySize))
 	{
 		EngineStatic_Close(out);
 		return 0;
@@ -2616,7 +2647,7 @@ int Engine_SelfTestStaticLoad(int *checks)
 		}
 		snprintf(json, 8192,
 		         "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0,1]}],"
-		         "\"nodes\":[{\"mesh\":0,\"translation\":[100,0,0]},{\"mesh\":1,\"scale\":[-1,1,1]}],"
+		         "\"nodes\":[{\"name\":\"grid\",\"mesh\":0,\"translation\":[100,0,0]},{\"name\":\"uv00_pair\",\"mesh\":1,\"scale\":[-1,1,1]}],"
 		         "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"TEXCOORD_0\":1,\"NORMAL\":2},\"indices\":3,\"material\":0}]},"
 		         "{\"primitives\":[{\"attributes\":{\"POSITION\":4,\"NORMAL\":5,\"COLOR_0\":6},\"material\":1}]}],"
 		         "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},\"baseColorFactor\":[1,0.5,0.25,0.75]},"
@@ -2660,6 +2691,50 @@ int Engine_SelfTestStaticLoad(int *checks)
 		src.user = &mem;
 		src.size = glbSize;
 		src.baseDir = "";
+
+		// ---- THE NODE FILTER --------------------------------------------------
+		// The grid (3200 triangles, node "grid") and the pair (2 triangles,
+		// node "uv00_pair", mirrored): each filter keeps what it names; a filter
+		// that keeps nothing leaves no triangle and the file is refused.
+		{
+			static const struct
+			{
+				const char *name;
+				int match;
+				int open;
+				u32 triangles;
+				u32 mirrored;
+				const char *what;
+			} cases[] = {
+			    {NULL, ENGINE_STATIC_NODES_ALL, 1, GRID_TRIS + 2, 1, "filter ALL: both nodes"},
+			    {"uv", ENGINE_STATIC_NODES_NOT_PREFIX, 1, GRID_TRIS, 0, "filter NOT_PREFIX uv: the grid only"},
+			    {"uv", ENGINE_STATIC_NODES_PREFIX, 1, 2, 1, "filter PREFIX uv: the pair only"},
+			    {"uv00_pair", ENGINE_STATIC_NODES_EXACT, 1, 2, 1, "filter EXACT uv00_pair: the pair only"},
+			    {"uv00_pai", ENGINE_STATIC_NODES_EXACT, 0, 0, 0, "filter EXACT of a name's beginning: nothing, refused"},
+			    {"", ENGINE_STATIC_NODES_NOT_PREFIX, 0, 0, 0, "filter NOT_PREFIX of the empty name: nothing, refused"},
+			    {NULL, ENGINE_STATIC_NODES_PREFIX, 1, GRID_TRIS + 2, 1, "a filter without a name keeps every node"},
+			};
+			size_t c;
+
+			for (c = 0; c < sizeof(cases) / sizeof(cases[0]); c++)
+			{
+				EngineStaticModel fm;
+				int opened;
+
+				src.nodeName = cases[c].name;
+				src.nodeMatch = cases[c].match;
+				why[0] = 0;
+				opened = EngineStatic_Open(&src, &fm, why, (int)sizeof(why));
+				EngStaticLoadTest_Check((opened == cases[c].open) && (!opened || ((fm.triangles == cases[c].triangles) && (fm.mirroredNodes == cases[c].mirrored))),
+				                        cases[c].what, checks, &failures);
+				if (opened)
+				{
+					EngineStatic_Close(&fm);
+				}
+			}
+			src.nodeName = NULL;
+			src.nodeMatch = ENGINE_STATIC_NODES_ALL;
+		}
 
 		// ---- a) Open ---------------------------------------------------------
 		why[0] = 0;

@@ -761,6 +761,8 @@ internal BlendMode Engine_RenderBlendMode(u8 blend)
 		return BM_ADD_QUATER_SOURCE;
 	case ENGINE_BLEND_MULTIPLY:
 		return BM_MULTIPLY;
+	case ENGINE_BLEND_ALPHA:
+		return BM_ALPHA;
 	default:
 		return BM_NONE;
 	}

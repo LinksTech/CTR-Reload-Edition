@@ -60,8 +60,12 @@ void Engine_FrameCollect(struct GameTracker *gGT)
 		// The sky (cell 0x3ff), the static model of --engine-static-model and the
 		// track (0x3fe, 0x3fd), then the water (0x3fc): the water draws only when
 		// the track was drawn this frame.
+		// The external track's sky links first, so the cell draws it after the
+		// engine sky's backdrop (a cell draws its last link first).
+		Engine_ExtTrackSkyCollect(gGT);
 		Engine_SkyCollect(gGT);
 		Engine_StaticCollect(gGT);
+		Engine_ExtTrackCollect(gGT);
 		Engine_TrackCollect(gGT);
 		// The animated textures of the track: rows of the mosaic table, before anything is drawn.
 		Engine_TrackMosaicFrame();

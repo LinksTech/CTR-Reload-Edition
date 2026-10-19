@@ -2,6 +2,7 @@
 
 #if defined(CTR_NATIVE)
 #include <setjmp.h>
+#include <platform/native_extcoll.h>
 
 struct ThTickNativeContext
 {
@@ -487,7 +488,7 @@ void PROC_StartSearch_Self(struct ScratchpadStruct *sps)
 
 	gGT = sdata->gGT;
 
-	COLL_SearchBSP_CallbackPARAM(gGT->level1->ptr_mesh_info->bspRoot, &sps->Union.ThBuckColl.bbox, PROC_PerBspLeaf_CheckInstances, sps);
+	COLL_SearchBSP_CallbackPARAM(COLL_WorldMesh(gGT->level1)->bspRoot, &sps->Union.ThBuckColl.bbox, PROC_PerBspLeaf_CheckInstances, sps);
 }
 
 

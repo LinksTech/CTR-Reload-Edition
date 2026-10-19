@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 // Required to make door open when driver hits potion, or potion shatters due to full MinePool.
 void RB_Potion_OnShatter_TeethCallback(struct ScratchpadStruct *sps, void *hitObject)
@@ -94,7 +95,7 @@ void RB_Potion_ThTick_InAir(struct Thread *t)
 		sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_TEST_INSTANCES | COLL_SEARCH_HIGH_LOD | COLL_SEARCH_FORCE_INSTANCE_HIT;
 	}
 
-	sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 
 	COLL_SearchBSP_CallbackQUADBLK(&posBottom, &posTop, sps, 0);
 

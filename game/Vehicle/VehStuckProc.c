@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 // From platform/native_chars.c, further down in the translation unit: the engine
 // class of a seat - the class of a bound custom character, else retailClass
@@ -131,7 +132,7 @@ void VehStuckProc_MaskGrab_FindDestPos(struct Driver *d, struct QuadBlock *quad)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	struct Level *level = gGT->level1;
-	struct mesh_info *mesh = level->ptr_mesh_info;
+	struct mesh_info *mesh = COLL_WorldMesh(level);
 	int useQuad = (level->cnt_restart_points < 1) || (level->ptr_restart_points == NULL) || (quad->checkpointIndex == 0xff);
 
 #if defined(CTR_NATIVE)

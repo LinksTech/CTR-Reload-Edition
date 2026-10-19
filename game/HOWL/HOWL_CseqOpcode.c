@@ -155,6 +155,13 @@ void cseq_opcode_from06and07(struct SongSeq *seq)
 	}
 }
 
+#if defined(CTR_NATIVE)
+// From platform/native_extmusic.c (later in the unity build): 1 while an external
+// track (--ext-track) plays its own music on this level - then the notes of the
+// level song start no voice. 0 at once without the switch.
+int ExtMusic_MutesSong(int songPoolIndex);
+#endif
+
 void cseq_opcode05_noteon(struct SongSeq *seq)
 {
 	u8 *currNote;
@@ -166,6 +173,15 @@ void cseq_opcode05_noteon(struct SongSeq *seq)
 	{
 		return;
 	}
+#if defined(CTR_NATIVE)
+	// The same way out as a music volume of 0 just above: the caller moves on to
+	// the next note itself (HOWL_Channel.c:446-449); the sequencer, its tempo and
+	// every state of the song run on unchanged.
+	if (ExtMusic_MutesSong(songIndex))
+	{
+		return;
+	}
+#endif
 	if (sdata->songPool[songIndex].vol_Curr == 0)
 	{
 		return;

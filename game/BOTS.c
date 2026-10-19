@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_mods.h>
+#include <platform/native_extcoll.h>
 
 // From game/native_trackmod.c, which comes after this file in game_unity.h.
 // The answer is the bits the MaskGrab recovery should leave in place;
@@ -611,7 +612,7 @@ void BOTS_LevInstColl(struct Thread *botThread)
 	struct Driver *driver = (struct Driver *)botThread->object;
 	struct ScratchpadStruct *sps = CTR_SCRATCHPAD_PTR(struct ScratchpadStruct, 0x108);
 
-	sps->ptr_mesh_info = sdata->gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(sdata->gGT->level1);
 	sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_TEST_INSTANCES;
 	sps->Input1.modelID = DYNAMIC_ROBOT_CAR;
 	sps->Union.QuadBlockColl.quadFlagsWanted = 0;
@@ -2074,7 +2075,7 @@ UpdateTireColorTimer:
 		    .z = probeZ,
 		};
 
-		sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+		sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 		sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND;
 		sps->Union.QuadBlockColl.quadFlagsIgnored = QUADBLOCK_FLAG_NO_COLLISION_RESPONSE;
 		sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_HIGH_LOD;
@@ -2845,7 +2846,7 @@ FinishHazardTimerUpdate:
 		    .z = probeZ,
 		};
 
-		sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+		sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 		sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND;
 		sps->Union.QuadBlockColl.quadFlagsIgnored = 0;
 		sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_HIGH_LOD;

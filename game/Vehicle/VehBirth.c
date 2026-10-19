@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 // From platform/native_chars.c, further down in the translation unit: the model
 // of a custom character the load funnel bound to this seat, NULL for every seat
@@ -176,7 +177,7 @@ void VehBirth_TeleportSelf(struct Driver *d, u8 spawnFlag, int spawnPosY)
 	int spawnAtBoss;
 	int spawnOutsideBoss = 0;
 
-	if ((level1 == NULL) || (level1->ptr_mesh_info == NULL))
+	if ((level1 == NULL) || (COLL_WorldMesh(level1) == NULL))
 	{
 		return;
 	}
@@ -190,7 +191,7 @@ void VehBirth_TeleportSelf(struct Driver *d, u8 spawnFlag, int spawnPosY)
 	{
 		sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_HIGH_LOD;
 	}
-	sps->ptr_mesh_info = level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(level1);
 
 	gGT->gameMode2 &= ~VEH_FREEZE_DOOR;
 	spawnAtBoss = gGT->gameMode2 & SPAWN_AT_BOSS;

@@ -17,6 +17,9 @@ void NativeRenderLayer_RegisterMarkerArenas(struct GameTracker *gGT);
 // translation unit. Only with --engine (dev); otherwise one comparison.
 extern int g_cfg_engine;
 void Engine_RenderFrameBegin(int bank);
+// From platform/engine_exttrack.c: the external track learns of the pause of
+// the game's audio (returns at once without --ext-track).
+void ExtTrack_OnAudioPause(int paused);
 
 static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 {
@@ -62,6 +65,9 @@ void MainFrame_TogglePauseAudio(b32 bool_pause)
 			howl_StopAudio(0, 0, 1);
 			howl_UnPauseAudio();
 			sdata->boolSoundPaused = 0;
+#if defined(CTR_NATIVE)
+			ExtTrack_OnAudioPause(0);
+#endif
 		}
 	}
 	else if (sdata->boolSoundPaused == 0)
@@ -69,6 +75,9 @@ void MainFrame_TogglePauseAudio(b32 bool_pause)
 		OtherFX_Stop2(1);
 		howl_PauseAudio();
 		sdata->boolSoundPaused = 1;
+#if defined(CTR_NATIVE)
+		ExtTrack_OnAudioPause(1);
+#endif
 	}
 	return;
 }

@@ -17,6 +17,13 @@ void ExtColl_OnLevelLoaded(struct Level *lev);
 // without --ext-track): level->ptr_mesh_info, the same pointer as before.
 struct mesh_info *COLL_WorldMesh(struct Level *level);
 
+// After the game logic of a frame (dispatcher ExtTrack_OnLogicFrame - the call
+// is M1's line): read-only log of seat 0 on the external track's collision
+// (ground frames per terrain, wall contacts, the lowest height), every 300
+// frames and at exit. Returns at once unless the collision is built and the
+// track holds the level.
+void ExtColl_OnLogicFrame(void);
+
 // --ext-selftest coll: prints "ext selftest coll passed: N checks, 0 failures"
 // (or FAILED); returns 0 / 1.
 int ExtColl_Selftest(void);

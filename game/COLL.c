@@ -1,6 +1,7 @@
 #include <common.h>
 #include <ctr_scratchpad.h>
 #include <platform/native_mods.h>
+#include <platform/native_extcoll.h>
 
 // ===========================================================================
 // THE CROSS-CHECK FOR THE ZERO RULE, only counted.
@@ -1310,7 +1311,7 @@ internal void COLL_FIXED_PlayerSearch_SetupSearch(struct ScratchpadStruct *sps, 
 	sps->Union.QuadBlockColl.pos = probeTop;
 	sps->Input1.pos = probeBottom;
 
-	sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 	sps->Union.QuadBlockColl.quadFlagsIgnored = QUADBLOCK_FLAG_NO_COLLISION_RESPONSE;
 	sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND | QUADBLOCK_FLAG_COLLISION_SURFACE;
 
@@ -1560,7 +1561,7 @@ void COLL_FIXED_PlayerSearch(struct Thread *t, struct Driver *d)
 		d->terrainMeta2 = VehAfterColl_GetTerrain(TERRAIN_NONE);
 	}
 
-	if (d->posCurr.y < CTR_MipsSll(CTR_MipsSubLo(level->ptr_mesh_info->bspRoot->box.min.y, 0x40), 8))
+	if (d->posCurr.y < CTR_MipsSll(CTR_MipsSubLo(COLL_WorldMesh(level)->bspRoot->box.min.y, 0x40), 8))
 	{
 		d->collisionFlags |= DRIVER_COLL_FLAG_MASK_GRAB_REQUEST;
 	}
@@ -2415,7 +2416,7 @@ void COLL_MOVED_PlayerSearch(struct Thread *t, struct Driver *d)
 	sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND | QUADBLOCK_FLAG_COLLISION_SURFACE;
 	sps->Union.QuadBlockColl.quadFlagsIgnored = 0;
 	sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_TEST_INSTANCES;
-	sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+	sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 
 	if (gGT->numPlyrCurrGame < 3)
 	{
@@ -2472,9 +2473,9 @@ void COLL_MOVED_PlayerSearch(struct Thread *t, struct Driver *d)
 
 		sps->Union.QuadBlockColl.searchFlags = (sps->Union.QuadBlockColl.searchFlags | COLL_SEARCH_TEST_INSTANCES) & ~COLL_SEARCH_REUSE_NORMALS;
 
-		if ((gGT->level1 != NULL) && (gGT->level1->ptr_mesh_info != NULL) && (gGT->level1->ptr_mesh_info->bspRoot != NULL))
+		if ((gGT->level1 != NULL) && (COLL_WorldMesh(gGT->level1) != NULL) && (COLL_WorldMesh(gGT->level1)->bspRoot != NULL))
 		{
-			COLL_SearchBSP_CallbackPARAM(gGT->level1->ptr_mesh_info->bspRoot, &sps->bbox, COLL_MOVED_BSPLEAF_TestQuadblocks, sps);
+			COLL_SearchBSP_CallbackPARAM(COLL_WorldMesh(gGT->level1)->bspRoot, &sps->bbox, COLL_MOVED_BSPLEAF_TestQuadblocks, sps);
 		}
 
 		if (sps->boolDidTouchQuadblock != 0)

@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extcoll.h>
 
 // From platform/native_chars.c, further down in the translation unit: the mask
 // of a seat (the mask the CHRI of a bound custom character chooses, else
@@ -818,7 +819,7 @@ void VehPickupItem_ShootNow(struct Driver *d, s32 weaponID, s32 flags)
 			sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_TEST_INSTANCES | COLL_SEARCH_HIGH_LOD;
 		}
 
-		sps->ptr_mesh_info = gGT->level1->ptr_mesh_info;
+		sps->ptr_mesh_info = COLL_WorldMesh(gGT->level1);
 
 		COLL_SearchBSP_CallbackQUADBLK(&probeTop, &probeBottom, sps, MINE_COLL_CALLBACK_FLAGS);
 
