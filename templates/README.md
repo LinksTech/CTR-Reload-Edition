@@ -48,8 +48,12 @@ guide is [docs/CREATOR_KIT.md](../docs/CREATOR_KIT.md).
 | Way | Puppet | Textures | Export |
 |---|---|---|---|
 | Vanilla | 543 triangles, chunky pieces, PS1 vertex colours in 9 steps | 64 x 64 colour atlas | no skeleton, no clips (the classic model poses by itself) |
-| Low-Poly | 5568 triangles, PS1 vertex colours | 64 x 64 colour atlas | skeleton, 12 clips + 2 optional finish clips |
-| Hi-Res | 35656 triangles, PS1 vertex colours | 1024 x 1024 atlas + a normal map made by code | skeleton, 12 clips + 2 optional finish clips |
+| Low-Poly | 5288 triangles, PS1 vertex colours in 15 steps | 64 x 64 colour atlas | skeleton, 12 clips + 2 optional finish clips |
+| Hi-Res | 14536 triangles, PS1 vertex colours in 15 steps | 1024 x 1024 atlas + a normal map made by code | skeleton, 12 clips + 2 optional finish clips |
+
+Reload Studio also makes a classic model (the fallback) of a Low-Poly or
+Hi-Res figure; both templates go through it without a warning (see the head
+of `creator_kit_puppet.py`).
 
 The kart and the wheels of the kit come from the user's own game files and
 are written only into the folder the user chooses; nothing of them is in

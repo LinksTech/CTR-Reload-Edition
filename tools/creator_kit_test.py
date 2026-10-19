@@ -20,7 +20,9 @@ The generator writes one folder per way (vanilla, lowpoly, hires) below the kit 
   (--vertex-colors psx --game-kart template): 0 warnings, clips 12/12 and finish 2/2, Low-Poly within 8000
   triangles and 512 px, Hi-Res within 64000 triangles with its normal map (2 textures), 6 the kit marker on
   every kit part of the local demo and on nothing of the three figures, 7 make-char --check of the local demo,
-  8 make-char --check --figure-only of the Vanilla figure: 0 warnings, at most 96 colours, no skin, no clips,
+  8 the classic model of each figure as the page Character makes it (Vanilla: --reduce off --figure-only;
+  Low-Poly and Hi-Res, the classic fallback: --reduce auto --rig bind-pose --figure-only): 0 warnings, at most
+  96 colours, at most 7200 triangles (Vanilla: no skin, no clips),
   9 creator_kit_measure of the local demo, 10 --vcol gltf (Low-Poly and Hi-Res), 11 wrong-version exit 3,
   12 no path in any .blend, 13 a kit kart with an empty root node, 14 an old character (classic and native
   model of a .rldchar made here from the old template, char-export, --classic): in the collection Classic,
@@ -234,6 +236,18 @@ HRG41_TEXT = "This file contains the kart from your game files."
 LOWPOLY_TRIANGLES, LOWPOLY_EDGE = 8000, 512       # the Low-Poly route's targets (rs_charhires.c)
 HIRES_TRIANGLES, HIRES_EDGE = 64000, 2048         # the game's budget (include/rldhires.inc)
 VANILLA_COLOURS = 96                              # make-char --figure-only keeps 96 of 128 for the figure
+CLASSIC_TRIANGLES = 7200                          # the draw memory of a driver (include/rldchar.inc)
+# The switches of the classic model as the page Character passes them (tools/reloadstudio/rs_char.c,
+# Char_BuildArgs): Vanilla builds the figure with the game's kart; Low-Poly and Hi-Res make their classic
+# fallback with RsCharHires_FallbackArgs (--reduce auto) and --rig bind-pose --figure-only.
+STUDIO_CLASSIC = {
+    "vanilla": ["--template", "14", "--class", "balanced", "--size", "100", "--reduce", "off", "--mask", "uka",
+                "--figure-only"],
+    "lowpoly": ["--template", "14", "--class", "balanced", "--size", "100", "--mask", "uka", "--reduce", "auto",
+                "--rig", "bind-pose", "--figure-only"],
+    "hires": ["--template", "14", "--class", "balanced", "--size", "100", "--mask", "uka", "--reduce", "auto",
+              "--rig", "bind-pose", "--figure-only"],
+}
 
 
 def figure_name(way):
@@ -629,23 +643,29 @@ def run_all(blender, packer, work):
     rep.check(code == 0 and not errs, "7 make-char", "exit 0, no ERROR",
               "exit %s: %s" % (code, "; ".join(errs[:3]) or tail(out)))
 
-    # 8 the Vanilla figure as the classic model with the game's kart (make-char --figure-only)
-    van = path(r1, "vanilla", figure_name("vanilla"))
-    code, out = run(packer + ["make-char", "--check", "--model", van, "--figure-only", "--name", "TEST",
-                              "--template", "14"], env)
-    warns = [l for l in out.splitlines() if l.upper().startswith(("WARNING", "ERROR"))]
-    notes = sorted(set(re.findall(r"^note: (.{0,40})", out, re.M)))
-    m = re.search(r"^\s*colors\s+(\d+)", out, re.M)
-    colours = int(m.group(1)) if m else None
-    try:
-        jv = glb_json(van)
-        plain = not jv.get("skins") and not jv.get("animations")
-    except Exception:
-        plain = False
-    rep.check(code == 0 and not warns and colours is not None and colours <= VANILLA_COLOURS and plain,
-              "8 make-char vanilla", "--figure-only --template 14: exit 0, 0 warnings, %s colours (<= %d), no skin, "
-              "no clips; notes: %s" % (colours, VANILLA_COLOURS, " | ".join(notes)),
-              "exit %s, colours %s, plain %s: %s" % (code, colours, plain, "; ".join(warns[:3]) or tail(out)))
+    # 8 the classic model of each figure, made as Reload Studio's page Character makes it: Vanilla its build
+    # with the game's kart, Low-Poly and Hi-Res their classic fallback (STUDIO_CLASSIC)
+    for way in ROUTES:
+        fig = path(r1, way, figure_name(way))
+        code, out = run(packer + ["make-char", "--check", "--model", fig, "--name", "TEST"] + STUDIO_CLASSIC[way], env)
+        warns = [l for l in out.splitlines() if l.upper().startswith(("WARNING", "ERROR"))]
+        notes = sorted(set(re.findall(r"^note: (.{0,40})", out, re.M)))
+        m = re.search(r"^\s*colors\s+(\d+)", out, re.M)
+        colours = int(m.group(1)) if m else None
+        m = re.search(r"^\s*draw memory\s+\d+ bytes per frame \((\d+) triangles", out, re.M)
+        drawn = int(m.group(1)) if m else None
+        try:
+            jf = glb_json(fig)
+            plain = (not jf.get("skins") and not jf.get("animations")) if way == "vanilla" else bool(jf.get("skins"))
+        except Exception:
+            plain = False
+        rep.check(code == 0 and not warns and colours is not None and colours <= VANILLA_COLOURS and plain
+                  and drawn is not None and drawn <= CLASSIC_TRIANGLES,
+                  "8 classic %s" % way, "%s: exit 0, 0 warnings, %s colours (<= %d), %s triangles (<= %d)%s; notes: %s"
+                  % (" ".join(STUDIO_CLASSIC[way]), colours, VANILLA_COLOURS, drawn, CLASSIC_TRIANGLES,
+                     ", no skin, no clips" if way == "vanilla" else "", " | ".join(notes)),
+                  "exit %s, colours %s, triangles %s, skin as expected %s: %s"
+                  % (code, colours, drawn, plain, "; ".join(warns[:3]) or tail(out)))
 
     # 9 measure (the local demo: kart, wheels, hands on the steering wheel)
     code, out = run([sys.executable, "-I", MEASURE, "measure", loc1, "--kit-info",
@@ -834,9 +854,9 @@ def selftest():
 
     # the summaries of hires-check: the figure with the route's switches, the local demo's exact HRG-41
     fig = ("x.glb: hires check of x\n  note    HRG-42 no wheel nodes - the game puts in the kart\n"
-           "hires check: 0 errors, 0 warnings, 1 notes, clips 12/12, wheels 0/4, skin 28 joints, 5568 triangles, "
+           "hires check: 0 errors, 0 warnings, 1 notes, clips 12/12, wheels 0/4, skin 28 joints, 5288 triangles, "
            "textures 1 (16384 bytes RGBA8)\nhires check: finish clips 2/2 (optional)\n")
-    chk(figure_check_ok(fig) and summary_numbers(fig) == (5568, 1), "figure 0 warnings, numbers")
+    chk(figure_check_ok(fig) and summary_numbers(fig) == (5288, 1), "figure 0 warnings, numbers")
     chk(not figure_check_ok(fig.replace("0 warnings", "1 warnings") + "  warning HRG-36 x\n"), "figure warning")
     loc = ("  warning HRG-41 " + HRG41_TEXT + "\nhires check: 0 errors, 1 warnings, 0 notes, clips 12/12, wheels 4/4\n"
            "hires check: finish clips 2/2\n")

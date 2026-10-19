@@ -11,15 +11,26 @@
 #   build_puppet(collection, rig, bones, vcol_mode, style)   the mesh "puppet"
 #
 # Three styles, one per way of the kit (the same skeleton in each):
-#   vanilla   for the classic model (rldpack make-char): 559 triangles of
+#   vanilla   for the classic model (rldpack make-char): 543 triangles of
 #             chunky pieces (no piece thinner than the packing step of the
 #             classic model), a 64 x 64 colour atlas, PS1 vertex colours in
-#             9 steps - at most 45 colours (STYLE_NUMBERS)
-#   lowpoly   the puppet of before: 5568 triangles, the same 64 x 64 atlas
-#   hires     the same shapes three times as round and twice as fine along
-#             (about 33000 triangles), a 1024 x 1024 atlas with a cell per
-#             piece and a normal map made here (a quilted surface, ribbed
-#             bands)
+#             9 steps - at most 45 colours (_SHADE_STEPS)
+#   lowpoly   5288 triangles, the same 64 x 64 atlas, PS1 vertex colours in
+#             15 steps
+#   hires     the same shapes up to three times as round and up to twice as
+#             fine along (14536 triangles), a 1024 x 1024 atlas with a cell
+#             per piece and a normal map made here (a quilted surface, ribbed
+#             bands), PS1 vertex colours in 15 steps
+# Low-Poly and Hi-Res are CHRG figures; Reload Studio also makes a classic
+# model of them (make-char --reduce auto --rig bind-pose --figure-only, its
+# fallback), which takes them without a warning: no ring closer than 1 u
+# (Hi-Res 1.2 u) to the next, Hi-Res rings with no more corners than keep
+# 1.4 u between two of them (small pieces keep the Low-Poly count), at most
+# 75 colours (5 fields x 15 steps), every colour field of a piece apart in
+# the Hi-Res texture (_HI_GAP), and Hi-Res small enough that the reduction to
+# the classic model's 7200 triangles ends there (each part keeps a floor in
+# proportion to its triangles; with a figure of about 34000 triangles the
+# reduction stopped at 7246) and leaves no triangle the packing drops.
 #
 # `info` is the parsed kit-info.json. Only its "seat" and "steer" are read;
 # a missing key falls back to the standard value.
@@ -210,7 +221,8 @@ class _Mesh:
     def __init__(self):
         self.co = []
         self.bone = []
-        self.tris = []    # [a, b, c, field, smooth, piece, uvs]: uvs = 3 (u, v) in the piece's own 0..1 square
+        self.tris = []    # [a, b, c, field, smooth, piece, uvs, span]: uvs = 3 (u, v) in the piece's own 0..1
+                          # square, span = the span between two rings it lies in (-1: a weld)
         self.pieces = []  # the _Seg of every piece, in the order they are made (piece = the index)
 
     def vert(self, p, bone):
@@ -218,8 +230,8 @@ class _Mesh:
         self.bone.append(bone)
         return len(self.co) - 1
 
-    def tri(self, a, b, c, field="body", smooth=True, piece=-1, uvs=None):
-        self.tris.append([a, b, c, field, smooth, piece, uvs or [(0.5, 0.5)] * 3])
+    def tri(self, a, b, c, field="body", smooth=True, piece=-1, uvs=None, span=-1):
+        self.tris.append([a, b, c, field, smooth, piece, uvs or [(0.5, 0.5)] * 3, span])
         return len(self.tris) - 1
 
 
@@ -237,14 +249,51 @@ class _Seg:
 
 class _Style:
     """How much finer than written a piece is made: segs x seg_mul around, each span between two rings cut into
-    ring_sub (the radius of a new ring on a Catmull-Rom curve through the rings, a straight line next to a pole)."""
+    ring_sub (the radius of a new ring on a Catmull-Rom curve through the rings, a straight line next to a pole).
+    min_step: first every ring closer than this (u, along the profile, the radius at the piece's larger scale)
+    to the ring before it is left out - the classic model that Reload Studio makes of the figure (make-char,
+    its fallback) packs positions into 8 bits per axis, the up axis 7, and a band thinner than about 1 u loses
+    its triangles there (model-collapse). min_chord: a finer piece gets no more segments around than keep this
+    distance (u) between two corners of a ring - small pieces (thumbs, feet, eyes) keep their own segments."""
 
-    def __init__(self, seg_mul, ring_sub):
+    def __init__(self, seg_mul, ring_sub, min_step=0.0, min_chord=0.0):
         self.seg_mul = seg_mul
         self.ring_sub = ring_sub
+        self.min_step = min_step
+        self.min_chord = min_chord
 
-    def segs(self, n):
-        return n * self.seg_mul
+    def segs(self, n, rings=None, sx=1.0, sz=1.0):
+        if self.seg_mul == 1 or self.min_chord <= 0.0 or not rings:
+            return n * self.seg_mul
+        r = max(ring[1] * (ring[2] if len(ring) > 2 else 1.0) for ring in rings)
+        around = 2.0 * math.pi * r * math.sqrt(0.5 * (sx * sx + sz * sz))
+        # an even number: the cross-section stays its own mirror image (left and right pieces mirror each other)
+        return max(n, min(n * self.seg_mul, int(around / self.min_chord) // 2 * 2))
+
+    def clean(self, rings, fields, default, rscale):
+        n = len(rings)
+        if self.min_step <= 0.0 or n <= 2:
+            return rings, fields
+
+        def step(i, j):
+            return math.hypot(rings[j][0] - rings[i][0], (rings[j][1] - rings[i][1]) * rscale)
+
+        keep = [0]
+        for i in range(1, n):
+            if step(keep[-1], i) >= self.min_step:
+                keep.append(i)
+            elif i == n - 1:
+                if len(keep) > 1:
+                    keep[-1] = i      # the end stays; the ring before it goes
+                else:
+                    keep.append(i)
+        fields = fields or {}
+        nf = {}
+        for k in range(len(keep) - 1):
+            # the merged span takes the field of its longest original span
+            best = max(range(keep[k], keep[k + 1]), key=lambda i: (step(i, i + 1), -i))
+            nf[k] = fields.get(best, default)
+        return [rings[i] for i in keep], nf
 
     def refine(self, rings, fields, default):
         n = len(rings)
@@ -272,7 +321,8 @@ class _Style:
         return out, nf
 
 
-_HIRES = _Style(3, 2)
+_LOWPOLY = _Style(1, 1, 1.0)
+_HIRES = _Style(3, 2, 1.2, 1.4)
 
 
 def _lathe(m, bone, a, b, rings, segs, sx=1.0, sz=1.0, power=2.0, fields=None, default="body", smooth=True,
@@ -282,9 +332,12 @@ def _lathe(m, bone, a, b, rings, segs, sx=1.0, sz=1.0, power=2.0, fields=None, d
     # superellipse (power 2 = ellipse) with the scales sx (side) and sz (the other way). style (a _Style)
     # makes it finer; refine=False keeps its rings (a flat disc).
     if style is not None:
-        segs = style.segs(segs)
+        segs = style.segs(segs, rings, sx, sz)
         if refine:
-            rings, fields = style.refine(rings, fields, default)
+            rings, fields = style.clean(rings, fields, default, max(sx, sz))
+            if style.ring_sub > 1:
+                rings, fields = style.refine(rings, fields, default)
+                rings, fields = style.clean(rings, fields, default, max(sx, sz))
     a = Vector(a)
     w = (Vector(b) - a).normalized()
     up = Vector((0.0, 1.0, 0.0)) if abs(w.y) < 0.9 else Vector((0.0, 0.0, 1.0))
@@ -332,12 +385,12 @@ def _lathe(m, bone, a, b, rings, segs, sx=1.0, sz=1.0, power=2.0, fields=None, d
             k1 = (k + 1) % segs
             u0, u1, um = k / float(segs), (k + 1) / float(segs), (k + 0.5) / float(segs)
             if len(R0) == 1:
-                m.tri(R0[0], R1[k1], R1[k], fld, smooth, seg.piece, [(um, v0), (u1, v1), (u0, v1)])
+                m.tri(R0[0], R1[k1], R1[k], fld, smooth, seg.piece, [(um, v0), (u1, v1), (u0, v1)], i)
             elif len(R1) == 1:
-                m.tri(R0[k], R0[k1], R1[0], fld, smooth, seg.piece, [(u0, v0), (u1, v0), (um, v1)])
+                m.tri(R0[k], R0[k1], R1[0], fld, smooth, seg.piece, [(u0, v0), (u1, v0), (um, v1)], i)
             else:
-                m.tri(R0[k], R0[k1], R1[k1], fld, smooth, seg.piece, [(u0, v0), (u1, v0), (u1, v1)])
-                m.tri(R0[k], R1[k1], R1[k], fld, smooth, seg.piece, [(u0, v0), (u1, v1), (u0, v1)])
+                m.tri(R0[k], R0[k1], R1[k1], fld, smooth, seg.piece, [(u0, v0), (u1, v0), (u1, v1)], i)
+                m.tri(R0[k], R1[k1], R1[k], fld, smooth, seg.piece, [(u0, v0), (u1, v1), (u0, v1)], i)
     seg.tris = list(range(first, len(m.tris)))
     # outward winding: flip the whole piece when its volume comes out negative
     vol = 0.0
@@ -407,7 +460,7 @@ def _weld(m, point, bone, seg_a, seg_b):
         p0 = cand[0]
         q = cand[1]
         for q in cand[1:]:
-            if (m.co[p0] - point).cross(m.co[q] - point).length > 1e-4:
+            if (m.co[p0] - point).cross(m.co[q] - point).length > 1.0:
                 break
         m.tri(c, p0, q, "body", False)
 
@@ -483,6 +536,22 @@ _HI_WELD_CELL = _HI_COLS * _HI_COLS - 1
 _HI_TILT = 0.45          # the steepest slope of the normal map's bumps (about 24 degrees)
 _HI_QUILT = 8            # bumps of the quilted surface along u and along v of a piece
 _HI_RIBS = 12            # ribs of a colour band along v
+# Where the colour changes inside a piece (a band), the two spans are this far apart in the texture (4 texels):
+# the classic model of the figure (make-char) fits each triangle's corner colours to the texture under it,
+# bilinear - with the spans side by side the triangles next to a band would take in a mixed colour.
+_HI_GAP = 4.0 / (_HI_CELL - 2 * _HI_PAD)
+
+
+def _span_map(seg):
+    """(scale, offset per span) of a piece: v in the texture = v * scale + offset[span]."""
+    fields = seg.span_fields
+    offsets = []
+    n = 0
+    for i, f in enumerate(fields):
+        if i > 0 and f != fields[i - 1]:
+            n += 1
+        offsets.append(n * _HI_GAP)
+    return 1.0 - n * _HI_GAP, offsets
 
 
 def _hires_cell(piece):
@@ -490,10 +559,14 @@ def _hires_cell(piece):
     return (cell % _HI_COLS) * _HI_CELL, (cell // _HI_COLS) * _HI_CELL
 
 
-def _hires_uv(piece, uv):
+def _hires_uv(m, piece, uv, span):
     x0, y0 = _hires_cell(piece)
     inner = float(_HI_CELL - 2 * _HI_PAD)
-    return ((x0 + _HI_PAD + uv[0] * inner) / _HI_ATLAS, 1.0 - (y0 + _HI_PAD + (1.0 - uv[1]) * inner) / _HI_ATLAS)
+    v = uv[1]
+    if 0 <= piece < len(m.pieces) and span >= 0:
+        scale, offsets = _span_map(m.pieces[piece])
+        v = v * scale + offsets[span]
+    return ((x0 + _HI_PAD + uv[0] * inner) / _HI_ATLAS, 1.0 - (y0 + _HI_PAD + (1.0 - v) * inner) / _HI_ATLAS)
 
 
 def _hires_pngs(m):
@@ -514,26 +587,29 @@ def _hires_pngs(m):
 
     su, du = bump(U * _HI_QUILT)
     sv, dv = bump(V * _HI_QUILT)
-    rv, rd = bump(V * _HI_RIBS)
+    _rv, rd = bump(V * _HI_RIBS)
 
-    def cell(piece, spans, vs):
-        x0, y0 = _hires_cell(piece)
+    def cell(seg):
+        x0, y0 = _hires_cell(seg.piece)
+        spans, vs = seg.span_fields, seg.v
+        scale, offsets = _span_map(seg)
         rgb = np.zeros((_HI_CELL, _HI_CELL, 3), np.float64)
         nx = np.zeros((_HI_CELL, _HI_CELL), np.float64)
         ny = np.zeros((_HI_CELL, _HI_CELL), np.float64)
-        span = np.clip(np.searchsorted(np.asarray(vs, np.float64), V[:, 0], side="right") - 1, 0, len(spans) - 1)
         for row in range(_HI_CELL):
-            field = spans[int(span[row])]
+            # the span whose texture rows are nearest (inside: 0; in a gap: the nearer of the two)
+            v = V[row, 0]
+            best = min(range(len(spans)), key=lambda i: (max(vs[i] * scale + offsets[i] - v,
+                                                             v - (vs[i + 1] * scale + offsets[i]), 0.0), i))
+            field = spans[best]
             colour = np.asarray(_FIELD_RGB[field], np.float64) / 255.0
             if field == "body":
-                h = su[row] * sv[row]
                 nx[row] = -_HI_TILT * du[row] * sv[row]
                 ny[row] = -_HI_TILT * su[row] * dv[row]
-                rgb[row] = colour[None, :] * (0.88 + 0.12 * h)[:, None]
+                rgb[row] = colour[None, :]
             elif field in ("bandL", "bandR"):
-                h = rv[row]
                 ny[row] = -_HI_TILT * rd[row]
-                rgb[row] = colour[None, :] * (0.85 + 0.15 * h)[:, None]
+                rgb[row] = colour[None, :]
             else:
                 rgb[row] = colour[None, :]
         length = np.sqrt(nx * nx + ny * ny + 1.0)
@@ -545,7 +621,7 @@ def _hires_pngs(m):
     base[:, :] = np.asarray(_FIELD_RGB["body"], np.float64) / 255.0
     nrm[:, :, 2] = 1.0
     for seg in m.pieces:
-        cell(seg.piece, seg.span_fields, seg.v)
+        cell(seg)
 
     def png(arr):
         b = np.floor(np.clip(arr, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
@@ -701,7 +777,7 @@ def _build_geometry(bones, style=None):
 
 def _build_vanilla(bones):
     # The puppet of the way Vanilla (the classic model of make-char): 16 chunky pieces in one connected mesh
-    # (each piece's start pole lies inside the piece before it: _weld_pole), 559 triangles. No piece is
+    # (each piece's start pole lies inside the piece before it: _weld_pole), 543 triangles. No piece is
     # thinner than about 2.5 u and no ring closer than 1.5 u to the next, so the packing of the classic model
     # (8 bits per axis over the model, the up axis 7) keeps every triangle. Mittens in the band colours (left
     # green, right blue), dark shoes, a dark visor for the eyes.
@@ -784,8 +860,10 @@ def _build_vanilla(bones):
 # ------------------------------------------------------------------ build_puppet
 
 STYLES = ("vanilla", "lowpoly", "hires")
-_VANILLA_STEP = 16       # the vanilla puppet's PS1 shading in steps of 16: 64, 80, .. 192 (9 values)
-_VANILLA_RANGE = (64, 192)
+# The PS1 shading in steps (the vertex colours of every style): the classic model keeps 96 colours of a figure
+# (make-char --figure-only), and its colours are the texture's times these values / 128. Vanilla: 64, 80 .. 192
+# (9 values); Low-Poly and Hi-Res: 44, 56 .. 212 (15 values) - with the 5 colour fields at most 75 colours.
+_SHADE_STEPS = {"vanilla": (16, 64, 192), "lowpoly": (12, 44, 212), "hires": (12, 44, 212)}
 
 
 def build_puppet(collection, rig, bones, vcol_mode, style="lowpoly"):
@@ -794,7 +872,7 @@ def build_puppet(collection, rig, bones, vcol_mode, style="lowpoly"):
     if style == "vanilla":
         m = _build_vanilla(bones)
     else:
-        m = _build_geometry(bones, _HIRES if style == "hires" else None)
+        m = _build_geometry(bones, _HIRES if style == "hires" else _LOWPOLY)
     verts = [tuple(Bv(c)) for c in m.co]
     faces = [(t[0], t[1], t[2]) for t in m.tris]
     mesh = bpy.data.meshes.new("puppet")
@@ -808,7 +886,7 @@ def build_puppet(collection, rig, bones, vcol_mode, style="lowpoly"):
         # a cell of the atlas per piece, the piece unrolled in it (u around, v along)
         for t in m.tris:
             for c in t[6]:
-                uv.extend(_hires_uv(t[5], c))
+                uv.extend(_hires_uv(m, t[5], c, t[7]))
         base_png, normal_png = _hires_pngs(m)
         image = _packed_image("puppet_atlas", _HI_ATLAS, _HI_ATLAS, base_png, "sRGB")
         normal = _packed_image("puppet_normal", _HI_ATLAS, _HI_ATLAS, normal_png, "Non-Color")
@@ -859,9 +937,8 @@ def build_puppet(collection, rig, bones, vcol_mode, style="lowpoly"):
             dd = s - median
             dd = math.copysign(max(abs(dd) - _PSX_DEAD_ZONE, 0.0), dd)
             b = int(round(min(max(128.0 + _PSX_SPREAD * dd, _PSX_RANGE[0]), _PSX_RANGE[1])))
-            if style == "vanilla":
-                b = 128 + _VANILLA_STEP * int(round((b - 128) / float(_VANILLA_STEP)))
-                b = min(max(b, _VANILLA_RANGE[0]), _VANILLA_RANGE[1])
+            q, lo, hi = _SHADE_STEPS[style]
+            b = min(max(128 + q * int(round((b - 128) / float(q))), lo), hi)
             data.append(b)
         attr = mesh.color_attributes.new(name="Col", type="BYTE_COLOR", domain="POINT")
         rgba = []
