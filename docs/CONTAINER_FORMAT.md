@@ -518,8 +518,8 @@ model's origin; one draw stays one draw.
 **The kit mark.** What `rldpack kit-extract` makes from the player's game data
 carries glTF extras `{"ctr_kit": "kart" | "steer_wheel" | "wheel"}` on its
 nodes and meshes and material names that start with `ctrkit_`. A model with
-either is HRG-41 (a warning): it contains the original kart from the player's
-game data and must not be shared - export the figure without the kart.
+either is HRG-41 (a warning), with the text "This file contains the kart from your
+game files."
 
 **The rules** are HRG-1 .. HRG-42, each with a fixed level, listed with their
 texts in `s_rldHiresRules` (`include/rldhires.inc`): an error refuses the

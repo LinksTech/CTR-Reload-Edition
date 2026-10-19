@@ -94,7 +94,7 @@
 // THE KIT MARK: what rldpack kit-extract made from the player's game data
 // carries glTF extras {"ctr_kit": "kart" | "steer_wheel" | "wheel"} on its nodes
 // and meshes and material names "ctrkit_<name>"; either in a file is HRG-41 (a
-// warning: the file holds the original kart from the game data - not to share).
+// warning: the file holds the original kart from the player's game files).
 //
 // THE RULES are HRG-1 .. HRG-42 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
@@ -489,7 +489,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-38", RLDHIRES_WARNING, "kart part: a skinned vertex is weighted to joints inside and outside 'kart' - the kart is drawn everywhere"},
     {"HRG-39", RLDHIRES_NOTE, "kart part: a node 'kart' without the kart part in the header - drawn as before (hires-add --kart-part)"},
     {"HRG-40", RLDHIRES_NOTE, "parts field: an unknown bit, a second node 'kart', or both kart bits - ignored"},
-    {"HRG-41", RLDHIRES_WARNING, "the file contains the original kart from your game data - don't share it, or export without the kart"},
+    {"HRG-41", RLDHIRES_WARNING, "This file contains the kart from your game files."},
     {"HRG-42", RLDHIRES_NOTE, "the game's kart (parts bit 1): no wheel nodes - the game brings the kart and its wheels"},
 };
 
@@ -1759,7 +1759,7 @@ static void RldHires_CheckParts(RldHiresModel *m, RldHiresReport *rep, u32 parts
 		if (what[0] != '\0')
 		{
 			m->kitMarked = 1;
-			RldHires_Say(rep, "HRG-41", "this file contains the original kart from your game data (%s) - don't share it, or export without the kart", what);
+			RldHires_Say(rep, "HRG-41", "This file contains the kart from your game files.");
 		}
 	}
 }

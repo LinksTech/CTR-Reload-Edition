@@ -30,7 +30,7 @@
 //       Every node, mesh and material carries the kit mark (extras "ctr_kit",
 //       material names "ctrkit_*"): rldpack hires-check, the game and Reload
 //       Studio say HRG-41 for any model made from them. The files are made from
-//       the player's game data: they stay on this computer (never share them).
+//       the player's game data on this computer.
 //       Exit 0 = written, 1 = an error (nothing half written: each file goes
 //       through a .part file), 2 = usage.
 //   kit-standin -o <folder>
@@ -481,7 +481,7 @@ static u8 *RldKit_WriteInfo(const RldKitResult *r, const RldKitOptions *opt, con
 
 	memset(&b, 0, sizeof(b));
 	RldKitBuf_Printf(&b, "{\n \"kit\": 1,\n \"source\": \"game data\",\n \"driver\": %d,\n \"model\": \"%s\",\n \"units_per_metre\": 64,\n", opt->driver, r->model);
-	RldKitBuf_Printf(&b, " \"note\": \"made from your own game data - keep these files on this computer, never share them\",\n");
+	RldKitBuf_Printf(&b, " \"note\": \"made on this PC from your own game files\",\n");
 	RldKitBuf_Printf(&b, " \"tool\": \"rldpack %s kit-extract\",\n \"segments\": %d,\n \"upscale\": %d,\n", CTR_NATIVE_VERSION, opt->segments, opt->upscale);
 	RldKitBuf_Printf(&b, " \"seat\": ");
 	RldKitJson_U3(&b, r->seat, U);
@@ -560,7 +560,7 @@ static u8 *RldKit_WriteReport(const RldKitResult *r, const RldKitOptions *opt, c
 
 	memset(&b, 0, sizeof(b));
 	RldKitBuf_Printf(&b, "rldpack kit-extract - the Creator Kit's kart from your own game data\n");
-	RldKitBuf_Printf(&b, "These files are made from your game data. Keep them on this computer; never share them.\n\n");
+	RldKitBuf_Printf(&b, "These files are made on this PC from your own game files.\n\n");
 	RldKitBuf_Printf(&b, "game data      %s\n", source);
 	RldKitBuf_Printf(&b, "driver         %d (%s): %u commands, %u vertex records, %u triangles\n", opt->driver, r->model, (unsigned)r->commands, (unsigned)r->records,
 	                 (unsigned)r->triangles);

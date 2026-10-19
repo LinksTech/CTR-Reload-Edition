@@ -11,18 +11,25 @@ Blender: --blender, else env CTR_BLENDER, else (Windows) C:\\Program Files\\Blen
 Without Blender 5.2 the test prints "creator-kit-test: SKIP (Blender 5.2 not found)" and exits 77
 (ctest SKIP_RETURN_CODE 77).
 
-Steps: 1 generate, 2 byte-identical second run, 3 reopen + re-export through both stored exporters,
-4 hires-check of creator-kit-demo-local.glb (--kart-part: only HRG-41), 5 hires-check of creator-kit-figure.glb (no wheel
-nodes: only HRG-20, the standard wheels), 6 the kit marker (ctr_kit extras, ctrkit_ materials) on every kit
-part of the local demo and on nothing of the figure, 7 make-char --check, 8 creator_kit_measure, 9 --vcol
-gltf, 10 wrong-version exit 3, 11 no path in the .blend, 12 a kit kart with an empty root node, 13 an old
-character (classic and native model of a .rldchar made here from the old template, char-export, --classic):
-in the collection Classic, size and box as the export, same triangles, colours and images, in no export.
-The local demo is checked as it is packed (--kart-part): only HRG-41 (the kit mark) may warn.
+The generator writes one folder per way (vanilla, lowpoly, hires) below the kit folder. Steps:
+1 generate all three ways: the layout (every file of each way, NOTICE.txt in the kit folder and in each way,
+  byte-equal to templates/CREATOR_KIT_NOTICE.txt, nothing else), 2 a second run is byte-identical (every file
+  but the reports), 3 reopen each .blend: its stored exporters (the way's settings), its actions, re-exports
+  with the same sha256, 4 hires-check of hires/creator-kit-demo-local.glb as it is packed (--kart-part): only
+  HRG-41, with its exact text, 5 hires-check of the Low-Poly and the Hi-Res figure with the route's switches
+  (--vertex-colors psx --game-kart template): 0 warnings, clips 12/12 and finish 2/2, Low-Poly within 8000
+  triangles and 512 px, Hi-Res within 64000 triangles with its normal map (2 textures), 6 the kit marker on
+  every kit part of the local demo and on nothing of the three figures, 7 make-char --check of the local demo,
+  8 make-char --check --figure-only of the Vanilla figure: 0 warnings, at most 96 colours, no skin, no clips,
+  9 creator_kit_measure of the local demo, 10 --vcol gltf (Low-Poly and Hi-Res), 11 wrong-version exit 3,
+  12 no path in any .blend, 13 a kit kart with an empty root node, 14 an old character (classic and native
+  model of a .rldchar made here from the old template, char-export, --classic): in the collection Classic,
+  size and box as the export, same triangles, colours and images, in no export, 15 one way chosen writes only
+  that way, a wrong --routes is refused (exit 2).
 Last line: "creator-kit-test: <n> steps, <f> failed"; exit 0 when f = 0, else 1.
 
 Every child process gets the Blender user folders, TEMP and TMP below <work>. Only the driver's own
-subfolders of <work> (r1, r2, gltf, fake, root, classic, temp) are emptied. Standard library only.
+subfolders of <work> (r1, r2, gltf, fake, root, classic, one, bad, temp) are emptied. Standard library only.
 """
 import ast
 import hashlib
@@ -46,7 +53,7 @@ DEFAULT_BLENDER = os.path.join(os.environ.get("ProgramW6432") or os.environ.get(
                                "Blender Foundation", "Blender 5.2", "blender.exe")
 TIMEOUT = 300
 SKIP_CODE = 77
-OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "classic", "temp")
+OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "classic", "one", "bad", "temp")
 
 
 # ------------------------------------------------------------------ helpers
@@ -54,6 +61,14 @@ OWN_DIRS = ("r1", "r2", "gltf", "fake", "root", "classic", "temp")
 def parse_gltf_settings(source):
     """The GLTF_SETTINGS dict literal of make_creator_kit.py (comments allowed inside)."""
     a = source.index("GLTF_SETTINGS = {")
+    start = source.index("{", a)
+    end = source.index("\n}", start) + 2
+    return ast.literal_eval(source[start:end])
+
+
+def parse_way_settings(source):
+    """The WAY_SETTINGS dict literal of make_creator_kit.py: what each way changes in GLTF_SETTINGS."""
+    a = source.index("WAY_SETTINGS = {")
     start = source.index("{", a)
     end = source.index("\n}", start) + 2
     return ast.literal_eval(source[start:end])
@@ -100,8 +115,9 @@ def prepare_work(work):
     os.makedirs(work, exist_ok=True)
     for d in OWN_DIRS:
         shutil.rmtree(os.path.join(work, d), ignore_errors=True)
-    for f in ("reopen.py", "standin_root.py", "classic_check.py", "reexport-figure.glb", "reexport-local.glb",
-              "settings.json"):
+    for f in ["reopen.py", "standin_root.py", "classic_check.py"] + \
+            ["settings-%s.json" % w for w in ("vanilla", "lowpoly", "hires")] + \
+            ["reexport-%s-%s.glb" % (w, c) for w in ("vanilla", "lowpoly", "hires") for c in ("Figure", "CreatorKit")]:
         p = os.path.join(work, f)
         if os.path.isfile(p):
             os.remove(p)
@@ -166,49 +182,100 @@ def path_needles(work, home):
 REOPEN_SCRIPT = r'''
 import bpy, sys, os, json, hashlib
 i = sys.argv.index("--")
-blend, settings_json, work = sys.argv[i + 1], sys.argv[i + 2], sys.argv[i + 3]
-want = json.load(open(settings_json, encoding="utf-8"))
+blend, settings_json, work, tag = sys.argv[i + 1], sys.argv[i + 2], sys.argv[i + 3], sys.argv[i + 4]
+want = json.load(open(settings_json, encoding="utf-8"))   # {"collections": {name: {setting: value}}, "actions": n}
 bpy.ops.wm.open_mainfile(filepath=blend)
 problems = []
 names = {c.name for c in bpy.data.collections}
 for n in ("CreatorKit", "Figure", "Kart", "Guides"):
     if n not in names:
         problems.append("collection %s missing" % n)
-if len(bpy.data.actions) != 14:
-    problems.append("actions: %d (want 14)" % len(bpy.data.actions))
-# the two stored exporters: Figure (the figure alone) and CreatorKit (the local demo with the kit kart)
-for tag, cname in (("figure", "Figure"), ("local", "CreatorKit")):
+if len(bpy.data.actions) != want["actions"]:
+    problems.append("actions: %d (want %d)" % (len(bpy.data.actions), want["actions"]))
+for cname in ("CreatorKit", "Figure"):
+    col = bpy.data.collections.get(cname)
+    n = len(col.exporters) if col is not None else 0
+    if n != (1 if cname in want["collections"] else 0):
+        problems.append("%s has %d exporters (want %d)" % (cname, n, 1 if cname in want["collections"] else 0))
+for cname, settings in sorted(want["collections"].items()):
     col = bpy.data.collections.get(cname)
     if col is None or len(col.exporters) != 1:
-        problems.append("%s has %s exporters (want 1)" % (cname, "no" if col is None else len(col.exporters)))
         continue
     ex = col.exporters[0]
     p = ex.export_properties
-    for k, v in want.items():
+    for k, v in settings.items():
         if not hasattr(p, k):
             problems.append("%s: setting %s missing" % (cname, k))
         elif getattr(p, k) != v:
             problems.append("%s: setting %s = %r (want %r)" % (cname, k, getattr(p, k), v))
-    print("CHK settings %s %d" % (tag, len(want)))
+    print("CHK settings %s %d target %s" % (cname, len(settings), ex.filepath.replace("//", "", 1).replace("\\", "/").split("/")[-1]))
     if not problems:
-        out = os.path.join(work, "reexport-%s.glb" % tag)
+        out = os.path.join(work, "reexport-%s-%s.glb" % (tag, cname))
         ex.filepath = out
         if os.path.exists(out):
             os.remove(out)
         with bpy.context.temp_override(collection=col):
             bpy.ops.collection.exporter_export(index=0)
-        print("CHK sha %s %s" % (tag, hashlib.sha256(open(out, "rb").read()).hexdigest()))
+        print("CHK sha %s %s" % (cname, hashlib.sha256(open(out, "rb").read()).hexdigest()))
 for p_ in problems:
     print("CHK PROBLEM " + p_)
 print("CHK actions %d" % len(bpy.data.actions))
 sys.exit(0 if not problems else 1)
 '''
 
-FIGURE_GLB = "creator-kit-figure.glb"
+ROUTES = ("vanilla", "lowpoly", "hires")
 LOCAL_GLB = "creator-kit-demo-local.glb"
+NOTICE = os.path.join(REPO, "templates", "CREATOR_KIT_NOTICE.txt")
 KIT_PROP = "ctr_kit"
 KIT_MAT_PREFIX = "ctrkit_"
 WHEEL_NAMES = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
+KIT_FILES = ("kit-info.json", "kit-kart.glb", "kit-kart-gltf.glb", "kit-wheel.glb", "kit-wheel-gltf.glb")
+HRG41_TEXT = "This file contains the kart from your game files."
+LOWPOLY_TRIANGLES, LOWPOLY_EDGE = 8000, 512       # the Low-Poly route's targets (rs_charhires.c)
+HIRES_TRIANGLES, HIRES_EDGE = 64000, 2048         # the game's budget (include/rldhires.inc)
+VANILLA_COLOURS = 96                              # make-char --figure-only keeps 96 of 128 for the figure
+
+
+def figure_name(way):
+    return "creator-kit-%s-figure.glb" % way
+
+
+def blend_name(way):
+    return "creator-kit-%s.blend" % way
+
+
+def way_files(way):
+    """The files the generator writes into <kit>\\<way>\\ (K4 of the round's plan)."""
+    names = [blend_name(way), figure_name(way), "NOTICE.txt", "creator-kit-report.json"]
+    if way == "hires":
+        names.append(LOCAL_GLB)
+    return sorted(names)
+
+
+def layout_problems(out, routes, stand_in=True):
+    """What differs from the layout: NOTICE.txt and the kit files in <out>, one folder per chosen way with
+    exactly its files, no folder of a way not chosen, every NOTICE.txt equal to the template's notice."""
+    probs = []
+    want_top = set(KIT_FILES if stand_in else ()) | {"NOTICE.txt"} | set(routes)
+    have_top = set(os.listdir(out)) if os.path.isdir(out) else set()
+    probs += ["missing %s" % n for n in sorted(want_top - have_top)]
+    probs += ["extra %s" % n for n in sorted(have_top - want_top)]
+    notice = notice_text(NOTICE)
+    for way in routes:
+        d = os.path.join(out, way)
+        have = sorted(os.listdir(d)) if os.path.isdir(d) else []
+        if have != way_files(way):
+            probs.append("%s holds %s (want %s)" % (way, have, way_files(way)))
+    for path in [os.path.join(out, "NOTICE.txt")] + [os.path.join(out, w, "NOTICE.txt") for w in routes]:
+        if os.path.isfile(path) and notice_text(path) != notice:
+            probs.append("%s differs from the notice" % os.path.relpath(path, out))
+    return probs
+
+
+def notice_text(path):
+    """The notice as text with LF line ends (the byte compare of D1 after normalising the line ends)."""
+    with open(path, "rb") as f:
+        return f.read().replace(b"\r\n", b"\n").decode("utf-8")
 
 
 def glb_json(path):
@@ -253,10 +320,44 @@ def clips_ok(out):
 
 def local_check_ok(out):
     # the local demo, checked as it is packed (--kart-part): 0 errors, exactly one warning - HRG-41, the kit
-    # mark (by design: the file holds the kart of the player's game data) - and no note
+    # mark (by design: the file holds the kart of the player's game data), with its exact text - and no note
     warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
-    return ("0 errors, 1 warnings, 0 notes" in out and len(warns) == 1 and " HRG-41 " in warns[0] + " "
-            and clips_ok(out) and "wheels 4/4" in out)
+    return ("0 errors, 1 warnings, 0 notes" in out and len(warns) == 1
+            and warns[0] == "warning HRG-41 " + HRG41_TEXT and clips_ok(out) and "wheels 4/4" in out)
+
+
+def summary_numbers(out):
+    """(triangles, textures) of the summary line of hires-check, None where it is not there."""
+    m = re.search(r"\b(\d+) triangles, textures (\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
+
+
+def figure_check_ok(out):
+    # a figure checked with the route's switches (--game-kart): 0 errors, 0 warnings, every clip; the note
+    # HRG-42 (no wheel nodes: the game brings the kart and its wheels) is the only finding
+    rows = [l.strip() for l in out.splitlines() if l.strip().startswith(("error ", "warning ", "note "))]
+    return ("0 errors, 0 warnings" in out and clips_ok(out)
+            and all(r.startswith("note    HRG-42 ") or r.startswith("note HRG-42 ") for r in rows))
+
+
+def glb_image_sizes(path):
+    """(width, height) of every PNG embedded in a GLB, from its IHDR."""
+    with open(path, "rb") as f:
+        data = f.read()
+    n = struct.unpack_from("<I", data, 12)[0]
+    j = json.loads(data[20:20 + n].decode("utf-8"))
+    binary = data[20 + n + 8:]
+    sizes = []
+    for im in j.get("images", []):
+        bv = j["bufferViews"][im["bufferView"]]
+        png = binary[bv.get("byteOffset", 0):bv.get("byteOffset", 0) + 24]
+        if png[:8] == b"\x89PNG\r\n\x1a\n":
+            sizes.append(struct.unpack(">II", png[16:24]))
+    return sizes
+
+
+def glb_material_normal_maps(j):
+    return sum(1 for m in j.get("materials", []) if "normalTexture" in m)
 
 
 # Writes the stand-in kit with an empty root node "kart" over the kart parts (as an earlier kit-extract did).
@@ -370,12 +471,6 @@ def clips_seen(out):
     return "%s + finish %s" % (m.group(1) if m else "?", f.group(1) if f else "?")
 
 
-def figure_warnings_ok(out):
-    # the figure alone has no wheel nodes: hires-check warns HRG-20 (the standard wheels); nothing else
-    warns = [l.strip() for l in out.splitlines() if l.strip().startswith("warning ")]
-    return "0 errors" in out and all(" HRG-20 " in (w + " ") for w in warns) and clips_ok(out)
-
-
 # ------------------------------------------------------------------ steps
 
 class Report:
@@ -408,6 +503,7 @@ def run_all(blender, packer, work):
     env = make_env(work)
     r1, r2 = os.path.join(work, "r1"), os.path.join(work, "r2")
     gl, fk = os.path.join(work, "gltf"), os.path.join(work, "fake")
+    all_routes = ",".join(ROUTES)
 
     def gen(out, *extra):
         # --threads 1: the .blend is byte-identical only single-threaded (make_creator_kit.THREADS_NOTE)
@@ -417,74 +513,111 @@ def run_all(blender, packer, work):
     def hires(glb, mode, *extra):
         return run(packer + ["hires-check", glb, "--vertex-colors", mode] + list(extra), env)
 
-    # 1 generate
-    code, out = gen(r1, "--stand-in")
-    rep.check(code == 0 and "creator kit: ok" in out, "1 generate",
-              "exit 0, 'creator kit: ok'", "exit %s: %s" % (code, tail(out)))
-    fig1 = os.path.join(r1, FIGURE_GLB)
-    loc1 = os.path.join(r1, LOCAL_GLB)
-    blend1 = os.path.join(r1, "creator-kit.blend")
+    def path(out, way, name):
+        return os.path.join(out, way, name)
 
-    # 2 again
-    code, out = gen(r2, "--stand-in")
+    loc1 = path(r1, "hires", LOCAL_GLB)
+
+    # 1 generate all three ways, the layout
+    code, out = gen(r1, "--stand-in", "--routes", all_routes)
+    probs = layout_problems(r1, ROUTES) if code == 0 else []
+    rep.check(code == 0 and "creator kit: ok" in out and not probs, "1 generate",
+              "exit 0, 'creator kit: ok', layout of 3 ways, 4 NOTICE.txt = templates/CREATOR_KIT_NOTICE.txt",
+              "exit %s: %s %s" % (code, "; ".join(probs)[:300], tail(out)))
+
+    # 2 again: every file but the reports byte-identical
+    code, out = gen(r2, "--stand-in", "--routes", all_routes)
     if code != 0:
         rep.fail("2 repeat", "exit %s: %s" % (code, tail(out)))
     else:
-        diffs = []
-        names = sorted(set(os.listdir(r1)) | set(os.listdir(r2)))
-        cmp_names = [n for n in names
-                     if n in ("creator-kit.blend", FIGURE_GLB, LOCAL_GLB) or n.startswith("kit-")]
-        for n in cmp_names:
-            a, b = os.path.join(r1, n), os.path.join(r2, n)
-            if not (os.path.isfile(a) and os.path.isfile(b)) or sha256(a) != sha256(b):
-                diffs.append(n)
-        need = ("creator-kit.blend", FIGURE_GLB, LOCAL_GLB)
-        rep.check(not diffs and all(n in cmp_names for n in need),
-                  "2 repeat", "r1 = r2 byte-identical (%d files)" % len(cmp_names),
-                  "differ: %s" % ", ".join(diffs or ["blend/glb missing"]))
+        def files(root):
+            got = []
+            for d, _dirs, names in os.walk(root):
+                for n in names:
+                    if n != "creator-kit-report.json":
+                        got.append(os.path.relpath(os.path.join(d, n), root))
+            return sorted(got)
+        f1, f2 = files(r1), files(r2)
+        diffs = [n for n in sorted(set(f1) | set(f2))
+                 if n not in f1 or n not in f2 or sha256(os.path.join(r1, n)) != sha256(os.path.join(r2, n))]
+        rep.check(not diffs and len(f1) > 10, "2 repeat", "r1 = r2 byte-identical (%d files)" % len(f1),
+                  "differ: %s" % ", ".join(diffs[:8]))
 
-    # 3 reopen: both stored exporters give the same files again
+    # 3 reopen each .blend: its stored exporters give the same files again
     try:
         src = open(GENERATOR, encoding="utf-8").read()
-        settings = parse_gltf_settings(src)
-        sj = os.path.join(work, "settings.json")
-        with open(sj, "w", encoding="utf-8") as f:
-            json.dump(settings, f)
+        base = parse_gltf_settings(src)
+        ways = parse_way_settings(src)
         rs = os.path.join(work, "reopen.py")
         with open(rs, "w", encoding="utf-8") as f:
             f.write(REOPEN_SCRIPT)
-        code, out = run([blender, "--background", "--factory-startup", "--python-exit-code", "1",
-                         "--python", rs, "--", blend1, sj, work], env)
-        shas = dict(re.findall(r"CHK sha (figure|local) ([0-9a-f]{64})", out))
-        probs = [l for l in out.splitlines() if "CHK PROBLEM" in l]
-        if code != 0 or probs or len(shas) != 2:
-            rep.fail("3 reopen", "exit %s %s" % (code, "; ".join(probs) or tail(out)))
-        else:
-            same = (os.path.isfile(fig1) and shas["figure"] == sha256(fig1) and
-                    os.path.isfile(loc1) and shas["local"] == sha256(loc1))
-            rep.check(same, "3 reopen", "2 exporters x %d settings, 4 collections, 14 actions, re-exports same sha256"
-                      % len(settings), "a re-export differs from the generated file")
+        details, bad = [], []
+        for way in ROUTES:
+            settings = dict(base)
+            settings.update(ways[way])
+            want = {"collections": {"Figure": settings}, "actions": 0 if way == "vanilla" else 14}
+            if way == "hires":
+                want["collections"]["CreatorKit"] = settings
+            sj = os.path.join(work, "settings-%s.json" % way)
+            with open(sj, "w", encoding="utf-8") as f:
+                json.dump(want, f)
+            code, out = run([blender, "--background", "--factory-startup", "--python-exit-code", "1",
+                             "--python", rs, "--", path(r1, way, blend_name(way)), sj, work, way], env)
+            shas = dict(re.findall(r"CHK sha (Figure|CreatorKit) ([0-9a-f]{64})", out))
+            targets = dict(re.findall(r"CHK settings (Figure|CreatorKit) \d+ target (\S+)", out))
+            probs = [l for l in out.splitlines() if "CHK PROBLEM" in l]
+            expect = {"Figure": figure_name(way)}
+            if way == "hires":
+                expect["CreatorKit"] = LOCAL_GLB
+            if code != 0 or probs or set(shas) != set(expect):
+                bad.append("%s exit %s %s" % (way, code, "; ".join(probs) or tail(out, 2)))
+                continue
+            for cname, name in expect.items():
+                if targets.get(cname) != name or shas[cname] != sha256(path(r1, way, name)):
+                    bad.append("%s %s: target %s, re-export %s" % (way, cname, targets.get(cname),
+                                                                   "same" if shas[cname] == sha256(path(r1, way, name))
+                                                                   else "differs"))
+            details.append("%s %d exporter(s)" % (way, len(expect)))
+        rep.check(not bad, "3 reopen", "%s, %d settings each, way settings applied, re-exports same sha256"
+                  % (", ".join(details), len(base)), "; ".join(bad)[:400])
     except Exception as e:
         rep.fail("3 reopen", repr(e))
 
     # 4 hires-check of the local demo (with the kit kart), as it is packed: --kart-part
     code, out = hires(loc1, "psx", "--kart-part")
     rep.check(code == 0 and local_check_ok(out),
-              "4 hires-check local", "--kart-part: 0 errors, only HRG-41 (the kit mark), 0 notes, clips %s, wheels 4/4" % clips_seen(out),
-              "exit %s: %s" % (code, tail(out)))
+              "4 hires-check local", "--kart-part: 0 errors, only HRG-41 '%s', 0 notes, clips %s, wheels 4/4"
+              % (HRG41_TEXT, clips_seen(out)), "exit %s: %s" % (code, tail(out)))
 
-    # 5 hires-check of the figure alone: no wheel nodes, so only HRG-20 (standard wheels) may warn
-    code, out = hires(fig1, "psx")
-    rep.check(code == 0 and figure_warnings_ok(out) and "wheels 0/4" in out,
-              "5 hires-check figure", "0 errors, clips %s, wheels 0/4, only HRG-20: %s" % (clips_seen(out), tail(out, 1)),
-              "exit %s: %s" % (code, tail(out)))
+    # 5 the Low-Poly and the Hi-Res figure with the route's switches
+    for way, tris_max, edge_max, textures in (("lowpoly", LOWPOLY_TRIANGLES, LOWPOLY_EDGE, 1),
+                                              ("hires", HIRES_TRIANGLES, HIRES_EDGE, 2)):
+        fig = path(r1, way, figure_name(way))
+        code, out = hires(fig, "psx", "--game-kart", "template")
+        tris, tex = summary_numbers(out)
+        try:
+            sizes = glb_image_sizes(fig)
+            normals = glb_material_normal_maps(glb_json(fig))
+        except Exception as e:
+            sizes, normals = [], -1
+            out += " " + repr(e)
+        edge = max([max(s) for s in sizes] or [0])
+        ok = (code == 0 and figure_check_ok(out) and tris is not None and tris <= tris_max and edge <= edge_max
+              and tex == textures and normals == (1 if way == "hires" else 0))
+        rep.check(ok, "5 hires-check %s" % way,
+                  "--game-kart: 0 warnings, clips %s, %d triangles (<= %d), textures %s (<= %d px), normal maps %d"
+                  % (clips_seen(out), tris or 0, tris_max, sizes, edge_max, normals),
+                  "exit %s, triangles %s, textures %s %s, normal maps %s: %s"
+                  % (code, tris, tex, sizes, normals, tail(out)))
 
-    # 6 the kit marker: everything from the kit folder marked in the local demo, nothing of it in the figure
+    # 6 the kit marker: everything from the kit folder marked in the local demo, nothing of it in any figure
     try:
         p_loc = kit_findings(glb_json(loc1), True)
-        p_fig = kit_findings(glb_json(fig1), False)
+        p_fig = []
+        for way in ROUTES:
+            p_fig += ["%s %s" % (way, x) for x in kit_findings(glb_json(path(r1, way, figure_name(way))), False)]
         rep.check(not p_loc and not p_fig, "6 kit marker",
-                  "local: every kit node, mesh, material marked; figure: no kit part, no marker",
+                  "local: every kit node, mesh, material marked; 3 figures: no kit part, no marker",
                   "; ".join(["local " + x for x in p_loc] + ["figure " + x for x in p_fig])[:400])
     except Exception as e:
         rep.fail("6 kit marker", repr(e))
@@ -496,39 +629,62 @@ def run_all(blender, packer, work):
     rep.check(code == 0 and not errs, "7 make-char", "exit 0, no ERROR",
               "exit %s: %s" % (code, "; ".join(errs[:3]) or tail(out)))
 
-    # 8 measure (the local demo: kart, wheels, hands on the steering wheel)
+    # 8 the Vanilla figure as the classic model with the game's kart (make-char --figure-only)
+    van = path(r1, "vanilla", figure_name("vanilla"))
+    code, out = run(packer + ["make-char", "--check", "--model", van, "--figure-only", "--name", "TEST",
+                              "--template", "14"], env)
+    warns = [l for l in out.splitlines() if l.upper().startswith(("WARNING", "ERROR"))]
+    notes = sorted(set(re.findall(r"^note: (.{0,40})", out, re.M)))
+    m = re.search(r"^\s*colors\s+(\d+)", out, re.M)
+    colours = int(m.group(1)) if m else None
+    try:
+        jv = glb_json(van)
+        plain = not jv.get("skins") and not jv.get("animations")
+    except Exception:
+        plain = False
+    rep.check(code == 0 and not warns and colours is not None and colours <= VANILLA_COLOURS and plain,
+              "8 make-char vanilla", "--figure-only --template 14: exit 0, 0 warnings, %s colours (<= %d), no skin, "
+              "no clips; notes: %s" % (colours, VANILLA_COLOURS, " | ".join(notes)),
+              "exit %s, colours %s, plain %s: %s" % (code, colours, plain, "; ".join(warns[:3]) or tail(out)))
+
+    # 9 measure (the local demo: kart, wheels, hands on the steering wheel)
     code, out = run([sys.executable, "-I", MEASURE, "measure", loc1, "--kit-info",
                      os.path.join(r1, "kit-info.json"), "--kart", os.path.join(r1, "kit-kart.glb"),
                      "--vcol", "psx"], env)
-    rep.check(code == 0 and re.search(r"fail\s+0\b", out) is not None, "8 measure", "fail 0",
+    rep.check(code == 0 and re.search(r"fail\s+0\b", out) is not None, "9 measure", "fail 0",
               "exit %s: %s" % (code, tail(out)))
 
-    # 9 gltf
-    code, out = gen(gl, "--stand-in", "--vcol", "gltf")
+    # 10 gltf: the ways with clips in the vertex colour mode glTF
+    code, out = gen(gl, "--stand-in", "--vcol", "gltf", "--routes", "lowpoly,hires")
     if code != 0:
-        rep.fail("9 gltf", "generate exit %s: %s" % (code, tail(out)))
+        rep.fail("10 gltf", "generate exit %s: %s" % (code, tail(out)))
     else:
-        code, out = hires(os.path.join(gl, LOCAL_GLB), "gltf", "--kart-part")
-        code2, out2 = hires(os.path.join(gl, FIGURE_GLB), "gltf")
-        rep.check(code == 0 and local_check_ok(out) and code2 == 0 and figure_warnings_ok(out2),
-                  "9 gltf", "local (--kart-part) only HRG-41, 0 notes; figure only HRG-20",
-                  "hires-check exit %s/%s: %s | %s" % (code, code2, tail(out, 2), tail(out2, 2)))
+        code, out = hires(path(gl, "hires", LOCAL_GLB), "gltf", "--kart-part")
+        code2, out2 = hires(path(gl, "lowpoly", figure_name("lowpoly")), "gltf", "--game-kart", "template")
+        code3, out3 = hires(path(gl, "hires", figure_name("hires")), "gltf", "--game-kart", "template")
+        rep.check(code == 0 and local_check_ok(out) and code2 == 0 and figure_check_ok(out2)
+                  and code3 == 0 and figure_check_ok(out3) and not layout_problems(gl, ("lowpoly", "hires")),
+                  "10 gltf", "local (--kart-part) only HRG-41, 0 notes; both figures 0 warnings; only the 2 ways",
+                  "hires-check exit %s/%s/%s: %s | %s | %s" % (code, code2, code3, tail(out, 2), tail(out2, 2),
+                                                               tail(out3, 2)))
 
-    # 10 version
+    # 11 version
     code, out = gen(fk, "--stand-in", "--test-fake-version", "4.5.0")
-    rep.check(code == 3 and "How to fix: install Blender 5.2" in out, "10 version",
+    rep.check(code == 3 and "How to fix: install Blender 5.2" in out, "11 version",
               "exit 3, 'How to fix: install Blender 5.2'", "exit %s: %s" % (code, tail(out)))
 
-    # 11 no path
+    # 12 no path
     try:
-        data = open(blend1, "rb").read()
-        found = find_paths_in_bytes(data, path_needles(work, os.path.expanduser("~")))
-        rep.check(not found, "11 no path", "no work/AppData/home path in creator-kit.blend",
+        found = []
+        for way in ROUTES:
+            data = open(path(r1, way, blend_name(way)), "rb").read()
+            found += ["%s: %s" % (way, x) for x in find_paths_in_bytes(data, path_needles(work, os.path.expanduser("~")))]
+        rep.check(not found, "12 no path", "no work/AppData/home path in the 3 .blend files",
                   "found: %s" % ", ".join(found))
     except Exception as e:
-        rep.fail("11 no path", repr(e))
+        rep.fail("12 no path", repr(e))
 
-    # 12 a kit whose kart parts hang under an empty root node "kart": the generator takes it
+    # 13 a kit whose kart parts hang under an empty root node "kart": the generator takes it
     try:
         rt = os.path.join(work, "root")
         rs = os.path.join(work, "standin_root.py")
@@ -537,21 +693,22 @@ def run_all(blender, packer, work):
         code, out = run([blender, "--threads", "1", "--background", "--factory-startup", "--python-exit-code", "1",
                          "--python", rs, "--", os.path.dirname(GENERATOR), rt], env)
         if code != 0 or "CHK standin root ok" not in out:
-            rep.fail("12 empty root", "stand-in exit %s: %s" % (code, tail(out)))
+            rep.fail("13 empty root", "stand-in exit %s: %s" % (code, tail(out)))
         else:
-            code, out = gen(rt)
-            loc = os.path.join(rt, LOCAL_GLB)
+            code, out = gen(rt, "--routes", "hires")
+            loc = path(rt, "hires", LOCAL_GLB)
             ok = code == 0 and "creator kit: ok" in out and os.path.isfile(loc)
             probs = kit_findings(glb_json(loc), True) if ok else []
             code2, out2 = hires(loc, "psx", "--kart-part") if ok else (1, "")
-            rep.check(ok and not probs and code2 == 0 and local_check_ok(out2), "12 empty root",
+            rep.check(ok and not probs and code2 == 0 and local_check_ok(out2), "13 empty root",
                       "kit-kart.glb with an empty root 'kart': exit 0, kit parts marked, --kart-part only HRG-41",
                       "exit %s: %s %s %s" % (code, tail(out, 3), "; ".join(probs)[:200], tail(out2, 2)))
     except Exception as e:
-        rep.fail("12 empty root", repr(e))
+        rep.fail("13 empty root", repr(e))
 
-    # 13 an old character as a starting point (classic and native model): a .rldchar made here from the
-    # old template (code-made, CC0) by make-char, exported by char-export, imported by --classic
+    # 14 an old character as a starting point (classic and native model): a .rldchar made here from the
+    # old template (code-made, CC0) by make-char, exported by char-export, imported by --classic (the way
+    # Hi-Res here; every way imports it the same way)
     try:
         ck = os.path.join(work, "classic")
         os.makedirs(ck, exist_ok=True)
@@ -576,12 +733,12 @@ def run_all(blender, packer, work):
             code, out = run(packer + ["info", rc], env)
             size = info_size(out)
             kit = os.path.join(ck, "kit-" + kind)
-            code, out = gen(kit, "--stand-in", "--classic", exp)
+            code, out = gen(kit, "--stand-in", "--classic", exp, "--routes", "hires")
             if code != 0:
                 raise RuntimeError("generate --classic (%s) exit %s: %s" % (kind, code, tail(out, 3)))
             res_path = os.path.join(ck, "check-%s.json" % kind)
             code, out = run([blender, "--background", "--factory-startup", "--python-exit-code", "1",
-                             "--python", cs, "--", os.path.join(kit, "creator-kit.blend"), res_path], env)
+                             "--python", cs, "--", path(kit, "hires", blend_name("hires")), res_path], env)
             if code != 0 or not os.path.isfile(res_path):
                 raise RuntimeError("check script (%s) exit %s: %s" % (kind, code, tail(out, 3)))
             got = json.load(open(res_path, encoding="utf-8"))
@@ -608,14 +765,32 @@ def run_all(blender, packer, work):
                 probs.append("images differ or missing (%d against %d)" % (len(got["images"]), len(gimgs)))
             if not all(m.startswith("classic_") and m.endswith(" [vcol psx]") for m in got["materials"]):
                 probs.append("materials %s" % got["materials"])
-            same = all(sha256(os.path.join(kit, f)) == sha256(os.path.join(r1, f)) for f in (FIGURE_GLB, LOCAL_GLB))
+            same = all(sha256(path(kit, "hires", f)) == sha256(path(r1, "hires", f))
+                       for f in (figure_name("hires"), LOCAL_GLB))
             if not same:
                 probs.append("an export differs from the run without --classic")
-            rep.check(not probs, "13 classic %s" % kind,
+            rep.check(not probs, "14 classic %s" % kind,
                       "%d triangles, %d colours, %d images, size %.1f x %.1f (info %s), box = GLB, not exported"
                       % (gtris, len(gcols), len(gimgs), length, tall, size), "; ".join(probs)[:400])
     except Exception as e:
-        rep.fail("13 classic", repr(e)[:400])
+        rep.fail("14 classic", repr(e)[:400])
+
+    # 15 one way chosen writes only that way; a wrong --routes is refused before anything is written
+    try:
+        one = os.path.join(work, "one")
+        code, out = gen(one, "--stand-in", "--routes", "lowpoly")
+        probs = layout_problems(one, ("lowpoly",)) if code == 0 else ["exit %s: %s" % (code, tail(out, 2))]
+        same = code == 0 and sha256(path(one, "lowpoly", figure_name("lowpoly"))) == \
+            sha256(path(r1, "lowpoly", figure_name("lowpoly")))
+        bad = os.path.join(work, "bad")
+        code2, out2 = gen(bad, "--stand-in", "--routes", "lowpoly,classic")
+        refused = code2 == 2 and "--routes" in out2 and not os.path.exists(bad)
+        rep.check(not probs and same and refused, "15 one way",
+                  "--routes lowpoly: only lowpoly\\ + NOTICE.txt + kit files, its figure = the all-ways run's; "
+                  "--routes lowpoly,classic: exit 2, nothing written",
+                  "%s same %s; bad routes exit %s (%s)" % ("; ".join(probs)[:300], same, code2, tail(out2, 1)))
+    except Exception as e:
+        rep.fail("15 one way", repr(e)[:400])
 
     print("creator-kit-test: runtime %.0f s" % (time.time() - t0))
     print("creator-kit-test: %d steps, %d failed" % (rep.steps, rep.failed))
@@ -642,6 +817,31 @@ def selftest():
         chk(False, "real GLTF_SETTINGS: %r" % e)
     s = parse_gltf_settings('X = 1\nGLTF_SETTINGS = {\n    # c\n    "a": True,  # x\n    "b": "Q",\n}\nY = {}\n')
     chk(s == {"a": True, "b": "Q"}, "synthetic GLTF_SETTINGS")
+    try:
+        w = parse_way_settings(open(GENERATOR, encoding="utf-8").read())
+        chk(sorted(w) == sorted(ROUTES) and w["vanilla"] == {"export_animations": False, "export_skins": False}
+            and w["lowpoly"] == {} and w["hires"] == {}, "real WAY_SETTINGS")
+    except Exception as e:
+        chk(False, "real WAY_SETTINGS: %r" % e)
+
+    # the layout of the ways (K4)
+    chk(way_files("hires") == sorted(["creator-kit-hires.blend", "creator-kit-hires-figure.glb", "NOTICE.txt",
+                                      "creator-kit-report.json", "creator-kit-demo-local.glb"]), "hires files")
+    chk(way_files("vanilla") == sorted(["creator-kit-vanilla.blend", "creator-kit-vanilla-figure.glb", "NOTICE.txt",
+                                        "creator-kit-report.json"]), "vanilla files")
+    chk(notice_text(NOTICE).startswith("The kart and wheels are generated on this PC from your own game files.\n")
+        and "\r" not in notice_text(NOTICE), "the notice file")
+
+    # the summaries of hires-check: the figure with the route's switches, the local demo's exact HRG-41
+    fig = ("x.glb: hires check of x\n  note    HRG-42 no wheel nodes - the game puts in the kart\n"
+           "hires check: 0 errors, 0 warnings, 1 notes, clips 12/12, wheels 0/4, skin 28 joints, 5568 triangles, "
+           "textures 1 (16384 bytes RGBA8)\nhires check: finish clips 2/2 (optional)\n")
+    chk(figure_check_ok(fig) and summary_numbers(fig) == (5568, 1), "figure 0 warnings, numbers")
+    chk(not figure_check_ok(fig.replace("0 warnings", "1 warnings") + "  warning HRG-36 x\n"), "figure warning")
+    loc = ("  warning HRG-41 " + HRG41_TEXT + "\nhires check: 0 errors, 1 warnings, 0 notes, clips 12/12, wheels 4/4\n"
+           "hires check: finish clips 2/2\n")
+    chk(local_check_ok(loc), "local demo: HRG-41 with its text")
+    chk(not local_check_ok(loc.replace(HRG41_TEXT, "the file contains the original kart")), "local demo: old text")
 
     # version strings
     chk(parse_blender_version("Blender 5.2.2 LTS\n\tbuild date: x") == (5, 2, 2), "version 5.2.2 LTS")

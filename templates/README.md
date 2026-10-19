@@ -31,23 +31,33 @@ for anything, no credit needed.
 
 # Creator Kit
 
-`make_creator_kit.py` builds the Creator Kit template for a hi-res driver
-with a skeleton: `creator-kit.blend` and its two exports,
-`creator-kit-figure.glb` (the figure alone, no game data) and
-`creator-kit-demo-local.glb` (the figure with the kart and wheels from the
-user's game data, for a test on the user's own PC; every kit part in it
-is marked with the glTF extras `ctr_kit` and materials named `ctrkit_...`).
-Reload Studio runs it from the page Character
-(Build a character, Creator Kit, button Generate demo files); the guide is
-[docs/CREATOR_KIT.md](../docs/CREATOR_KIT.md).
+`make_creator_kit.py` builds the Creator Kit: a template for each way of
+Reload Studio's page Character, each in a folder of its own -
+`vanilla\` (the classic model), `lowpoly\` and `hires\` - with its
+`creator-kit-<way>.blend` and its figure export
+`creator-kit-<way>-figure.glb` (the figure alone, no kart). The way Hi-Res
+also exports `creator-kit-demo-local.glb`: the figure with the kart and
+wheels from the user's game files, for a test in the user's own game; every
+kit part in it is marked with the glTF extras `ctr_kit` and materials named
+`ctrkit_...`. Each .blend stores its exporters (the export preset of its
+way). `CREATOR_KIT_NOTICE.txt` is copied as `NOTICE.txt` into the kit folder
+and into each way's folder. Reload Studio runs the generator from the page
+Character (Build a character, Creator Kit, button Generate demo files); the
+guide is [docs/CREATOR_KIT.md](../docs/CREATOR_KIT.md).
 
-The kart and the wheels of the kit come from the user's own game data and
+| Way | Puppet | Textures | Export |
+|---|---|---|---|
+| Vanilla | 543 triangles, chunky pieces, PS1 vertex colours in 9 steps | 64 x 64 colour atlas | no skeleton, no clips (the classic model poses by itself) |
+| Low-Poly | 5568 triangles, PS1 vertex colours | 64 x 64 colour atlas | skeleton, 12 clips + 2 optional finish clips |
+| Hi-Res | 35656 triangles, PS1 vertex colours | 1024 x 1024 atlas + a normal map made by code | skeleton, 12 clips + 2 optional finish clips |
+
+The kart and the wheels of the kit come from the user's own game files and
 are written only into the folder the user chooses; nothing of them is in
 this folder. Everything here is made by code and released under CC0 like the
 driver template:
 
-- `creator_kit_puppet.py` - the puppet: a neutral articulated mannequin and
-  its skeleton, seated in the kart in its bind pose
+- `creator_kit_puppet.py` - the puppet in its three styles: a neutral
+  articulated mannequin and its skeleton, seated in the kart in its bind pose
 - `creator_kit_clips.py` - the 14 clips (idle, steer_left, steer_right,
   jump, drift_left, drift_right, hit, podium_1, podium_2, podium_3, lose,
   menu and the optional finish_win, finish_lose)
@@ -56,12 +66,14 @@ driver template:
 - `creator_kit_classic.py` - an old character (the GLB of `rldpack
   char-export`) as a starting point in the collection Classic, never
   exported (`--classic <file.glb>`)
+- `CREATOR_KIT_NOTICE.txt` - the notice of the kit
 - `make_creator_kit.py` - the generator
 
 Needs Blender 5.2. Without game data, from the folder that holds `templates`:
 
-    blender --threads 1 --background --factory-startup --python-exit-code 1 --python templates/make_creator_kit.py -- --kit <folder> --stand-in
+    blender --threads 1 --background --factory-startup --python-exit-code 1 --python templates/make_creator_kit.py -- --kit <folder> --stand-in --routes vanilla,lowpoly,hires
 
-Same Blender version and same input give the same bytes (`--threads 1`
-keeps the .blend byte-identical; with more threads only its bytes may
-differ, not its content).
+`--routes` takes any of the three ways, comma separated (default: all
+three). Same Blender version and same input give the same bytes
+(`--threads 1` keeps the .blend files byte-identical; with more threads only
+their bytes may differ, not their content).
