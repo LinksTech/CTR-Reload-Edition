@@ -309,13 +309,14 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
     }
 
     // The clips: one line. The check reached them when it said HRG-19, or
-    // (its rows full) when it measured the model.
-    if (c->read && c->clips < RS_HIRES_CLIPS && (clipRows > 0 || (c->rowsDropped > 0 && c->triangles > 0))) {
+    // (its rows full) when it measured the model. Only the 12 clips asked for
+    // count: the optional finish clips (4.3) say nothing when missing.
+    if (c->read && c->clips < RS_HIRES_CLIPS_BASE && (clipRows > 0 || (c->rowsDropped > 0 && c->triangles > 0))) {
         if (c->clips == 0) {
             RsCharHires_Put(&list[count++], RS_SEV_NOTE, RS_WIZ_PLACE_ANIMATIONS, L"HRG-19",
                             L"Your model has no animations yet - it will stand still. Optional.", RS_FIX_CLIPS);
         } else {
-            swprintf(line, RS_WIZ_TEXT_MAX, L"%d of %d animations present - the others use their stand-ins. Optional.", c->clips, RS_HIRES_CLIPS);
+            swprintf(line, RS_WIZ_TEXT_MAX, L"%d of %d animations present - the others use their stand-ins. Optional.", c->clips, RS_HIRES_CLIPS_BASE);
             RsCharHires_Put(&list[count++], RS_SEV_NOTE, RS_WIZ_PLACE_ANIMATIONS, L"HRG-19", line, RS_FIX_SOME_CLIPS);
         }
     }

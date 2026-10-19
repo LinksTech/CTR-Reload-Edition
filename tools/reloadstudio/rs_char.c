@@ -230,9 +230,13 @@
 //
 // THE CLIPS of a CHRG route (Advanced, card Animations; the page "Hi-Res
 // (Preview)" had them before it went): the list "Clip" - Bind pose and the 12
-// clips of the game -, Play | Pause, "< Frame" and "Frame >" (1/30 s, a tick
-// of the game), the time of the frame, and the table of the 12 clips: in the
-// file and how long, or the stand-in the game plays, or the rest pose. A
+// clips of the game, then the optional finish_win and finish_lose (4.3) -,
+// Play | Pause, "< Frame" and "Frame >" (1/30 s, a tick of the game), the time
+// of the frame, and the table of the 14 clips: in the file and how long, or
+// the stand-in the game plays, or the rest pose; a missing finish clip is no
+// warning and says what the game plays after the finish line instead (with
+// a kart - its kart part or the game's kart - the seated race clips, else
+// podium_1..3 by place / lose). A
 // click on a row shows that clip. The preview shows the clip chosen; at the
 // start idle (where the clips can play), playing - in automation paused at
 // its first frame unless "hires-play on" (shots stay the same every run).
@@ -3669,10 +3673,11 @@ static void Char_ImportColumns(int width)
     ListView_SetColumnWidth(g_char.modelFiles, 3, state);
 }
 
-// Height of the list for this many rows: its head, the rows, the border.
-static int Char_ImportListHeight(int rows)
+// Height of a list (report view) for this many rows: its head, the rows, the
+// border - measured, so that the last row is not cut at any DPI or font.
+static int Char_ListHeight(HWND list, int rows)
 {
-    HWND head = ListView_GetHeader(g_char.modelFiles);
+    HWND head = ListView_GetHeader(list);
     int headH = Rs_Px(24), rowH = 0;
     RECT rc;
 
@@ -3686,18 +3691,23 @@ static int Char_ImportListHeight(int rows)
         if (Header_Layout(head, &hl) && wp.cy > 0)
             headH = wp.cy;
     }
-    if (ListView_GetItemCount(g_char.modelFiles) > 0 && ListView_GetItemRect(g_char.modelFiles, 0, &rc, LVIR_BOUNDS))
+    if (ListView_GetItemCount(list) > 0 && ListView_GetItemRect(list, 0, &rc, LVIR_BOUNDS))
         rowH = rc.bottom - rc.top;
     if (rowH <= 0) {
         TEXTMETRICW tm;
-        HDC dc = GetDC(g_char.modelFiles);
-        HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(g_char.modelFiles, WM_GETFONT, 0, 0));
+        HDC dc = GetDC(list);
+        HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(list, WM_GETFONT, 0, 0));
         GetTextMetricsW(dc, &tm);
         SelectObject(dc, old);
-        ReleaseDC(g_char.modelFiles, dc);
+        ReleaseDC(list, dc);
         rowH = tm.tmHeight + Rs_Px(4);
     }
     return headH + rows * rowH + 2 * GetSystemMetrics(SM_CYBORDER) + Rs_Px(2);
+}
+
+static int Char_ImportListHeight(int rows)
+{
+    return Char_ListHeight(g_char.modelFiles, rows);
 }
 
 // The list anew from g_char.importRow.
@@ -5850,7 +5860,7 @@ static void Char_ChrgInfo(void)
 {
     const struct RsHiresCheck *c = &g_char.hires;
     const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
-    wchar_t t[640], tris[2][24], skin[32];
+    wchar_t t[640], tris[2][24], skin[32], finish[32];
     unsigned long long target;
     if (!c->read) {
         Char_SetInfo(c->why[0] ? c->why : L"The model could not be read.", RS_COL_ERROR);
@@ -5863,10 +5873,14 @@ static void Char_ChrgInfo(void)
         swprintf(skin, 32, L"skin of %u joint%ls", c->joints, c->joints == 1 ? L"" : L"s");
     else
         Char_Copy(skin, 32, L"no skin");
-    swprintf(t, 640, L"%ls triangles of %ls%ls - textures up to %u px, %d texture%ls, %.1f of %.1f MiB - %d of %d animations - %ls - %ls",
+    // The optional finish clips only when the file has one.
+    finish[0] = 0;
+    if (c->finishClips > 0)
+        swprintf(finish, 32, L" (+ %d finish)", c->finishClips);
+    swprintf(t, 640, L"%ls triangles of %ls%ls - textures up to %u px, %d texture%ls, %.1f of %.1f MiB - %d of %d animations%ls - %ls - %ls",
              tris[0], tris[1], p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge,
              c->textures, c->textures == 1 ? L"" : L"s", (double)c->textureBytes / 1048576.0, (double)c->budgetTextureBytes / 1048576.0,
-             c->clips, RS_HIRES_CLIPS,
+             c->clips, RS_HIRES_CLIPS_BASE, finish,
              c->wheels == 4 ? L"its own wheels" : c->parts == RS_HIRES_PARTS_GAME_KART ? L"the game's kart and wheels" : L"standard wheels",
              skin);
     Char_SetInfo(t, c->usable ? RS_COL_TEXT : RS_COL_ERROR);
@@ -6152,7 +6166,7 @@ static void Char_HiresEnsure(const wchar_t *model)
     if (Rs_Automating()) {
         if (g_char.hires.read)
             Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
-                       g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS,
+                       g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
                        g_char.hires.wheels, g_char.hires.errors, g_char.hires.warnings);
         else
             Rs_AutoLog(L"  hires check: not read - %ls", g_char.hires.why);
@@ -6783,6 +6797,12 @@ static void Char_ClipFill(void)
                 Char_Copy(state, 96, L"yes");
                 swprintf(length, 32, L"%.2f s", (double)c->clipSeconds[i]);
             }
+        } else if (c->clipState[i] == RS_HIRES_CLIP_FINISH) {
+            // Optional (4.3): no warning, the game plays what it played before.
+            wchar_t what[64];
+            RsHires_FinishText(c, i, what, 64);
+            swprintf(entry, 160, L"%ls (optional, missing - after the finish line: %ls)", RsHires_ClipName(i), what);
+            swprintf(state, 96, L"no (optional) - after the finish line: %ls", what);
         } else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK) {
             swprintf(entry, 160, L"%ls (missing - plays %ls%ls)", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
                      c->clipFullLock[i] ? L" at full lock" : L"");
@@ -9189,9 +9209,9 @@ static void Char_ReportChrg(FILE *f)
     }
     if (!g_char.hiresChecked || !c->read)
         return;
-    Char_Put(f, L"hires summary: clips %d/%d wheels %d/4 joints %u triangles %llu textures %d bytes %llu of %llu edge %u of %u",
-             c->clips, RS_HIRES_CLIPS, c->wheels, c->joints, c->triangles, c->textures, c->textureBytes, c->budgetTextureBytes,
-             c->textureEdge, c->budgetEdge);
+    Char_Put(f, L"hires summary: clips %d/%d wheels %d/4 joints %u triangles %llu textures %d bytes %llu of %llu edge %u of %u finish clips %d/%d",
+             c->clips, RS_HIRES_CLIPS_BASE, c->wheels, c->joints, c->triangles, c->textures, c->textureBytes, c->budgetTextureBytes,
+             c->textureEdge, c->budgetEdge, c->finishClips, RS_HIRES_CLIPS - RS_HIRES_CLIPS_BASE);
     for (i = 0; i < c->rowCount; i++)
         Char_Put(f, L"hires row: %ls %ls %ls", Char_SeverityWord(c->rows[i].severity), c->rows[i].rule[0] ? c->rows[i].rule : L"-",
                  c->rows[i].text);
@@ -9200,7 +9220,12 @@ static void Char_ReportChrg(FILE *f)
     for (i = 0; i < RS_HIRES_CLIPS; i++) {
         if (c->clipState[i] == RS_HIRES_CLIP_PRESENT)
             Char_Put(f, L"hires clip: %ls present %.2f", RsHires_ClipName(i), (double)c->clipSeconds[i]);
-        else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK)
+        else if (c->clipState[i] == RS_HIRES_CLIP_FINISH) {
+            wchar_t what[64];
+            RsHires_FinishText(c, i, what, 64);
+            Char_Put(f, L"hires clip: %ls optional, missing - after the finish line: %ls (shown: %ls)", RsHires_ClipName(i), what,
+                     c->clipVia[i] >= 0 ? RsHires_ClipName(c->clipVia[i]) : L"rest");
+        } else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK)
             Char_Put(f, L"hires clip: %ls fallback %ls%ls", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
                      c->clipFullLock[i] ? L" full-lock" : L"");
         else
@@ -9303,10 +9328,11 @@ static void Char_ReportFlow(FILE *f)
     }
     if (Char_Chrg()) {
         if (g_char.hiresChecked && g_char.hires.read)
-            Char_Put(f, L"hires check: %ls, %llu triangles (budget %llu), texture edge %u (budget %u), %d of %d clips, %d wheel nodes, "
+            Char_Put(f, L"hires check: %ls, %llu triangles (budget %llu), texture edge %u (budget %u), %d of %d clips, %d of %d finish clips, %d wheel nodes, "
                         L"%d error(s), %d warning(s), animation %ls",
                      g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.budgetTriangles,
-                     g_char.hires.textureEdge, g_char.hires.budgetEdge, g_char.hires.clips, RS_HIRES_CLIPS, g_char.hires.wheels,
+                     g_char.hires.textureEdge, g_char.hires.budgetEdge, g_char.hires.clips, RS_HIRES_CLIPS_BASE,
+                     g_char.hires.finishClips, RS_HIRES_CLIPS - RS_HIRES_CLIPS_BASE, g_char.hires.wheels,
                      g_char.hires.errors, g_char.hires.warnings, g_char.hires.animReady ? L"plays" : L"none");
         else
             Char_Put(f, L"hires check: %ls", g_char.hiresChecked ? g_char.hires.why : L"(none)");
@@ -10847,7 +10873,8 @@ static void Char_Create(HWND page)
     Rs_SetTip(g_char.clipTable, L"Click a clip to show it.");
     g_char.clipNote = Rs_Label(page, CHAR_ID_CLIP_NOTE,
                                L"The clips posed with the engine's own animation code, as the game plays them. A missing clip "
-                               L"plays its stand-in (the table says which). The wheels turn slowly while a clip plays.",
+                               L"plays its stand-in (the table says which). finish_win and finish_lose are optional: a driver "
+                               L"plays them after the finish line (places 1-3, from 4). The wheels turn slowly while a clip plays.",
                                RS_FONT_SMALL);
     Rs_SetTextColor(g_char.clipNote, RS_COL_MUTED);
     g_char.clipSel = -1;
@@ -11384,8 +11411,9 @@ static int Char_LayClips(const RECT *in)
     y += Rs_Px(34);
     MoveWindow(g_char.clipTime, x + lw, y, w - lw, Rs_Px(18), TRUE);
     y += Rs_Px(24);
-    // The table: the header and the 12 rows (compact: as many as there is room for).
-    tableH = Rs_Px(g_char.compact ? 160 : 268);
+    // The table: the header and every clip row, measured (compact: as many as
+    // there is room for).
+    tableH = g_char.compact ? Rs_Px(160) : Char_ListHeight(g_char.clipTable, RS_HIRES_CLIPS);
     MoveWindow(g_char.clipTable, x, y, w, tableH, TRUE);
     c0 = Rs_Px(100);
     c2 = Rs_Px(80);
@@ -13190,7 +13218,7 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
                 if (_wcsicmp(arg, RsHires_ClipName(i)) == 0)
                     sel = i + 1;
             if (sel < 0) {
-                Rs_AutoLog(L"  hires-clip: unknown clip '%ls' (bind, idle .. menu)", arg);
+                Rs_AutoLog(L"  hires-clip: unknown clip '%ls' (bind, idle .. menu, finish_win, finish_lose)", arg);
                 return RS_AUTO_FAIL;
             }
             Char_ClipSelect(sel);

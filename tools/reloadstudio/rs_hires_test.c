@@ -119,10 +119,15 @@ static void CheckGood(const struct RsHiresCheck *c, const char *what)
     snprintf(line, sizeof(line), "%s: every clip present", what);
     {
         int i, all = 1;
-        for (i = 0; i < RS_HIRES_CLIPS; i++)
+        for (i = 0; i < RS_HIRES_CLIPS_BASE; i++)
             all &= c->clipState[i] == RS_HIRES_CLIP_PRESENT && c->clipVia[i] == i && c->clipSeconds[i] == 1.0f;
         Check(all, line);
     }
+    snprintf(line, sizeof(line), "%s: without the optional finish clips (4.3) - no row; after the finish line podium_1..3 / lose", what);
+    Check(c->finishClips == 0 && c->clipState[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_FINISH &&
+              c->clipState[RS_HIRES_CLIP_FINISH_LOSE] == RS_HIRES_CLIP_FINISH && c->clipVia[RS_HIRES_CLIP_FINISH_WIN] == 7 &&
+              c->clipVia[RS_HIRES_CLIP_FINISH_LOSE] == 10 && !c->clipSeated[RS_HIRES_CLIP_FINISH_WIN],
+          line);
     snprintf(line, sizeof(line), "%s: the picture is RLDPV2 (5 triangles, the framing box, an empty pose) and the textured RLDPN2 after it", what);
     Check(c->preview != NULL && c->previewTriangles == 5 && c->previewBytes > 234u && c->previewTextured == 1 && c->previewKeepAt == 234u &&
               memcmp(c->preview, "RLDPV2\0\0", 8) == 0 && ReadU32(c->preview + 8) == 3u && ReadU32(c->preview + 12) == 5u &&
@@ -305,6 +310,7 @@ struct KtSpec {
     int kit;        // 1 = the material is named "ctrkit_paint": the mark of the Creator Kit's kart (HRG-41)
     int kart;       // a node "kart": 1 with the wheel's mesh (a kart part, --kart-part; needs wheels),
                     // 2 without a mesh (the kit's kart joint: the game's kart, --game-kart template)
+    int finish;     // the optional finish clips after the others (4.3): bit 0 finish_win, bit 1 finish_lose
 };
 
 // A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
@@ -482,7 +488,7 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
         wUv = Kt_View(&bin, &views, &acc, &viewCount, &accCount, &uv, 5126, wv, "VEC2", NULL);
         wIdx = Kt_Indices(&bin, &views, &acc, &viewCount, &accCount, &idx, wv);
     }
-    if (sp->clips) {
+    if (sp->clips || sp->finish) {
         tmp.n = 0;
         Kt_F(&tmp, 0.0f), Kt_F(&tmp, 1.0f);
         aIn = Kt_View(&bin, &views, &acc, &viewCount, &accCount, &tmp, 5126, 2, "SCALAR", ",\"min\":[0],\"max\":[1]");
@@ -538,11 +544,22 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
                 sp->jpeg ? "image/jpeg" : "image/png");
     if (sp->skin)
         Kt_Text(&json, ",\"skins\":[{\"joints\":[1],\"inverseBindMatrices\":%d}]", aIbm);
-    for (i = 0; i < sp->clips && i < 12; i++)
-        Kt_Text(&json, "%s{\"name\":\"%s\",\"channels\":[{\"sampler\":0,\"target\":{\"node\":%d,\"path\":\"rotation\"}}],\"samplers\":[{\"input\":%d,\"output\":%d}]}",
-                i ? "," : ",\"animations\":[", s_ktClip[i], sp->skin ? rootNode : 0, aIn, aOut);
-    if (sp->clips)
-        Kt_Text(&json, "]");
+    {
+        static const char *const finish[2] = { "finish_win", "finish_lose" };
+        int k, written = 0;
+        // The first N of the fixed 12, then the finish clips asked for (the
+        // bytes of before when there are none).
+        for (k = 0; k < 14; k++) {
+            const char *name = k < 12 ? (k < sp->clips ? s_ktClip[k] : NULL) : ((sp->finish >> (k - 12)) & 1) ? finish[k - 12] : NULL;
+            if (!name)
+                continue;
+            Kt_Text(&json, "%s{\"name\":\"%s\",\"channels\":[{\"sampler\":0,\"target\":{\"node\":%d,\"path\":\"rotation\"}}],\"samplers\":[{\"input\":%d,\"output\":%d}]}",
+                    written ? "," : ",\"animations\":[", name, sp->skin ? rootNode : 0, aIn, aOut);
+            written++;
+        }
+        if (written)
+            Kt_Text(&json, "]");
+    }
     Kt_Text(&json, ",\"bufferViews\":[");
     Kt_Put(&json, views.p, views.n);
     Kt_Text(&json, "],\"accessors\":[");
@@ -862,6 +879,74 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         struct KtSpec sp = { 1, 1, 12, 4, 16, 0 };
         Check(Kt_Check(&sp, &c) == 1 && c.usable == 1 && c.rowCount == 0 && RsCharHires_Messages(&c, RS_ROUTE_LOWPOLY, m, 96) == 0,
               "full kart (12 clips, 4 wheels): no finding, no line");
+        Check(c.clips == 12 && c.finishClips == 0 && c.clipState[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_FINISH &&
+                  c.clipVia[RS_HIRES_CLIP_FINISH_WIN] == 7 && c.clipVia[RS_HIRES_CLIP_FINISH_LOSE] == 10,
+              "full kart without the finish clips: 12 of 12, the finish clips optional - podium_1 and lose shown for them");
+        RsHires_CheckFree(&c);
+    }
+    // THE FINISH CLIPS (4.3, optional): a missing one is no row and no line;
+    // the table says what the game plays after the finish line instead - with
+    // the kart part the seated race clips, else podium_1..3 by place / lose
+    // (or where their chain ends).
+    {
+        struct KtSpec both = { 1, 1, 12, 4, 16, 0, 0, 0, 0, 0, 3 }, win = { 1, 1, 12, 4, 16, 0, 0, 0, 0, 0, 1 };
+        struct KtSpec part = { 1, 1, 12, 4, 16, 0, 0, 0, 0, 1 }, few = { 1, 1, 7, 4, 16, 0 }, only = { 1, 1, 0, 4, 16, 0, 0, 0, 0, 0, 3 };
+        struct KtSpec own12 = { 1, 1, 12, 4, 16, 0 }, gamekart = { 2, 1, 12, 0, 16, 0, 0, 0, 0, 2 };
+        wchar_t w[64], l[64];
+        Check(Kt_Check(&both, &c) == 1 && c.usable == 1 && c.rowCount == 0 && c.clips == 12 && c.finishClips == 2 &&
+                  c.clipState[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_PRESENT && c.clipVia[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_FINISH_WIN &&
+                  c.clipState[RS_HIRES_CLIP_FINISH_LOSE] == RS_HIRES_CLIP_PRESENT && c.clipSeconds[RS_HIRES_CLIP_FINISH_LOSE] == 1.0f &&
+                  RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96) == 0,
+              "finish clips: 12 + finish_win + finish_lose - both present, 12 of 12 asked for, no row, no line");
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_WIN, w, 64);
+        Check(w[0] == 0, "finish clips: a present finish clip has no stand-in text");
+        RsHires_CheckFree(&c);
+        Check(Kt_Check(&win, &c) == 1 && c.rowCount == 0 && c.finishClips == 1 && c.clipState[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_PRESENT &&
+                  c.clipState[RS_HIRES_CLIP_FINISH_LOSE] == RS_HIRES_CLIP_FINISH && c.clipVia[RS_HIRES_CLIP_FINISH_LOSE] == 10 &&
+                  RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96) == 0,
+              "finish clips: finish_win alone - finish_lose missing says nothing, plays lose");
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_LOSE, l, 64);
+        Check(wcscmp(l, L"lose") == 0, "finish clips: finish_lose missing, no kart part - 'lose'");
+        RsHires_CheckFree(&c);
+        Check(Kt_Check(&own12, &c) == 1, "finish clips: the full kart again");
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_WIN, w, 64);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_LOSE, l, 64);
+        Check(wcscmp(w, L"podium_1..3 by place") == 0 && wcscmp(l, L"lose") == 0 && !c.clipSeated[RS_HIRES_CLIP_FINISH_WIN],
+              "finish clips: none, no kart part - 'podium_1..3 by place' and 'lose' (what 4.2 plays)");
+        RsHires_CheckFree(&c);
+        n = Kt_Check(&part, &c);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_WIN, w, 64);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_LOSE, l, 64);
+        Check(n == 1 && c.kartCase == RS_KART_PART && c.clipState[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_FINISH &&
+                  c.clipSeated[RS_HIRES_CLIP_FINISH_WIN] && c.clipSeated[RS_HIRES_CLIP_FINISH_LOSE] && c.clipVia[RS_HIRES_CLIP_FINISH_WIN] == 0 &&
+                  c.clipVia[RS_HIRES_CLIP_FINISH_LOSE] == 0 && wcscmp(w, L"the seated race clips") == 0 && wcscmp(l, w) == 0 &&
+                  Kt_RowsOf(&c, L"HRG-19") == 0,
+              "finish clips: none, with the kart part - the seated race clips (idle shown), no HRG-19");
+        RsHires_CheckFree(&c);
+        // The game's kart (parts bit 1, the kit's mesh-less kart joint): the
+        // engine gives the inserted kart the kart part, so the same.
+        n = Kt_Check(&gamekart, &c);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_WIN, w, 64);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_LOSE, l, 64);
+        Check(n == 1 && c.kartCase == RS_KART_GAME && c.parts == RS_HIRES_PARTS_GAME_KART && c.clipSeated[RS_HIRES_CLIP_FINISH_WIN] &&
+                  c.clipSeated[RS_HIRES_CLIP_FINISH_LOSE] && c.clipVia[RS_HIRES_CLIP_FINISH_WIN] == 0 && wcscmp(w, L"the seated race clips") == 0 &&
+                  wcscmp(l, w) == 0,
+              "finish clips: none, with the game's kart (parts bit 1) - the seated race clips (idle shown)");
+        RsHires_CheckFree(&c);
+        n = Kt_Check(&few, &c);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_WIN, w, 64);
+        RsHires_FinishText(&c, RS_HIRES_CLIP_FINISH_LOSE, l, 64);
+        Check(n == 1 && c.clips == 7 && Kt_RowsOf(&c, L"HRG-19") == 5 && c.clipVia[RS_HIRES_CLIP_FINISH_WIN] == 0 && wcscmp(w, L"idle") == 0 &&
+                  wcscmp(l, L"idle") == 0,
+              "finish clips: 7 clips, no podium, no lose - the finish clips play where their chain ends (idle); 5 warnings for the 5 base clips");
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(Kt_Has(m, n, RS_SEV_NOTE, RS_WIZ_PLACE_ANIMATIONS, L"HRG-19", L"7 of 12 animations present - the others use their stand-ins. Optional.", NULL),
+              "finish clips: the line counts the 12 clips asked for");
+        RsHires_CheckFree(&c);
+        n = Kt_Check(&only, &c);
+        Check(n == 1 && c.clips == 0 && c.finishClips == 2 && c.clipState[RS_HIRES_CLIP_FINISH_WIN] == RS_HIRES_CLIP_PRESENT &&
+                  c.clipState[0] == RS_HIRES_CLIP_REST,
+              "finish clips: the two finish clips alone - read, the 12 others rest");
         RsHires_CheckFree(&c);
     }
     // Two wheel nodes: one warning that names the missing ones.
@@ -927,7 +1012,7 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         int rule, own = 0, lines = 0, fixes = 0, kept = 0;
         memset(&c, 0, sizeof(c));
         c.read = 1;
-        c.clips = RS_HIRES_CLIPS;
+        c.clips = RS_HIRES_CLIPS_BASE;
         c.wheels = 4;
         c.budgetTriangles = 64000u;
         c.budgetEdge = 2048u;
@@ -983,7 +1068,7 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         // a warning at the step Build in its fixed words, the row's own text not shown.
         memset(&c, 0, sizeof(c));
         c.read = 1;
-        c.clips = RS_HIRES_CLIPS;
+        c.clips = RS_HIRES_CLIPS_BASE;
         c.wheels = 4;
         c.budgetTriangles = 64000u;
         c.budgetEdge = 2048u;
@@ -1042,7 +1127,7 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         // A row of a rule the Studio does not know: said as the check says it, with the general fix.
         memset(&c, 0, sizeof(c));
         c.read = 1;
-        c.clips = RS_HIRES_CLIPS;
+        c.clips = RS_HIRES_CLIPS_BASE;
         c.wheels = 4;
         c.rowCount = 1;
         c.rows[0].severity = RS_SEV_WARNING;
@@ -1502,8 +1587,12 @@ int wmain(int argc, wchar_t **argv)
           "hires-tex-upscaled.glb (the Studio's upscale step): usable, no error, one warning (HRG-36: its COLOR_0 128 read in glTF mode), its texture 64 x 64, textured preview");
     RsHires_CheckFree(&c);
 
-    Check(wcscmp(RsHires_ClipName(0), L"idle") == 0 && wcscmp(RsHires_ClipName(11), L"menu") == 0 && wcscmp(RsHires_ClipName(12), L"?") == 0,
-          "clip names");
+    Check(wcscmp(RsHires_ClipName(0), L"idle") == 0 && wcscmp(RsHires_ClipName(11), L"menu") == 0 &&
+              wcscmp(RsHires_ClipName(RS_HIRES_CLIP_FINISH_WIN), L"finish_win") == 0 &&
+              wcscmp(RsHires_ClipName(RS_HIRES_CLIP_FINISH_LOSE), L"finish_lose") == 0 && wcscmp(RsHires_ClipName(RS_HIRES_CLIPS), L"?") == 0 &&
+              wcscmp(RsHires_ClipName(-1), L"?") == 0 && !RsHires_ClipOptional(11) && RsHires_ClipOptional(RS_HIRES_CLIP_FINISH_WIN) &&
+              RsHires_ClipOptional(RS_HIRES_CLIP_FINISH_LOSE) && !RsHires_ClipOptional(RS_HIRES_CLIPS),
+          "clip names (include/rldhires.inc), finish_win and finish_lose optional");
 
     Kt_SelfTestRoutes(argv[1]);
     Kt_SelfTestColours();

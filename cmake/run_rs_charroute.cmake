@@ -391,6 +391,12 @@ if(PAGE)
        NOT text MATCHES "parts: game kart \\(donor template\\), classic model: the figure on a stand-in kart that the game swaps for the original kart from the player's game data \\(--figure-only, 4\\.3\\); the grey stand-in only in a game before 4\\.3 or without game data")
         message(FATAL_ERROR "charroute FAILED: the page (kartjoint) does not suggest the game's kart\n${text}")
     endif()
+    # The game's kart counts as a kart after the finish line (4.3): a missing
+    # finish clip keeps the seated race clips, as the engine plays them.
+    if(NOT text MATCHES "hires clip: finish_win optional, missing - after the finish line: the seated race clips \\(shown: idle\\)" OR
+       NOT text MATCHES "hires clip: finish_lose optional, missing - after the finish line: the seated race clips \\(shown: idle\\)")
+        message(FATAL_ERROR "charroute FAILED: the page (kartjoint) does not keep the seated race clips for the finish clips\n${text}")
+    endif()
     file(READ "${DIR}/page-gamekart-report.txt" text)
     # Checked again with the game's kart: HRG-42 (its wheels come with it), no HRG-20.
     if(NOT text MATCHES "parts: game kart \\(donor template\\)" OR NOT text MATCHES "game kart: on \\(chosen" OR
@@ -485,6 +491,14 @@ if(PAGE)
     if(NOT text MATCHES "clip shown: jump 0\\.250 90\\.0 paused" OR NOT text MATCHES "advanced: open, card animations" OR
        NOT text MATCHES "hires clip: jump present [0-9.]+" OR NOT text MATCHES "hires summary: clips 12/12 wheels 4/4 joints [1-9]")
         message(FATAL_ERROR "charroute FAILED: the report of the card Animations (clips)\n${text}")
+    endif()
+    # The optional finish clips (4.3): route-wheels.glb has neither - no row,
+    # each says what the game plays after the finish line (no kart part:
+    # podium_1..3 by place, lose).
+    if(NOT text MATCHES "finish clips 0/2[\r\n]" OR text MATCHES "hires row: [a-z]+ HRG-19 " OR
+       NOT text MATCHES "hires clip: finish_win optional, missing - after the finish line: podium_1\\.\\.3 by place \\(shown: podium_1\\)" OR
+       NOT text MATCHES "hires clip: finish_lose optional, missing - after the finish line: lose \\(shown: lose\\)")
+        message(FATAL_ERROR "charroute FAILED: the card Animations does not list the optional finish clips (clips)\n${text}")
     endif()
     file(READ "${DIR}/page-clips-report.txt" text)
     if(NOT text MATCHES "clip shown: bind ")

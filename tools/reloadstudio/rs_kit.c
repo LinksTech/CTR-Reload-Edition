@@ -2,7 +2,8 @@
 //
 // The kit is made ON THIS PC from the game files of the person using it, into
 // a folder they choose: the original kart and its wheels (extracted from the
-// game data), a neutral jointed puppet with its skeleton and the twelve clips,
+// game data), a neutral jointed puppet with its skeleton and its clips (the
+// twelve the game asks for and the two optional finish clips of 4.3),
 // the template creator-kit.blend and its demo export, and on request a demo
 // driver to try in the game. Nothing of it comes with Reload Studio, nothing of
 // it may leave that folder (tools/content_guard.py refuses every one of these
@@ -1271,7 +1272,7 @@ static void Kit_Update(void)
     {
         wchar_t list[KIT_PATH * 2];
         swprintf(list, KIT_PATH * 2,
-                 L"In %ls:\r\n  creator-kit.blend - the template: the puppet, its skeleton and 12 clips, your kart\r\n"
+                 L"In %ls:\r\n  creator-kit.blend - the template: the puppet, its skeleton, 12 clips + 2 optional finish clips, your kart\r\n"
                  L"  creator-kit-figure.glb - your figure without a kart: safe to share, the game adds its own kart\r\n"
                  L"  creator-kit-demo-local.glb - your figure with the kart from your game: keep it to yourself\r\n"
                  L"  kit-kart.glb, kit-wheel.glb, kit-info.json, kit-extract.txt - the kart and its wheels from your game\r\n"
@@ -1346,7 +1347,7 @@ static void Kit_Create(HWND page)
     g_kit.intro = Rs_Label(page, KIT_ID_INTRO,
         L"The Creator Kit is a ready Blender template for a driver of your own, made on this PC from your own game files:\r\n\r\n"
         L"  \x2022  the original kart and its wheels, from your game data, in high resolution\r\n"
-        L"  \x2022  a neutral jointed puppet with a skeleton and the 12 clips the game plays\r\n"
+        L"  \x2022  a neutral jointed puppet with a skeleton, the 12 clips the game plays and 2 optional finish clips\r\n"
         L"  \x2022  the template creator-kit.blend with the export already set up\r\n"
         L"  \x2022  if you like, a demo driver to try in the game right away\r\n\r\n"
         L"The kart and the wheels are made from your own game files, on this PC only. Keep them to yourself - "
