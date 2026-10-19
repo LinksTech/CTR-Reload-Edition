@@ -590,6 +590,87 @@ def add_exporter(collection, filepath, way):
 
 # ---------------------------------------------------------------- stable bytes
 
+ATTRIBUTE_BASE = 0x00007E5A00000000   # the first file address stabilize_attributes hands out (16 bytes apart)
+
+
+def stabilize_attributes(data, blocks, layout, types, sizes, offset):
+    """The attribute arrays of the meshes (struct Attribute, its AttributeArray / AttributeSingle, their data and
+    their names) get file addresses made by the walk below instead of the ones Blender wrote. Blender writes
+    them while it converts the mesh's attributes for the file, in small memory blocks it frees again, and the
+    file address it gives one of them depends on which freed block the heap hands out next - the heap of
+    Windows does not always hand out the same (2026-10-19: one ctest in six wrote other addresses for the
+    attributes of the vanilla puppet: same content, other bytes). The addresses are only names. The walk
+    visits every pointer of these structs in file order; each value gets the next new address (equal values
+    the same one, so whatever was equal stays equal), and the blocks they point to - found among the data
+    blocks of the same datablock (an old address names a block only there), else among those before -
+    get the new address in their header. Nothing else in the file is touched."""
+    attr, attr_name_at = offset("Attribute", "*name")
+    _, attr_data_at = offset("Attribute", "*data")
+    arr, arr_data_at = offset("AttributeArray", "*data")
+    _, arr_share_at = offset("AttributeArray", "*sharing_info")
+    single, single_data_at = offset("AttributeSingle", "*data")
+    _, single_share_at = offset("AttributeSingle", "*sharing_info")
+    attr_size = sizes[types.index("Attribute")]
+    scope = 0
+    scopes = []
+    local = {}      # (scope, old address) -> the block's start
+    first = {}      # old address -> the start of the first block with it
+    every = set()
+    for start, code, sdna, length in blocks:
+        if code != b"DATA":
+            scope += 1
+        scopes.append(scope)
+        old = struct.unpack_from("<Q", data, start - 24)[0]
+        local.setdefault((scope, old), start)
+        first.setdefault(old, start)
+        every.add(old)
+    remap = {}
+    fields = []
+    headers = []
+
+    def take(at, here, shared=None):
+        # the key of a value: its datablock's (here) - an old address names a block only among the data blocks
+        # of its datablock, and Blender gives the same addresses again in the next one - unless it names a
+        # block only of a datablock before (data two meshes share): then the file's (0). shared: a
+        # sharing_info (no block, a name of the shared data) goes with its data.
+        value = struct.unpack_from("<Q", data, at)[0]
+        if not value:
+            return None, False
+        target = local.get((here, value))
+        cross = shared if shared is not None else (target is None and value in first)
+        if cross:
+            target = first.get(value, target)
+        key = (0 if cross else here, value)
+        if key not in remap:
+            remap[key] = ATTRIBUTE_BASE + 16 * len(remap)
+        if at not in [f for f, _ in fields]:    # a block two attributes share is walked twice
+            fields.append((at, remap[key]))
+        if shared is None and target is not None and target not in [h for h, _ in headers]:
+            headers.append((target, remap[key]))
+        return target, cross
+
+    for (start, code, sdna, length), here in zip(blocks, scopes):
+        if sdna != attr or code != b"DATA":
+            continue
+        for k in range(length // attr_size):
+            entry = start + k * attr_size
+            take(entry + attr_name_at, here)
+            target, _cross = take(entry + attr_data_at, here)
+            if target is None:
+                continue
+            kind = struct.unpack_from("<i", data, target - 28)[0]
+            for kind_, data_at, share_at in ((arr, arr_data_at, arr_share_at), (single, single_data_at, single_share_at)):
+                if kind == kind_:
+                    _t, cross = take(target + data_at, here)
+                    take(target + share_at, here, cross)
+    if any(new in every for new in remap.values()):
+        raise RuntimeError("an attribute address of the file is already used")
+    for at, new in fields:
+        struct.pack_into("<Q", data, at, new)
+    for start, new in headers:
+        struct.pack_into("<Q", data, start - 24, new)
+
+
 def stabilize(path, out):
     # The .blend is written uncompressed and then made the same on every run
     # of the same Blender, in place:
@@ -601,6 +682,8 @@ def stabilize(path, out):
     #     sorts them again when it reads the file)
     #   - the file browsers of the default layout hold the folder of whoever
     #     ran this (and a file name): cleared
+    #   - the attribute arrays of the meshes carry file addresses that depend on
+    #     the heap: new ones, the same every run (stabilize_attributes)
     # Afterwards neither a home folder nor the output folder may be left in the file.
     data = bytearray(open(path, "rb").read())
     if data[:9] != b"BLENDER17":
@@ -669,6 +752,7 @@ def stabilize(path, out):
             data[start + dir_at:start + dir_at + 1282] = bytes(1282)
             data[start + file_at:start + file_at + 256] = bytes(256)
             data[start + rename_at:start + rename_at + 256] = bytes(256)
+    stabilize_attributes(data, blocks, layout, types, sizes, offset)
     found = re.search(rb"[A-Za-z]:[\\/]Users[\\/]|/Users/|/home/|AppData", data)
     if found:
         raise RuntimeError("a local path is left in the file at byte %d" % found.start())
