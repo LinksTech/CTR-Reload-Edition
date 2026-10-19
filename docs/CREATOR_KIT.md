@@ -69,6 +69,7 @@ Only the ways you choose are written. In the kit folder:
 | `kit-kart.glb`, `kit-wheel.glb`, `kit-kart-gltf.glb`, `kit-wheel-gltf.glb` | The kart and the wheel, from your game files. |
 | `kit-info.json` | Sizes and points of the kart: seat, steering wheel, wheels. |
 | `kit-extract.txt` | The log of reading the kart from your game files. |
+| `scripts` | The scripts that made the templates, and the notice they write. |
 | `classic.glb` | Your old character, only when you start from one (section 12). |
 
 In each folder of a way, `vanilla`, `lowpoly` and `hires`:
@@ -102,7 +103,7 @@ The Vanilla way builds a classic character, the kind the original game draws. It
 
 The Low-Poly way builds a modern, stylised character with clear surfaces.
 
-- **Limits:** at most **8000 triangles** and textures of at most **512 pixels**. Above that, the Studio warns and suggests Hi-Res.
+- **Limits:** at most **8000 triangles** and textures of at most **512 pixels**. Above that, the Studio warns and suggests Hi-Res. The Low-Poly puppet has about 5300 triangles.
 - Vertex colours in PSX mode (section 7).
 - The clips of section 6: the 12 clips the game plays and the 2 optional finish clips.
 
@@ -111,6 +112,8 @@ The Low-Poly way builds a modern, stylised character with clear surfaces.
 The Hi-Res way builds a character in full quality with animations.
 
 - **Limits:** the full budget of the game (below).
+- The Hi-Res puppet stays at about **14500 triangles**, so that the Studio can make the classic fallback (at most 7200 triangles, section 10) from it. The budget of the way is higher.
+- A Hi-Res model of more than about 20000 triangles that uses the game's kart can stop at "could not be reduced automatically to 7200 triangles" when the Studio builds its classic fallback. Reducing the model in Blender (Decimate) or giving it a kart part avoids that.
 - Vertex colours in PSX mode (section 7), as in the other two templates.
 - The material of the puppet has a **normal map**, made by code. Replace it with your own, or remove it.
 - All **12 clips** and the 2 finish clips `finish_win` and `finish_lose` (section 6).

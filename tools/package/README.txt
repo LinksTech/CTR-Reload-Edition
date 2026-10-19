@@ -983,6 +983,10 @@ Characters
 - The size is visual only - physics and collision follow the driving style.
 - With "Show kart wheels" off, tyre dust and skid marks still show where the
   game's wheels would be.
+- A Hi-Res model of more than about 20000 triangles that uses the game's
+  kart can stop at "could not be reduced automatically to 7200 triangles"
+  when Reload Studio builds its classic fallback. Reducing the model in
+  Blender (Decimate) or giving it a kart part avoids that.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the

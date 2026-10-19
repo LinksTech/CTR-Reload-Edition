@@ -257,6 +257,7 @@ nav.toc ol { margin: 0; }
 <tr><td><code>kit-kart.glb</code>, <code>kit-wheel.glb</code>, <code>kit-kart-gltf.glb</code>, <code>kit-wheel-gltf.glb</code></td><td>The kart and the wheel, from your game files.</td></tr>
 <tr><td><code>kit-info.json</code></td><td>Sizes and points of the kart: seat, steering wheel, wheels.</td></tr>
 <tr><td><code>kit-extract.txt</code></td><td>The log of reading the kart from your game files.</td></tr>
+<tr><td><code>scripts</code></td><td>The scripts that made the templates, and the notice they write.</td></tr>
 <tr><td><code>classic.glb</code></td><td>Your old character, only when you start from one (section 12).</td></tr>
 </tbody>
 </table>
@@ -292,7 +293,7 @@ nav.toc ol { margin: 0; }
 <h3 id="low-poly">Low-Poly</h3>
 <p>The Low-Poly way builds a modern, stylised character with clear surfaces.</p>
 <ul>
-<li><strong>Limits:</strong> at most <strong>8000 triangles</strong> and textures of at most <strong>512 pixels</strong>. Above that, the Studio warns and suggests Hi-Res.</li>
+<li><strong>Limits:</strong> at most <strong>8000 triangles</strong> and textures of at most <strong>512 pixels</strong>. Above that, the Studio warns and suggests Hi-Res. The Low-Poly puppet has about 5300 triangles.</li>
 <li>Vertex colours in PSX mode (section 7).</li>
 <li>The clips of section 6: the 12 clips the game plays and the 2 optional finish clips.</li>
 </ul>
@@ -300,6 +301,8 @@ nav.toc ol { margin: 0; }
 <p>The Hi-Res way builds a character in full quality with animations.</p>
 <ul>
 <li><strong>Limits:</strong> the full budget of the game (below).</li>
+<li>The Hi-Res puppet stays at about <strong>14500 triangles</strong>, so that the Studio can make the classic fallback (at most 7200 triangles, section 10) from it. The budget of the way is higher.</li>
+<li>A Hi-Res model of more than about 20000 triangles that uses the game&#x27;s kart can stop at &quot;could not be reduced automatically to 7200 triangles&quot; when the Studio builds its classic fallback. Reducing the model in Blender (Decimate) or giving it a kart part avoids that.</li>
 <li>Vertex colours in PSX mode (section 7), as in the other two templates.</li>
 <li>The material of the puppet has a <strong>normal map</strong>, made by code. Replace it with your own, or remove it.</li>
 <li>All <strong>12 clips</strong> and the 2 finish clips <code>finish_win</code> and <code>finish_lose</code> (section 6).</li>
