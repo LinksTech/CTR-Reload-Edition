@@ -167,9 +167,10 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 		gravityY = CTR_MipsDiv(CTR_MipsMulLo(gravityY, gravityPercent), VEH_PHYS_FORCE_LOW_GRAVITY_DIVISOR);
 	}
 
-	// The external track's own gravity share (physics.gravity_percent); without
-	// --ext-track or with the neutral 100 the value comes back untouched.
-	gravityY = ExtPhys_ScaleGravity(gravityY);
+	// The external track's own gravity share (physics.gravity_percent) and the
+	// share of a gravity volume holding the kart (physics.gravity_volumes);
+	// without --ext-track or with neither the value comes back untouched.
+	gravityY = ExtPhys_ScaleGravityFor(driver, gravityY);
 
 	NativeMods_NoteGravity(driver->driverID, gravityPercent, lowGravity ? 41 : 100, elapsedTimeMS, (driver->actionsFlagSet & ACTION_AIRBORNE) != 0);
 

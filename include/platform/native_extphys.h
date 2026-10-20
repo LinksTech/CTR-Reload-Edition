@@ -31,6 +31,14 @@ void ExtPhys_OnLevelLoaded(void);
 // before it is scaled by the frame time; unchanged unless the track sets
 // gravity_percent.
 int ExtPhys_ScaleGravity(int gravity);
+// The same for a driver with the player physics (VehPhysForce_OnGravity): the
+// track's share, then the share of the gravity volume (physics.gravity_volumes:
+// boxes of any turn) that holds the driver; one log line per entering and
+// leaving a volume:
+//   [CTR ExtPhys] seat S enter gravity volume V (name, P%) frame F pos X Y Z | seat S leave gravity volume V (name) frame F
+// Without volumes exactly ExtPhys_ScaleGravity.
+struct Driver;
+int ExtPhys_ScaleGravityFor(const struct Driver *d, int gravity);
 
 // game/Vehicle/VehAfterColl.c VehAfterColl_GetTerrain: the row the game picked
 // for a terrain type, or the track's copy of it with its own values.
@@ -81,6 +89,10 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3]);
 // zone (converted), 0 = untouched.
 int ExtPhys_ZoneLocalToWorld(const struct Driver *d, const s32 local[3], Vec3 *world);
 int ExtPhys_ZoneWorldToLocal(const struct Driver *d, const Vec3 *world, s32 local[3]);
+// The heading (0..4095, the convention of d->angle) towards a point dx/dy/dz
+// away: in a zone taken in the surface frame (as d->angle is there), else
+// untouched (the caller keeps its ratan2(dx, dz)); 1 = in a zone (*heading set).
+int ExtPhys_ZoneHeadingTo(const struct Driver *d, int dx, int dy, int dz, int *heading);
 
 // --ext-selftest phys: prints "ext selftest phys passed: N checks, 0 failures"
 // (or FAILED); returns 0 / 1.

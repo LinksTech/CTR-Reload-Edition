@@ -1361,7 +1361,7 @@ typedef struct
 
 typedef struct
 {
-	void *gltf; // the parsed JSON (cgltf_data), owned
+	void *gltf; // the parsed JSON, owned: the loader's EngStaticLoadGltf (engine_static_load.c), its data member the cgltf_data
 	EngineStaticSource *src;
 	u64 binOffset; // where the GLB BIN chunk's data starts in the source
 	u64 binSize;

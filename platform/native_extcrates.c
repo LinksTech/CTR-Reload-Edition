@@ -38,6 +38,10 @@
 // LOG (cnk\tools\poc_m5_pruef.py, gate D8): one line per crate and one summary
 // at the first build of a run, one line per contact, one line at exit.
 
+// platform/engine_exttrack.c (later in the unity build): the drawing part's tint of an
+// instance from the floor around it (render.instance_tint); 0 and no change without the field.
+int ExtDraw_TintInstance(struct Instance *inst);
+
 enum
 {
 	EXTCRATE_MAX = 128,             // the race pool has 128 instances (MainInit.c:362); the larger external track has 81
@@ -231,6 +235,7 @@ void ExtCrates_OnRaceStart(void)
 		inst->matrix.t[1] = defs[i].pos[1];
 		inst->matrix.t[2] = defs[i].pos[2];
 		inst->reflectionRGBA = 0x7f7f7f;
+		ExtDraw_TintInstance(inst);
 		c->inst = inst;
 		c->index = i;
 		c->smashed = 0;

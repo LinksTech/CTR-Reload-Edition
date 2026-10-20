@@ -1,4 +1,13 @@
 #include <common.h>
+
+#if defined(CTR_NATIVE)
+// The external track's camera (platform/native_extcam.c; only with --ext-track and
+// the data's "camera" section): no donor fly-in, the battle's spin at the end,
+// the follow camera in anti-gravity zones.
+int ExtCam_NoFlyIn(int levelID);
+int ExtCam_EndSpin(int levelID);
+void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct PushBuffer *pb, const Vec3 *camPos, const Vec3 *lookAt);
+#endif
 #include <platform/native_extcoll.h>
 
 
@@ -564,7 +573,14 @@ void CAM_EndOfRace(struct CameraDC *cDC, struct Driver *d)
 
 
 	// If not in Battle Mode and track path points exist and game is on 1P or 2P mode
+#if defined(CTR_NATIVE)
+	// The external track: the battle's turn round the driver when its data asks
+	// (camera.end "spin", platform/native_extcam.c) - the end-of-race cameras
+	// would be the donor's.
+	if (((gGT->gameMode1 & BATTLE_MODE) == 0) && (1 < gGT->level1->ptrSpawnType1->count) && (gGT->numPlyrCurrGame < 3) && !ExtCam_EndSpin(gGT->levelID))
+#else
 	if (((gGT->gameMode1 & BATTLE_MODE) == 0) && (1 < gGT->level1->ptrSpawnType1->count) && (gGT->numPlyrCurrGame < 3))
+#endif
 	{
 		// Activate end-of-race cDC flag in CameraDC struct
 		cDC->flags |= CAMERA_FLAG_ARCADE_END_OF_RACE_REQUESTED;
@@ -1575,6 +1591,18 @@ LAB_8001ab04:
 	cDC->lookAtPos.y = cam->delta.y;
 	cDC->lookAtPos.z = cam->delta.z;
 
+#if defined(CTR_NATIVE)
+	// The external track's camera in an anti-gravity zone (camera.follow_up
+	// "zones", platform/native_extcam.c): the push buffer laid into the kart's
+	// frame. Returns at once without the switch, the section or a zone.
+	{
+		if (d->kartState != KS_MASK_GRABBED)
+		{
+			ExtCam_Follow(gGT, d, pb, &cam->pos, &cam->delta);
+		}
+	}
+#endif
+
 	// backup flags (again)
 	backupFlags = cDC->flags;
 
@@ -1640,7 +1668,8 @@ LAB_8001ab04:
 			// does the path camera freeze it after this run.
 			int NativeTrack_ActiveForLevel(int levelID);
 
-			if ((st1->count < 4) || NativeTrack_ActiveForLevel(gGT->levelID))
+			// The external track: no fly-in when its data asks (camera.intro "none") - the path would be the donor's.
+			if ((st1->count < 4) || NativeTrack_ActiveForLevel(gGT->levelID) || ExtCam_NoFlyIn(gGT->levelID))
 #else
 			if (st1->count < 4)
 #endif

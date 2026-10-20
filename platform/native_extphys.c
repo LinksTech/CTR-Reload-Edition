@@ -29,6 +29,7 @@ enum
 	EXT_PHYS_PAD_FIRE_MAX = 2048,
 	EXT_PHYS_VERSION = 1,
 	EXT_PHYS_ZONES_MAX = 16,
+	EXT_PHYS_VOLUMES_MAX = 16,
 	EXT_PHYS_ZONE_AIR_HOLD_MS = 1500,
 	EXT_PHYS_ZONE_UP_BLEND = 64,
 	EXT_PHYS_ZONE_MAX_UP_DEG = 150,
@@ -81,6 +82,16 @@ typedef struct
 		int upBlend;        // the share of the new surface normal per frame, /256 (1..256)
 		int maxUpDeg;       // the zone's up never tilts further from world up (0..180)
 	} zones[EXT_PHYS_ZONES_MAX];
+	// gravity volumes: boxes (any turn) in which the gravity has its own share
+	int volumeCount;
+	struct
+	{
+		double center[3];  // Reload units
+		double axis[3][3]; // the box's own unit axes
+		double half[3];    // half extents along them
+		int gravityPercent;
+		char name[32];
+	} volumes[EXT_PHYS_VOLUMES_MAX];
 } ExtPhysParams;
 
 global_variable struct
@@ -287,6 +298,44 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 				}
 			}
 		}
+		else if (strcmp(name, "gravity_volumes") == 0)
+		{
+			// [{"name", "center": [x,y,z], "axes": [[3],[3],[3]], "half": [3], "gravity_percent"}]
+			for (int g = ExtJson_First(doc, key); g >= 0; g = ExtJson_Next(doc, g))
+			{
+				double c[3], ax[3][3], h[3];
+				int ok = (ExtJson_Type(doc, g) == EXT_JSON_OBJECT) && (p->volumeCount < EXT_PHYS_VOLUMES_MAX);
+				const int axes = ok ? ExtJson_Get(doc, g, "axes") : -1;
+				int pct = EXT_PHYS_GRAVITY_NEUTRAL;
+
+				ok = ok && (ExtJson_Numbers(doc, ExtJson_Get(doc, g, "center"), c, 3) == 3) && (ExtJson_Numbers(doc, ExtJson_Get(doc, g, "half"), h, 3) == 3);
+				for (int a = 0; ok && (a < 3); a++)
+				{
+					double len;
+
+					ok = (ExtJson_Numbers(doc, ExtJson_At(doc, axes, a), ax[a], 3) == 3) && (h[a] > 0.0);
+					len = ok ? sqrt(ax[a][0] * ax[a][0] + ax[a][1] * ax[a][1] + ax[a][2] * ax[a][2]) : 0.0;
+					ok = ok && (len > 1e-6);
+					for (int k = 0; ok && (k < 3); k++)
+					{
+						ax[a][k] /= len;
+					}
+				}
+				ok = ok && (ExtPhys_ReadInt(doc, ExtJson_Get(doc, g, "gravity_percent"), EXT_PHYS_GRAVITY_MIN, EXT_PHYS_GRAVITY_MAX, &pct, p) == 1);
+				if (!ok)
+				{
+					p->badValues++;
+					continue;
+				}
+				memcpy(p->volumes[p->volumeCount].center, c, sizeof(c));
+				memcpy(p->volumes[p->volumeCount].axis, ax, sizeof(ax));
+				memcpy(p->volumes[p->volumeCount].half, h, sizeof(h));
+				p->volumes[p->volumeCount].gravityPercent = pct;
+				snprintf(p->volumes[p->volumeCount].name, sizeof(p->volumes[p->volumeCount].name), "%s",
+				         ExtJson_String(doc, ExtJson_Get(doc, g, "name"), "volume"));
+				p->volumeCount++;
+			}
+		}
 		else if (strcmp(name, "zones") == 0)
 		{
 			// the anti-gravity zones: [{"id", "gravity_percent", "air_hold_ms", "up_blend", "max_up_deg"}]
@@ -332,7 +381,7 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 	}
 
 	// a zone asks for a behaviour of its own: never neutral
-	p->anySet = p->gravitySet || p->padReservesSet || p->padFireSet || (p->zoneCount > 0);
+	p->anySet = p->gravitySet || p->padReservesSet || p->padFireSet || (p->zoneCount > 0) || (p->volumeCount > 0);
 	for (int t = 0; t < EXT_PHYS_TERRAINS; t++)
 	{
 		if (p->terrainSet[t] != 0)
@@ -468,6 +517,13 @@ void ExtPhys_OnLevelLoaded(void)
 	             p->padReservesSet ? p->padReserves : EXT_PHYS_PAD_RESERVES_NEUTRAL, p->padFireSet ? p->padFireLevel : EXT_PHYS_PAD_FIRE_NEUTRAL,
 	             (p->padReservesSet || p->padFireSet) ? "" : " (neutral)", p->anySet ? "own values in force" : "all neutral - the game's own values",
 	             p->neutralGiven, p->unknownKeys, p->clamped, p->badValues);
+	Platform_Log("[CTR ExtPhys] zones %d, gravity volumes %d\n", p->zoneCount, p->volumeCount);
+	for (int v = 0; v < p->volumeCount; v++)
+	{
+		Platform_Log("[CTR ExtPhys] gravity volume %d (%s): %d%%, centre %.0f %.0f %.0f, half %.0f %.0f %.0f\n", v, p->volumes[v].name, p->volumes[v].gravityPercent,
+		             p->volumes[v].center[0], p->volumes[v].center[1], p->volumes[v].center[2], p->volumes[v].half[0], p->volumes[v].half[1],
+		             p->volumes[v].half[2]);
+	}
 	for (int t = 0; t < EXT_PHYS_TERRAINS; t++)
 	{
 		if (p->terrainSet[t] == 0)
@@ -556,7 +612,7 @@ void ExtPhys_NotePadBoost(const struct Driver *d)
 }
 
 // ---------------------------------------------------------------------------
-// THE ANTI-GRAVITY ZONES (B2, T1_M2_P0.md sec. 4.3). A zone is a surface: the
+// THE ANTI-GRAVITY ZONES. A zone is a surface: the
 // ground records of the collision nodes with "zone": n (physics.zones). A
 // driver is in zone n from the frame it stands on such a record; it leaves when
 // it stands on a record without a zone, or after air_hold_ms in the air. In the
@@ -872,6 +928,87 @@ int ExtPhys_ZoneWorldToLocal(const struct Driver *d, const Vec3 *world, s32 loca
 	return 1;
 }
 
+int ExtPhys_ZoneHeadingTo(const struct Driver *d, int dx, int dy, int dz, int *heading)
+{
+	const Vec3 world = {dx, dy, dz};
+	s32 local[3];
+
+	if (!ExtPhys_ZoneWorldToLocal(d, &world, local))
+	{
+		return 0;
+	}
+	*heading = ratan2(local[0], local[2]) & 0xfff;
+	return 1;
+}
+
+// ---------------------------------------------------------------------------
+// GRAVITY VOLUMES (physics.gravity_volumes): boxes in which the gravity has its
+// own share (a track's low-gravity jumps, a tube that presses harder). The box
+// that holds the kart's position scales the frame's gravity after the track's
+// own share; the first box in the list wins.
+
+global_variable int s_extPhysVolumeSeat[EXT_PHYS_SEATS]; // the box a seat is in, + 1 (0 none)
+
+// The box that holds point p, -1 none.
+internal int ExtPhys_VolumeAtWith(const ExtPhysParams *p, const double pos[3])
+{
+	for (int v = 0; v < p->volumeCount; v++)
+	{
+		const double d[3] = {pos[0] - p->volumes[v].center[0], pos[1] - p->volumes[v].center[1], pos[2] - p->volumes[v].center[2]};
+		int inside = 1;
+
+		for (int a = 0; inside && (a < 3); a++)
+		{
+			const double along = d[0] * p->volumes[v].axis[a][0] + d[1] * p->volumes[v].axis[a][1] + d[2] * p->volumes[v].axis[a][2];
+
+			inside = fabs(along) <= p->volumes[v].half[a];
+		}
+		if (inside)
+		{
+			return v;
+		}
+	}
+	return -1;
+}
+
+int ExtPhys_ScaleGravityFor(const struct Driver *d, int gravity)
+{
+	int v;
+	int seat;
+	double pos[3];
+
+	gravity = ExtPhys_ScaleGravity(gravity);
+	// without volumes (and always without --ext-track) nothing further runs
+	if ((s_extPhys.p.volumeCount == 0) || (d == NULL) || !ExtPhys_InForce())
+	{
+		return gravity;
+	}
+	pos[0] = (double)(d->posCurr.x >> 8);
+	pos[1] = (double)(d->posCurr.y >> 8);
+	pos[2] = (double)(d->posCurr.z >> 8);
+	v = ExtPhys_VolumeAtWith(&s_extPhys.p, pos);
+	seat = d->driverID;
+	if ((seat >= 0) && (seat < EXT_PHYS_SEATS) && (s_extPhysVolumeSeat[seat] != v + 1))
+	{
+		if (s_extPhysVolumeSeat[seat] != 0)
+		{
+			Platform_Log("[CTR ExtPhys] seat %d leave gravity volume %d (%s) frame %d\n", seat, s_extPhysVolumeSeat[seat] - 1,
+			             s_extPhys.p.volumes[s_extPhysVolumeSeat[seat] - 1].name, s_extPhysRun.tick + 2);
+		}
+		if (v >= 0)
+		{
+			Platform_Log("[CTR ExtPhys] seat %d enter gravity volume %d (%s, %d%%) frame %d pos %d %d %d\n", seat, v, s_extPhys.p.volumes[v].name,
+			             s_extPhys.p.volumes[v].gravityPercent, s_extPhysRun.tick + 2, (int)pos[0], (int)pos[1], (int)pos[2]);
+		}
+		s_extPhysVolumeSeat[seat] = v + 1;
+	}
+	if (v < 0)
+	{
+		return gravity;
+	}
+	return CTR_MipsDiv(CTR_MipsMulLo(gravity, s_extPhys.p.volumes[v].gravityPercent), EXT_PHYS_GRAVITY_NEUTRAL);
+}
+
 // Z-h: the zone lines of a frame (after the game logic).
 internal void ExtPhys_ZoneFrameLog(const struct GameTracker *gGT)
 {
@@ -917,6 +1054,7 @@ void ExtPhys_OnLogicFrame(void)
 	{
 		memset(&s_extPhysRun, 0, sizeof(s_extPhysRun));
 		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		memset(s_extPhysVolumeSeat, 0, sizeof(s_extPhysVolumeSeat));
 		return;
 	}
 	s_extPhysRun.armed = 1;
@@ -1245,6 +1383,37 @@ int ExtPhys_Selftest(void)
 		ExtPhys_ZoneStep(0, &td, 1, 0, slope, 33);
 		ExtPhys_TestCheck(!s->inZone, "back in, then on ground without a zone: out at once", &checks, &failures);
 		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+	}
+	{
+		// gravity volumes: read, a box turned 45 degrees about y, the point test,
+		// bad entries counted; without volumes ScaleGravityFor = ScaleGravity
+		ExtPhysParams vp;
+		static struct Driver tv;
+		const double inside[3] = {1000.0 + 140.0, 500.0, 2000.0 + 140.0};   // 198 along the box's first axis
+		const double outside[3] = {1000.0 + 140.0, 500.0, 2000.0 - 140.0};  // 198 along the second (half 100)
+		const double above[3] = {1000.0, 500.0 + 301.0, 2000.0};
+
+		ExtPhys_TestRead("{\"physics\": {\"gravity_volumes\": [{\"name\": \"low\", \"center\": [1000, 500, 2000], \"axes\": [[1, 0, 1], [-1, 0, 1], "
+		                 "[0, 1, 0]], \"half\": [200, 100, 300], \"gravity_percent\": 50}, {\"center\": [0, 0], \"axes\": [], \"half\": [1, 1, 1], "
+		                 "\"gravity_percent\": 50}]}}",
+		                 &vp);
+		ExtPhys_TestCheck((vp.volumeCount == 1) && vp.anySet && (vp.volumes[0].gravityPercent == 50) && (strcmp(vp.volumes[0].name, "low") == 0) &&
+		                      (fabs(vp.volumes[0].axis[0][0] - 0.70710678) < 1e-6) && (vp.badValues == 1),
+		                  "gravity volumes: one read (axes normalised), a broken one counted", &checks, &failures);
+		ExtPhys_TestCheck((ExtPhys_VolumeAtWith(&vp, inside) == 0) && (ExtPhys_VolumeAtWith(&vp, outside) == -1) &&
+		                      (ExtPhys_VolumeAtWith(&vp, above) == -1) && (ExtPhys_VolumeAtWith(&vp, vp.volumes[0].center) == 0),
+		                  "the turned box holds a point along its long axis, not one along its short axis or above it", &checks, &failures);
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+		memset(&tv, 0, sizeof(tv));
+		{
+			int same = 1;
+
+			for (int g = -0x8000; g <= 0x7fff; g += 13)
+			{
+				same = same && (ExtPhys_ScaleGravityFor(&tv, g) == g) && (ExtPhys_ScaleGravityFor(NULL, g) == g);
+			}
+			ExtPhys_TestCheck(same, "without volumes (and without --ext-track) ScaleGravityFor hands every gravity back", &checks, &failures);
+		}
 	}
 	{
 		// outside the zones every zone hook is inert: no zones read, nothing in force

@@ -125,6 +125,8 @@
 #include "platform/native_exttrack_nav.c"
 #include "platform/native_extcrates.c"
 #include "platform/native_extmusic.c"
+#include "platform/native_extmap.c"
+#include "platform/native_extcam.c"
 #include "platform/engine_exttrack.c"
 // The hi-res drivers of the .rldchar (round of 2026-10-17): the pose maths
 // (header-only, after cgltf), the selftests' GLB builder, the clip state
@@ -328,7 +330,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
     {"--dev-drive-log", "[n]", "log lines of the kart of seat 0: every n race frames (default 15) position, restart point, distance, lap, ground contact; every lap change; every mask grab with its reason and every landing; reads only, for measuring"},
     {"--dev-kart-steer-lead", "<1|2>", "with --dev-kart-steer: steer toward the restart point 1 or 2 (default) ahead of the kart's own; for measuring"},
-    {"--dev-kart-steer-unstick", "", "with --dev-kart-steer: aim at the first restart point 12 m ahead; a kart that moved less than 1 m in 1.5 s backs off (SQUARE, steering turned round), stuck again soon after: mask grab; every action logged; for measuring"},
+    {"--dev-kart-steer-unstick", "", "with --dev-kart-steer: a kart that moved less than 1 m in 0.8 s backs off (SQUARE, steering turned round), stuck again soon after: mask grab; every action logged; for measuring"},
     {"--dev-kart-steer", "[n]", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points; from race n of the run on (default 1) SQUARE (every other time with DOWN) after it got reserves, off the pad; for measuring"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
@@ -5378,7 +5380,7 @@ int main(int argc, char *argv[])
 				extern int g_cfg_kartSteerUnstick;
 
 				g_cfg_kartSteerUnstick = 1;
-				printf("[CTR Native] --dev-kart-steer-unstick: aim 12 m ahead, back off or mask grab when stuck\n");
+				printf("[CTR Native] --dev-kart-steer-unstick: back off or mask grab when stuck\n");
 			}
 			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
 			{

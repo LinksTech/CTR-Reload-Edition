@@ -1,5 +1,6 @@
 #include <platform/native_exttrack_race.h>
 #include <platform/native_extcoll.h>
+#include <platform/native_extphys.h>
 #include <platform/engine.h>
 
 // THE EXTERNAL TRACK'S RACE LOGIC - see include/platform/native_exttrack_race.h.
@@ -49,6 +50,7 @@
 //   [CTR ExtTrack] respawn seat 0 ...         D7: where the kart landed against the node
 //   [CTR ExtTrack] respawn seat S ... (bot)   a CPU driver left a mask grab
 //   [CTR ExtTrack] respawn seat S placed ...  B5: where the teleport put the kart (before its fall)
+//   [CTR ExtTrack] respawn seat S seeded ...  B5: the zone state set after the teleport (tracks with zones)
 //   [CTR ExtTrack] respawn seat 0 ground ...  B5: frames until the kart has ground again, its up
 //                                             against the surface normal there
 //   [CTR ExtTrack] respawn seat 0 stable ...  B5: 90 frames after that without a new mask grab
@@ -78,6 +80,8 @@ enum
 	EXTRACE_DRIVERS = 8,
 	EXTRACE_GROUND_WAIT = 300,     // B5: frames the ground watch waits after a respawn
 	EXTRACE_STABLE_FRAMES = 90,    // B5: frames without a new mask grab after the ground contact
+	EXTRACE_RESPAWN_Y_OFFSET = 0x80, // the respawn's height over the surface (VehStuckProc.c, VEH_STUCK_RESPAWN_Y_OFFSET)
+	EXTRACE_SEED_PROBE_LEN = 384,  // B5: the surface probe after a respawn: from the kart's place (node + 0x80) this far down (to node - 0x100)
 	EXTRACE_KIND_LINE = 0,
 	EXTRACE_KIND_RESTART = 1,
 	EXTRACE_KIND_DIR = 2,
@@ -426,12 +430,26 @@ void ExtRace_SetRespawnList(const char *text)
 }
 
 // game/Vehicle/VehStuckProc.c, right after the respawn teleport (VehBirth_TeleportSelf)
-// of a human kart: one log line; the place where the physics part's state is set for
-// the new position (anti-gravity zones, B5). Outside the external track: nothing.
+// of a human kart: one log line, and - on a track with anti-gravity zones - the
+// place and the physics part's zone state set for the new place (B5).
+// THE OWN PROBE. The teleport's vertical probe starts at the node's height
+// (VehBirth.c:261-265); where the converter's node lies a little under the game's
+// surface (measured: a 29 degree ramp 14 units above its node) it finds nothing,
+// keeps world up as the normal and the old lastValid (VehBirth.c:267-274). So on a
+// track with zone records a probe of the external collision runs from the kart's
+// place (node + 0x80) 384 units down (ExtColl_ProbeSurface, the game's ray test):
+// with a hit the kart stands 0x80 over it, lastValid is its record, and the
+// zone state is seeded with its normal and zone (zone 0 = world: an old zone up
+// must not pull the kart toward a wall while it drops; outside a zone this is
+// what the teleport does with a hit - the normals of the ground). Without a hit
+// the teleport's result stays (logged). On a track without zone records nothing
+// is set (the drive is the same as before, gate A2).
 void ExtRace_OnRespawned(struct Driver *d)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	int seat;
+	int zone = 0;
+	int seeded = 0;
 
 	if (!s_extRaceReady || (d == NULL) || (gGT == NULL) || (gGT->level1 == NULL) || (gGT->level1->ptr_restart_points != s_extRace.nodes))
 	{
@@ -444,9 +462,48 @@ void ExtRace_OnRespawned(struct Driver *d)
 			break;
 		}
 	}
-	Platform_Log("[CTR ExtTrack] respawn seat %d placed frame %d pos %d %d %d normal %d %d %d cp %d\n", seat, s_extRaceFrame, d->posCurr.x >> 8,
+	if (ExtColl_ZoneRecords() > 0)
+	{
+		const int before = ExtPhys_DriverZone(d);
+		SVec3 from;
+		SVec3 down;
+		ExtCollHit hit;
+
+		from.x = (s16)(d->posCurr.x >> 8);
+		from.y = (s16)(d->posCurr.y >> 8);
+		from.z = (s16)(d->posCurr.z >> 8);
+		down.x = 0;
+		down.y = -4096;
+		down.z = 0;
+		memset(&hit, 0, sizeof(hit));
+		if (ExtColl_ProbeSurface(&from, &down, EXTRACE_SEED_PROBE_LEN, &hit))
+		{
+			const int oldY = d->posCurr.y >> 8;
+
+			d->posCurr.x = (int)hit.pos.x << 8;
+			d->posCurr.y = ((int)hit.pos.y + EXTRACE_RESPAWN_Y_OFFSET) << 8;
+			d->posCurr.z = (int)hit.pos.z << 8;
+			d->posPrev = d->posCurr;
+			d->quadBlockHeight = (int)hit.pos.y << 8;
+			if (hit.record != NULL)
+			{
+				d->lastValid = (struct QuadBlock *)hit.record;
+			}
+			zone = hit.zone;
+			ExtPhys_SeedDriver(d, &hit.normal, zone);
+			seeded = 1;
+			Platform_Log("[CTR ExtTrack] respawn seat %d seeded zone %d -> %d up %d %d %d (surface y %d, teleport had y %d)\n", seat, before, zone,
+			             hit.normal.x, hit.normal.y, hit.normal.z, hit.pos.y, oldY);
+		}
+		else
+		{
+			Platform_Log("[CTR ExtTrack] respawn seat %d no surface under the place (probe from y %d, %d down) - the teleport's result stays\n", seat,
+			             from.y, EXTRACE_SEED_PROBE_LEN);
+		}
+	}
+	Platform_Log("[CTR ExtTrack] respawn seat %d placed frame %d pos %d %d %d normal %d %d %d cp %d zone %d%s\n", seat, s_extRaceFrame, d->posCurr.x >> 8,
 	             d->posCurr.y >> 8, d->posCurr.z >> 8, d->AxisAngle3_normalVec.x, d->AxisAngle3_normalVec.y, d->AxisAngle3_normalVec.z,
-	             (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1);
+	             (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1, zone, seeded ? "" : " (no zones)");
 }
 
 // game/Vehicle/VehStuckProc.c: the node a kart is put back at for the node its
@@ -760,7 +817,8 @@ internal int ExtRace_VecAngleTenths(int ax, int ay, int az, int bx, int by, int 
 	return (int)(acos(c) * 1800.0 / 3.14159265358979323846 + 0.5);
 }
 
-// B5: seat 0 after a respawn - frames until ground, its up (matrixFacingDir column 1, the kart's
+// B5: seat 0 after a respawn - frames until ground (ACTION_TOUCH_GROUND: the collision flag
+// DRIVER_COLL_FLAG_GROUNDED can still hold the frame before the respawn), its up (matrixFacingDir column 1, the kart's
 // drawn up) against the surface normal it stands on (AxisAngle1, set by the ground hits), then 90
 // frames without a new mask grab. Logs only.
 internal void ExtRace_WatchAfterRespawn(struct GameTracker *gGT)
@@ -781,7 +839,7 @@ internal void ExtRace_WatchAfterRespawn(struct GameTracker *gGT)
 	}
 	if (s_extRaceWatchPhase == 1)
 	{
-		if ((d->collisionFlags & DRIVER_COLL_FLAG_GROUNDED) != 0)
+		if ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0)
 		{
 			const int upTenths = ExtRace_VecAngleTenths(d->matrixFacingDir.m[0][1], d->matrixFacingDir.m[1][1], d->matrixFacingDir.m[2][1],
 			                                            d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z);

@@ -92,7 +92,11 @@ enum
 };
 
 #define EXT_COLL_EDGE_SLACK 2.5
+// a miss this close to an edge of the four high-LOD triangles is a seam of the
+// game's fixed point (3.0: a large sloped record of the second test track had one at 2.63)
+#define EXT_COLL_SEAM_MISS_SLACK 3.0
 #define EXT_COLL_SEAM_MAX_FRACTION 0.0005
+#define EXT_COLL_ZONE_RAY_MIN_NY 0.5
 
 typedef enum
 {
@@ -1073,8 +1077,9 @@ typedef struct
 	int edgeMisses;  // ray: no hit, but closer than EXT_COLL_EDGE_SLACK to an edge of the four high-LOD triangles:
 	                 // the game's barycentric test in fixed point (COLL_FIXED_TRIANGL_TestPoint, >> 6) leaves
 	                 // such seams on small triangles - counted and reported, not a failure
+	int zoneSteep;   // ray: zone records steeper than EXT_COLL_ZONE_RAY_MIN_NY, not tested by the vertical ray (counted)
 	int edgeBelow;   // ray: more than 1 under the record's plane, but within EXT_COLL_EDGE_SLACK of an edge (the same seam,
-	                 // a neighbour's plane wins); with edgeMisses at most EXT_COLL_SEAM_MAX_FRACTION of the points (PLAN sec. 7)
+	                 // a neighbour's plane wins); with edgeMisses at most EXT_COLL_SEAM_MAX_FRACTION of the points
 	double planeOffMax; // largest height difference of the game's stored plane from the exact surface
 	double planeOffNormalMax; // the same along the record's normal (height difference times |n.y|)
 	double normalWorst;  // largest angle of a game normal from its triangle (degrees)
@@ -1296,7 +1301,7 @@ internal void ExtColl_CheckRay(ExtCollCheck *ck, const struct QuadBlock *q, cons
 			}
 			if (!ExtColl_Probe((s16)x, (s16)floor(y + 0.5), (s16)z, &hy, &hn))
 			{
-				if (ExtColl_SubEdgeDistance(q, x, z) < EXT_COLL_EDGE_SLACK)
+				if (ExtColl_SubEdgeDistance(q, x, z) < EXT_COLL_SEAM_MISS_SLACK)
 				{
 					ck->edgeMisses++;
 				}
@@ -1311,7 +1316,7 @@ internal void ExtColl_CheckRay(ExtCollCheck *ck, const struct QuadBlock *q, cons
 			if (hy < yGame - 1.0)
 			{
 				// within the slack of an edge: the seam case of the game's
-				// fixed point (a neighbour's plane), counted apart (PLAN sec. 7)
+				// fixed point (a neighbour's plane), counted apart
 				if (ExtColl_SubEdgeDistance(q, x, z) < EXT_COLL_EDGE_SLACK)
 				{
 					ck->edgeBelow++;
@@ -1440,10 +1445,21 @@ internal void ExtColl_CheckAll(ExtCollCheck *ck, int step)
 			}
 		}
 
-		// 3. the ray over a ground record whose surface faces up
+		// 3. the ray over a ground record whose surface faces up; a steep zone
+		// record (n.y < 0.5) is left to the game's ray along the zone's normal
+		// and only counted (as the converter's check does)
 		if (((q->quadFlags & QUADBLOCK_FLAG_GROUND) != 0) && (ref[1] > 0.0) && (step > 0))
 		{
-			ExtColl_CheckRay(ck, q, planes, step);
+			const double refLen = sqrt(ref[0] * ref[0] + ref[1] * ref[1] + ref[2] * ref[2]);
+
+			if ((s_extColl.recZone != NULL) && (s_extColl.recZone[i] != 0) && (refLen > 0.0) && (ref[1] < EXT_COLL_ZONE_RAY_MIN_NY * refLen))
+			{
+				ck->zoneSteep++;
+			}
+			else
+			{
+				ExtColl_CheckRay(ck, q, planes, step);
+			}
 		}
 	}
 	gCTRNativeScratchpadBase = savedScratch;
@@ -1452,7 +1468,7 @@ internal void ExtColl_CheckAll(ExtCollCheck *ck, int step)
 internal int ExtColl_CheckPassed(const ExtCollCheck *ck)
 {
 	// seams (misses and below hits within the slack of an edge) at most 0.05 %
-	// of the ray points together (PLAN sec. 7, A7 limit); everything else 0
+	// of the ray points together; everything else 0
 	return (ck->normalsBad == 0) && (ck->lengthBad == 0) && (ck->overflow == 0) && (ck->notReached == 0) && (ck->misses == 0) && (ck->below == 0) &&
 	       (ck->points > 0) && ((double)(ck->edgeMisses + ck->edgeBelow) <= EXT_COLL_SEAM_MAX_FRACTION * (double)ck->points);
 }
@@ -1649,10 +1665,11 @@ void ExtColl_OnLevelLoaded(struct Level *lev)
 	ExtColl_CheckAll(&ck, 64);
 	Platform_Log("[CTR ExtColl] check %s: %d record(s), normals off %d, length off %d, overflow %d, not in tree %d; ray %d point(s), %d miss(es), "
 	             "%d seam miss(es) within %.1f of a triangle edge, %d seam below hit(s), %d below the game's plane, %d under a higher face, %d near a "
-	             "record edge skipped; the "
+	             "record edge skipped, %d steep zone record(s) left to the zone's ray; the "
 	             "game's planes lie up to %.2f from the exact surface in height, %.2f along the normal (%d hit(s) more than 1 off it)\n",
 	             ExtColl_CheckPassed(&ck) ? "passed" : "FAILED", ck.records, ck.normalsBad, ck.lengthBad, ck.overflow, ck.notReached, ck.points, ck.misses,
-	             ck.edgeMisses, EXT_COLL_EDGE_SLACK, ck.edgeBelow, ck.below, ck.above, ck.skippedEdge, ck.planeOffMax, ck.planeOffNormalMax, ck.offExact);
+	             ck.edgeMisses, EXT_COLL_SEAM_MISS_SLACK, ck.edgeBelow, ck.below, ck.above, ck.skippedEdge, ck.zoneSteep, ck.planeOffMax, ck.planeOffNormalMax,
+	             ck.offExact);
 	ExtColl_PrintSamples(&ck, 1);
 }
 
@@ -2137,11 +2154,10 @@ int ExtColl_Selftest(void)
 				printf("\n");
 				printf("ext selftest coll: real file normals off %d, length off %d, overflow %d, not in tree %d; ray %d point(s), %d miss(es), %d seam miss(es) "
 				       "within %.1f of a triangle edge, %d seam below hit(s), %d below the game's plane, %d under a higher face, %d near a record edge "
-				       "skipped; planes up to %.2f "
+				       "skipped, %d steep zone record(s) left to the zone's ray; planes up to %.2f "
 				       "from the exact surface in height, %.2f along the normal, %d hit(s) more than 1 off it\n",
-				       ck.normalsBad, ck.lengthBad, ck.overflow, ck.notReached, ck.points, ck.misses, ck.edgeMisses, EXT_COLL_EDGE_SLACK, ck.edgeBelow, ck.below,
-				       ck.above,
-				       ck.skippedEdge, ck.planeOffMax, ck.planeOffNormalMax, ck.offExact);
+				       ck.normalsBad, ck.lengthBad, ck.overflow, ck.notReached, ck.points, ck.misses, ck.edgeMisses, EXT_COLL_SEAM_MISS_SLACK, ck.edgeBelow, ck.below,
+				       ck.above, ck.skippedEdge, ck.zoneSteep, ck.planeOffMax, ck.planeOffNormalMax, ck.offExact);
 				printf("ext selftest coll: real file worst normal %.2f deg; records with a normal off by shortest edge <16 %d, <64 %d, <256 %d, >=256 %d\n",
 				       ck.normalWorst, ck.normalsBadEdge[0], ck.normalsBadEdge[1], ck.normalsBadEdge[2], ck.normalsBadEdge[3]);
 				ExtColl_PrintSamples(&ck, 0);

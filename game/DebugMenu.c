@@ -1,6 +1,7 @@
 #include <common.h>
 #include <platform/native_mods.h>
 #include <platform/native_extcoll.h>
+#include <platform/native_extphys.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
 // the [CTR Race] line names them, a measurement run must show "cheats none".
@@ -1429,25 +1430,23 @@ int g_cfg_kartSteer = 0;
 int g_cfg_kartSteerLead = 2;
 
 // --dev-kart-steer-unstick (only beside --dev-kart-steer; without it the helper
-// above is unchanged to the last pad bit). Two additions for long measuring
-// races, where a kart wedged in a wall corner stood still for the rest of the
-// run: (1) the target is the first restart point of the chain at least
-// KART_UNSTICK_LOOK units away from the kart (at most KART_UNSTICK_WALK points
-// on), not a fixed count of points; (2) when the kart moved less than
+// above is unchanged to the last pad bit). For long measuring races, where a
+// kart wedged in a wall corner stood still for the rest of the run: the target
+// stays the helper's own (restart points ahead); when the kart moved less than
 // KART_UNSTICK_MOVE units in KART_UNSTICK_TICKS race frames (after the start
 // lights, not in a mask grab), it backs off: KART_UNSTICK_BACK frames SQUARE
 // without CROSS (the brake reverses once slow, VehPhysProc.c:892-901) with the
 // steering turned round. Stuck again within KART_UNSTICK_AGAIN frames after
 // that: the game's own respawn (VehStuckProc_MaskGrab_Init, as COLL.c:1798-1803).
-// Every action is one log line, the counts one line when the race ends.
+// (A target 12 m ahead instead was tried first: on the first test track it cut corners into
+// the walls, 21 back-offs in 9000 frames, run U1.) Every action is one log
+// line, the counts one line when the race ends.
 int g_cfg_kartSteerUnstick = 0;
 
 enum
 {
-	KART_UNSTICK_LOOK = 768,  // 12 m
-	KART_UNSTICK_WALK = 12,
 	KART_UNSTICK_MOVE = 64,   // 1 m
-	KART_UNSTICK_TICKS = 45,  // 1.5 s
+	KART_UNSTICK_TICKS = 25,  // 0.8 s: detect + back off + detect again = 80 frames
 	KART_UNSTICK_BACK = 30,
 	KART_UNSTICK_AGAIN = 120,
 	KART_UNSTICK_HOLD = 90,   // no new action this long after a respawn
@@ -1544,39 +1543,23 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		int target = d->checkpoint.currentIndex;
 		int k;
 
-		if (!g_cfg_kartSteerUnstick)
+		for (k = 0; k < g_cfg_kartSteerLead; k++)
 		{
-			for (k = 0; k < g_cfg_kartSteerLead; k++)
-			{
-				const int next = cn[(target < count) ? target : 0].nextIndex_forward;
+			const int next = cn[(target < count) ? target : 0].nextIndex_forward;
 
-				target = (next < count) ? next : 0;
-			}
-		}
-		else
-		{
-			// The first point of the chain at least KART_UNSTICK_LOOK away (3D).
-			target = (target < count) ? target : 0;
-			for (k = 0; k < KART_UNSTICK_WALK; k++)
-			{
-				const long long ex = (long long)cn[target].pos.x - (d->posCurr.x >> 8);
-				const long long ey = (long long)cn[target].pos.y - (d->posCurr.y >> 8);
-				const long long ez = (long long)cn[target].pos.z - (d->posCurr.z >> 8);
-				const int next = cn[target].nextIndex_forward;
-
-				if ((k > 0) && ((ex * ex + ey * ey + ez * ez) >= (long long)KART_UNSTICK_LOOK * KART_UNSTICK_LOOK))
-				{
-					break;
-				}
-				target = (next < count) ? next : 0;
-			}
+			target = (next < count) ? next : 0;
 		}
 
 		{
 			const int dx = cn[target].pos.x - (d->posCurr.x >> 8);
 			const int dz = cn[target].pos.z - (d->posCurr.z >> 8);
-			const int want = ratan2(dx, dz) & 0xfff;
+			int want = ratan2(dx, dz) & 0xfff;
 			const int angle = d->angle & 0xfff;
+
+			// In an external track's anti-gravity zone d->angle is a heading
+			// in the surface frame: the target's heading is taken there too
+			// (platform/native_extphys.c; nothing outside a zone).
+			ExtPhys_ZoneHeadingTo(d, dx, cn[target].pos.y - (d->posCurr.y >> 8), dz, &want);
 			int diff = ((want - angle + 0x800) & 0xfff) - 0x800;
 			int turned = ((angle - lastAngle + 0x800) & 0xfff) - 0x800;
 
@@ -1676,7 +1659,9 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 				usRespawns++;
 				usHoldUntil = usTick + KART_UNSTICK_HOLD;
 				usBackEnd = -100000;
-				Platform_Log("[CTR Debug] --dev-kart-steer-unstick: stuck at %d %d %d frame %d -> respawn %d\n", px, py, pz, usTick, usRespawns);
+				// (The drive log names this mask grab "reason progress", its catch-all.)
+				Platform_Log("[CTR Debug] --dev-kart-steer-unstick: stuck at %d %d %d frame %d -> respawn %d (reason unstick)\n", px, py, pz, usTick,
+				             usRespawns);
 			}
 			else
 			{

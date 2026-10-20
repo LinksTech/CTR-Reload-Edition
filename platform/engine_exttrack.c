@@ -1150,6 +1150,15 @@ global_variable struct
 	u64 nodeDraws;
 	u64 culled;
 	u64 refused;
+	// THE INSTANCE TINT (render.instance_tint true): samples of the static
+	// track's baked light (vertex position, brightness 0..255), see
+	// ExtDraw_TintInstance.
+	int tintOn;
+	s16 (*tintPos)[3];
+	u8 *tintLight;
+	u32 tintCount;
+	u32 tintCap;
+	u32 tinted;
 } s_extDraw;
 
 // --------------------------------------------------------------------------
@@ -1484,6 +1493,122 @@ typedef struct
 	char why[96];
 } ExtDrawBuild;
 
+// THE INSTANCE TINT (round of 2026-10-20; only with render.instance_tint true).
+// The light of the source is baked into the track's vertex colours; the game's
+// instances (the crates) carry their own and stay bright in a dark cave. With
+// the field the samples of the static pieces are kept at load (position and
+// brightness = the largest channel of the vertex colour), and
+// ExtDraw_TintInstance gives an instance the brightness of the floor around it
+// through the PS1 draw's own fade (RenderBucket_LoadPrimColors: the colour moves
+// towards the far colour inst->colorRGBA by idpp->alphaScale / 4096, the far
+// colour set by the default setup RB_RETAIL_INST_SETUP_COLOR): far colour black,
+// alphaScale = the darkness. Without the field nothing is kept or changed.
+#define EXT_TINT_RADIUS 320.0f  // floor samples around the instance (x/z)
+#define EXT_TINT_BELOW 260      // ... from this far below its origin
+#define EXT_TINT_ABOVE 160      // ... to this far above
+#define EXT_TINT_FULL 170.0f    // this bright or more: no tint (first test track: beach 190-255, caves 40-140)
+#define EXT_TINT_MAX 0.75f      // at most this much towards black
+
+internal void ExtDraw_TintSamples(const EngineStaticPiece *piece)
+{
+	u32 i;
+
+	if (!s_extDraw.tintOn || (piece == NULL))
+	{
+		return;
+	}
+	if (s_extDraw.tintCount + piece->vertexCount > s_extDraw.tintCap)
+	{
+		const u32 cap = (s_extDraw.tintCount + piece->vertexCount) * 2u;
+		s16(*pos)[3] = (s16(*)[3])realloc(s_extDraw.tintPos, (size_t)cap * sizeof(*pos));
+		u8 *light;
+
+		if (pos == NULL)
+		{
+			return;
+		}
+		s_extDraw.tintPos = pos;
+		light = (u8 *)realloc(s_extDraw.tintLight, (size_t)cap);
+		if (light == NULL)
+		{
+			return;
+		}
+		s_extDraw.tintLight = light;
+		s_extDraw.tintCap = cap;
+	}
+	for (i = 0; i < piece->vertexCount; i++)
+	{
+		const EngineVertex *v = &piece->vertices[i];
+		const float *p = v->position;
+		u8 l = v->color[0];
+
+		if ((p[0] < -32767.0f) || (p[0] > 32767.0f) || (p[1] < -32767.0f) || (p[1] > 32767.0f) || (p[2] < -32767.0f) || (p[2] > 32767.0f))
+		{
+			continue;
+		}
+		l = (v->color[1] > l) ? v->color[1] : l;
+		l = (v->color[2] > l) ? v->color[2] : l;
+		s_extDraw.tintPos[s_extDraw.tintCount][0] = (s16)p[0];
+		s_extDraw.tintPos[s_extDraw.tintCount][1] = (s16)p[1];
+		s_extDraw.tintPos[s_extDraw.tintCount][2] = (s16)p[2];
+		s_extDraw.tintLight[s_extDraw.tintCount] = l;
+		s_extDraw.tintCount++;
+	}
+}
+
+// The darkness (0 = as made, EXT_TINT_MAX at most) for the brightness l.
+float ExtTrack_TintFor(float l)
+{
+	float k = 1.0f - l / EXT_TINT_FULL;
+
+	return (k < 0.0f) ? 0.0f : ((k > EXT_TINT_MAX) ? EXT_TINT_MAX : k);
+}
+
+// Gives the instance the light of the track around it (render.instance_tint).
+// 1 = tinted; 0 = off, no samples near, or bright enough.
+int ExtDraw_TintInstance(struct Instance *inst)
+{
+	double sum = 0.0;
+	u32 n = 0;
+	u32 i;
+	float k;
+
+	if (!ExtTrack_Active() || !s_extDraw.tintOn || (s_extDraw.tintCount == 0u) || (inst == NULL))
+	{
+		return 0;
+	}
+	for (i = 0; i < s_extDraw.tintCount; i++)
+	{
+		const float dx = (float)s_extDraw.tintPos[i][0] - (float)inst->matrix.t[0];
+		const float dz = (float)s_extDraw.tintPos[i][2] - (float)inst->matrix.t[2];
+		const int dy = (int)s_extDraw.tintPos[i][1] - inst->matrix.t[1];
+
+		if ((dy >= -EXT_TINT_BELOW) && (dy <= EXT_TINT_ABOVE) && (dx * dx + dz * dz <= EXT_TINT_RADIUS * EXT_TINT_RADIUS))
+		{
+			sum += s_extDraw.tintLight[i];
+			n++;
+		}
+	}
+	if (n == 0u)
+	{
+		return 0;
+	}
+	k = ExtTrack_TintFor((float)(sum / (double)n));
+	if (k <= 0.0f)
+	{
+		return 0;
+	}
+	inst->colorRGBA = 0;
+	inst->alphaScale = (s16)(k * 4096.0f);
+	s_extDraw.tinted++;
+	if (s_extDraw.tinted <= 64u)
+	{
+		Platform_Log("[CTR ExtTrack] tint: instance at %d %d %d: floor light %.0f of %u sample(s) -> towards black %.2f\n", inst->matrix.t[0], inst->matrix.t[1],
+		             inst->matrix.t[2], sum / (double)n, n, k);
+	}
+	return 1;
+}
+
 internal int ExtDraw_OnStaticPiece(void *user, const EngineStaticPiece *piece)
 {
 	ExtDrawBuild *b = (ExtDrawBuild *)user;
@@ -1513,6 +1638,7 @@ internal int ExtDraw_OnStaticPiece(void *user, const EngineStaticPiece *piece)
 		return 0;
 	}
 	memcpy(&b->indices[b->indexCount], piece->indices, (size_t)piece->indexCount * sizeof(u32));
+	ExtDraw_TintSamples(piece);
 	// Opaque and mask ranges first, then the blend ranges (the file's order inside each).
 	for (r = 0; r < piece->rangeCount; r++)
 	{
@@ -1846,10 +1972,15 @@ internal void ExtDraw_ReadOnce(void)
 		EngineStatic_SourceFileClose(&src);
 	}
 
-	// The static pieces of the track.
+	// The static pieces of the track (and the samples of the instance tint).
+	s_extDraw.tintOn = ExtJson_Bool(doc, ExtJson_Get(doc, render, "instance_tint"), 0);
 	if (!ExtDraw_LoadStatic(trackPath))
 	{
 		return;
+	}
+	if (s_extDraw.tintOn)
+	{
+		Platform_Log("[CTR ExtTrack] draw: instance tint on (render.instance_tint): %u light sample(s) of the static track\n", s_extDraw.tintCount);
 	}
 
 	// The sky's nodes, in the order of sky.order, then the rest of the file's
@@ -2059,6 +2190,8 @@ void Engine_ExtTrackLoad(void)
 	{
 		return;
 	}
+	// The HUD minimap of the track (platform/native_extmap.c; only with a "map" section).
+	ExtMap_LevelLoad();
 	if (!s_extDraw.reportOn)
 	{
 		s_extDraw.reportOn = 1;
@@ -2186,6 +2319,7 @@ void Engine_ExtTrackCollect(struct GameTracker *gGT)
 		return;
 	}
 	s_extDraw.frames++;
+	ExtMap_Frame(gGT);
 	Engine_CameraScreenFromWorld(cam, &screen);
 	t = Engine_FrameTime(Engine_SceneBank());
 	for (p = 0; p < s_extDraw.pieceCount; p++)
@@ -2641,6 +2775,15 @@ int ExtJson_Selftest(void)
 		EngineStatic_Close(&model);
 		free(glb);
 	}
+	// The instance tint's darkness for a floor brightness.
+	ExtJson_Check((ExtTrack_TintFor(255.0f) == 0.0f) && (ExtTrack_TintFor(170.0f) == 0.0f) && (fabsf(ExtTrack_TintFor(85.0f) - 0.5f) < 1e-6f) &&
+	                  (fabsf(ExtTrack_TintFor(0.0f) - 0.75f) < 1e-6f),
+	              "instance tint: bright floor none, half light 0.5, dark at most 0.75", &n, &failures);
+	ExtJson_Check(ExtDraw_TintInstance(NULL) == 0, "instance tint off without the field", &n, &failures);
+	// The HUD minimap's table, raster and texel packing (platform/native_extmap.c).
+	ExtMap_Selftest(&n, &failures);
+	// The zone camera's roll against the game's camera matrix (platform/native_extcam.c).
+	ExtCam_Selftest(&n, &failures);
 	ExtJson_Check(ExtTrack_AudioPaused() == 0, "audio pause is 0 without the switch", &n, &failures);
 
 	if (failures == 0)

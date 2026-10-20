@@ -2750,6 +2750,36 @@ UpdateTireColorTimer:
 	botDriver->posCurr.y = CTR_MipsAddLo(botDriver->botData.aiPhysics.velocity.y, botDriver->botData.positionBackup.y);
 	botDriver->posCurr.z = CTR_MipsAddLo(botDriver->botData.aiPhysics.velocity.z, botDriver->botData.positionBackup.z);
 
+	// External anti-gravity zones: the zone rule of the player physics also for
+	// the bot (platform/native_extphys.c, its [CTR ExtZone] lines) - the surface
+	// under the bot along its up vector (the frames' up in a zone, else world up).
+	// Read only for the bot's movement: the rail decides where it drives.
+	if ((ExtNav_FrameZone(navFrameCurr) != 0) || (ExtPhys_DriverZone(botDriver) != 0))
+	{
+		short zu[3] = {0, 4096, 0};
+		SVec3 from, dir, upv;
+		ExtCollHit hit;
+
+		(void)ExtNav_FrameUpLerp(navFrameCurr, navFrameNext, percentage, zu);
+		upv.x = zu[0];
+		upv.y = zu[1];
+		upv.z = zu[2];
+		from.x = (s16)(CTR_MipsSra(botDriver->posCurr.x, FRACTIONAL_BITS_8) + ((zu[0] * 0x80) >> 12));
+		from.y = (s16)(CTR_MipsSra(botDriver->posCurr.y, FRACTIONAL_BITS_8) + ((zu[1] * 0x80) >> 12));
+		from.z = (s16)(CTR_MipsSra(botDriver->posCurr.z, FRACTIONAL_BITS_8) + ((zu[2] * 0x80) >> 12));
+		dir.x = (s16)-zu[0];
+		dir.y = (s16)-zu[1];
+		dir.z = (s16)-zu[2];
+		if (ExtColl_ProbeSurface(&from, &dir, 0x180, &hit))
+		{
+			ExtPhys_BotGround(botDriver, hit.record, &hit.normal);
+		}
+		else
+		{
+			ExtPhys_BotGround(botDriver, NULL, &upv);
+		}
+	}
+
 	botInstance->matrix.t[0] = CTR_MipsSra(botDriver->posCurr.x, FRACTIONAL_BITS_8);
 	botInstance->matrix.t[1] = CTR_MipsAddLo(CTR_MipsSra(botDriver->posCurr.y, FRACTIONAL_BITS_8), botDriver->Screen_OffsetY);
 	botInstance->matrix.t[2] = CTR_MipsSra(botDriver->posCurr.z, FRACTIONAL_BITS_8);
