@@ -8,6 +8,7 @@ int ExtCam_NoFlyIn(int levelID);
 int ExtCam_EndSpin(int levelID);
 void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct PushBuffer *pb, const Vec3 *camPos, const Vec3 *lookAt);
 void ExtCam_NoteFollow(const struct GameTracker *gGT, const struct Driver *d, int turningAway);
+void ExtCam_NoteRig(const struct GameTracker *gGT, const struct Driver *d, const Vec3 *pos);
 #endif
 #include <platform/native_extcoll.h>
 
@@ -1278,6 +1279,11 @@ void CAM_FollowDriver_Normal(struct CameraDC *cDC, struct Driver *d, SVec3 *push
 
 	cam->pos.z += cam->delta.z;
 
+#if defined(CTR_NATIVE)
+	// The external track's zone camera takes the eye as built here (platform/native_extcam.c). Notes only.
+	ExtCam_NoteRig(gGT, d, &cam->pos);
+#endif
+
 	uVar8 = 0;
 	if (gGT->numPlyrCurrGame != 2)
 	{
@@ -1594,13 +1600,15 @@ LAB_8001ab04:
 
 #if defined(CTR_NATIVE)
 	// The external track's camera in an anti-gravity zone (camera.follow_up
-	// "zones", platform/native_extcam.c): the push buffer laid into the kart's
-	// frame. Returns at once without the switch, the section or a zone.
+	// "zones", platform/native_extcam.c): the retail camera turned into the frame
+	// of the ground. Returns at once, writing nothing, without the switch, the
+	// section or a zone - also in a mask grab, where it only acts while the zone
+	// camera is already in use.
 	{
-		// For the measure line (--dev-ext-cam-log): the frame in which this ran for seat 0. Notes only.
+		// The frame in which this ran for seat 0 (zone camera, measure line). Notes only.
 		ExtCam_NoteFollow(gGT, d, (cDC->flags & (CAMERA_FLAG_TRANSITION_AWAY | CAMERA_FLAG_BATTLE_END_OF_RACE)) != 0);
 		// Not while the camera turns away (end of the race: the spin round the driver, camera.end) or flies a transition.
-		if ((d->kartState != KS_MASK_GRABBED) && ((cDC->flags & (CAMERA_FLAG_TRANSITION_AWAY | CAMERA_FLAG_BATTLE_END_OF_RACE)) == 0))
+		if ((cDC->flags & (CAMERA_FLAG_TRANSITION_AWAY | CAMERA_FLAG_BATTLE_END_OF_RACE)) == 0)
 		{
 			ExtCam_Follow(gGT, d, pb, &cam->pos, &cam->delta);
 		}
