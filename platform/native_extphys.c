@@ -569,6 +569,7 @@ global_variable struct
 		int v0;
 		int peak;
 		int peakAt;
+		int aboveAt; // the first watched frame over the normal top speed, -1 none
 		int left;
 	} watch[EXT_PHYS_SEATS];
 	int boosts;
@@ -608,6 +609,7 @@ void ExtPhys_NotePadBoost(const struct Driver *d)
 	s_extPhysRun.watch[seat].v0 = d->speed;
 	s_extPhysRun.watch[seat].peak = d->speed;
 	s_extPhysRun.watch[seat].peakAt = -1;
+	s_extPhysRun.watch[seat].aboveAt = -1;
 	s_extPhysRun.watch[seat].left = EXT_PHYS_BOOST_WATCH + 1;
 }
 
@@ -1079,6 +1081,10 @@ void ExtPhys_OnLogicFrame(void)
 			s_extPhysRun.watch[seat].peak = d->speed;
 			s_extPhysRun.watch[seat].peakAt = s_extPhysRun.tick + 1 - s_extPhysRun.watch[seat].frame;
 		}
+		if ((s_extPhysRun.watch[seat].aboveAt < 0) && (d->speed > d->const_Speed_ClassStat))
+		{
+			s_extPhysRun.watch[seat].aboveAt = s_extPhysRun.tick + 1 - s_extPhysRun.watch[seat].frame;
+		}
 		if (--s_extPhysRun.watch[seat].left > 0)
 		{
 			continue;
@@ -1086,10 +1092,12 @@ void ExtPhys_OnLogicFrame(void)
 		s_extPhysRun.watch[seat].active = 0;
 		s_extPhysRun.boosts++;
 		s_extPhysRun.boostsOffPad += (s_extPhysRun.watch[seat].pad < 0) ? 1 : 0;
-		Platform_Log("[CTR ExtPhys] boost seat %d frame %d pad %d pos %d %d %d speed %d -> peak %d at +%d frame(s), normal max %d\n", seat,
-		             s_extPhysRun.watch[seat].frame, s_extPhysRun.watch[seat].pad, s_extPhysRun.watch[seat].pos[0], s_extPhysRun.watch[seat].pos[1],
+		// "first above max at +J": the first of the watched frames whose speed is
+		// over the normal top speed (-1: none of them)
+		Platform_Log("[CTR ExtPhys] boost seat %d frame %d pad %d pos %d %d %d speed %d -> peak %d at +%d frame(s), normal max %d, first above max at +%d\n",
+		             seat, s_extPhysRun.watch[seat].frame, s_extPhysRun.watch[seat].pad, s_extPhysRun.watch[seat].pos[0], s_extPhysRun.watch[seat].pos[1],
 		             s_extPhysRun.watch[seat].pos[2], s_extPhysRun.watch[seat].v0, s_extPhysRun.watch[seat].peak, s_extPhysRun.watch[seat].peakAt,
-		             d->const_Speed_ClassStat);
+		             d->const_Speed_ClassStat, s_extPhysRun.watch[seat].aboveAt);
 	}
 }
 
@@ -1259,6 +1267,39 @@ int ExtPhys_Selftest(void)
 		ExtPhys_TestCheck(!c.anySet && (c.badValues == 1), "an unknown version is counted", &checks, &failures);
 		ExtPhys_TestRead("{\"physics\": [1, 2]}", &c);
 		ExtPhys_TestCheck(!c.present && !c.anySet, "a section that is no object counts as missing", &checks, &failures);
+	}
+
+	// 4a. the surface frame against the game's own kart frame: the forward of
+	// VehPhysForce_RotAxisAngle(n, a) must have heading a in ExtPhys_SurfaceFrame(n)
+	{
+		const SVec3 ns[5] = {{0, 4096, 0}, {0, 2896, -2896}, {0, 0, 4096}, {-18, -344, 4082}, {75, -492, 4066}};
+		int worst = 0;
+
+		for (int i = 0; i < 5; i++)
+		{
+			for (int a = 0; a < 4096; a += 256)
+			{
+				MATRIX m;
+				SVec3 n = ns[i];
+				s32 r[3], f[3];
+				s32 lx, lz;
+				int h, e;
+
+				VehPhysForce_RotAxisAngle(&m, CTR_VECTOR_DATA(&n), (s16)a);
+				ExtPhys_SurfaceFrame(ns[i], r, f);
+				lx = (s32)(((s64)r[0] * m.m[0][2] + (s64)r[1] * m.m[1][2] + (s64)r[2] * m.m[2][2]) >> 12);
+				lz = (s32)(((s64)f[0] * m.m[0][2] + (s64)f[1] * m.m[1][2] + (s64)f[2] * m.m[2][2]) >> 12);
+				h = ratan2(lx, lz) & 0xfff;
+				e = abs((((h - a) + 0x800) & 0xfff) - 0x800);
+				if (e > worst)
+				{
+					worst = e;
+					printf("ext selftest phys: frame check normal %d %d %d angle %d -> heading %d\n", ns[i].x, ns[i].y, ns[i].z, a, h);
+				}
+			}
+		}
+		snprintf(what, sizeof(what), "the kart's forward (RotAxisAngle) has its angle as heading in the surface frame (worst %d of 4096)", worst);
+		ExtPhys_TestCheck(worst <= 8, what, &checks, &failures);
 	}
 
 	// 4. the zones (B2): reader, surface frame, the zone rule

@@ -1549,6 +1549,27 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 
 			target = (next < count) ? next : 0;
 		}
+		// In an external track's anti-gravity zone the checkpoint of the ground
+		// can lag behind on walls and overhangs (the point the kart drives on
+		// lies far from the node of its record): a target behind the kart (more
+		// than a quarter turn off its heading in the surface frame) or closer
+		// than 4 m is skipped, up to four nodes on. Nothing outside a zone.
+		for (k = 0; (k < 4) && (ExtPhys_DriverZone(d) != 0); k++)
+		{
+			const int tdx = cn[target].pos.x - (d->posCurr.x >> 8);
+			const int tdy = cn[target].pos.y - (d->posCurr.y >> 8);
+			const int tdz = cn[target].pos.z - (d->posCurr.z >> 8);
+			int heading = 0;
+			const int off = ExtPhys_ZoneHeadingTo(d, tdx, tdy, tdz, &heading) ? (((heading - (d->angle & 0xfff) + 0x800) & 0xfff) - 0x800) : 0;
+			const s64 dist2 = (s64)tdx * tdx + (s64)tdy * tdy + (s64)tdz * tdz;
+			const int next = cn[(target < count) ? target : 0].nextIndex_forward;
+
+			if ((off <= 0x400) && (off >= -0x400) && (dist2 >= (s64)256 * 256))
+			{
+				break;
+			}
+			target = (next < count) ? next : 0;
+		}
 
 		{
 			const int dx = cn[target].pos.x - (d->posCurr.x >> 8);
