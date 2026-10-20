@@ -698,6 +698,14 @@ void BOTS_ThTick_RevEngine(struct Thread *botThread)
 	}
 }
 
+// The external nav paths' code of fixup round 1 is for the CPU drivers only: a
+// human seat driven as a bot (after its finish line) keeps the code of before
+// that round (night run 1: time trial after the finish line as before).
+static int BOTS_ExtFixupFor(const struct Driver *d)
+{
+	return ExtNav_Active() && (d != NULL) && ((int)d->driverID >= (int)sdata->gGT->numPlyrCurrGame);
+}
+
 void BOTS_MaskGrab(struct Thread *botThread)
 {
 	struct Driver *bot = botThread->object;
@@ -714,7 +722,7 @@ void BOTS_MaskGrab(struct Thread *botThread)
 	ExtNav_BotRespawn(bot, respawnZone, (int)(frame - sdata->NavPath_ptrNavFrameArray[bot->botData.botPath]));
 	// External nav paths: the bot is set down outside any zone - its zone state
 	// (the player physics' rule, ExtPhys_BotGround) starts again from world up.
-	if (ExtNav_Active())
+	if (BOTS_ExtFixupFor(bot))
 	{
 		ExtPhys_SeedDriver(bot, NULL, 0);
 	}
@@ -1704,7 +1712,7 @@ UpdateTireColorTimer:
 	// without the section (every other track) the value comes back unchanged.
 	// With the external nav paths the player's own function: the track's share
 	// and the gravity volume that holds the bot (the low-gravity jumps).
-	if (ExtNav_Active())
+	if (BOTS_ExtFixupFor(botDriver))
 	{
 		gravity = ExtPhys_ScaleGravityFor(botDriver, gravity);
 	}
@@ -2128,10 +2136,10 @@ UpdateTireColorTimer:
 		// (External nav paths: no floor more than EXT_PHYS_BOT_STEP over the bot, and
 		// the bot sits EXT_PHYS_BOT_LIFT over the game's plane - as in the drive
 		// state below; without the external paths the retail test as it was.)
-		if ((sps->boolDidTouchQuadblock != 0) && (!ExtNav_Active() || ((sps->Union.QuadBlockColl.hitPos.y - probeY) <= EXT_PHYS_BOT_STEP)))
+		if ((sps->boolDidTouchQuadblock != 0) && (!BOTS_ExtFixupFor(botDriver) || ((sps->Union.QuadBlockColl.hitPos.y - probeY) <= EXT_PHYS_BOT_STEP)))
 		{
 			botDriver->quadBlockHeight = CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.y, 8);
-			if (ExtNav_Active())
+			if (BOTS_ExtFixupFor(botDriver))
 			{
 				botDriver->quadBlockHeight = CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.y + EXT_PHYS_BOT_LIFT, 8);
 			}
@@ -2163,7 +2171,7 @@ UpdateTireColorTimer:
 	ExtCollHit extHit;
 	SVec3 extUp = {0, 4096, 0};
 	int extHitOk = 0;
-	const int extGround = ExtNav_Active() && ((botDriver->botData.botFlags & (BOT_FLAG_ESTIMATE_NAV | BOT_FLAG_FREE_PHYSICS)) == 0);
+	const int extGround = BOTS_ExtFixupFor(botDriver) && ((botDriver->botData.botFlags & (BOT_FLAG_ESTIMATE_NAV | BOT_FLAG_FREE_PHYSICS)) == 0);
 
 	if (extGround && (ExtNav_FrameZone(navFrameCurr) == 0))
 	{
@@ -2811,7 +2819,7 @@ UpdateTireColorTimer:
 	// (ExtPhys_DriverUp) - outside a zone the ground's normal while on the ground.
 	// In a zone frame also while estimating (the start of the race: free physics
 	// is off in a zone, the position is the rail's).
-	if (extGround || (ExtNav_Active() && (ExtNav_FrameZone(navFrameCurr) != 0)))
+	if (extGround || (BOTS_ExtFixupFor(botDriver) && (ExtNav_FrameZone(navFrameCurr) != 0)))
 	{
 		SVec3 kartUp = {0, 4096, 0};
 		int kartUpSet = 0;
