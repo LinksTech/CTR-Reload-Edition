@@ -994,6 +994,7 @@ void ExtTrack_OnLogicFrame(void)
 	ExtMusic_OnLogicFrame();
 	ExtCam_OnLogicFrame();
 	ExtObstacle_OnLogicFrame();
+	ExtTel_OnLogicFrame();
 }
 
 // The game's audio pause (MainFrame_TogglePauseAudio): kept for the parts, read

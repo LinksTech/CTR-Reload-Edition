@@ -127,6 +127,8 @@
 #include "platform/native_extmusic.c"
 #include "platform/native_extmap.c"
 #include "platform/native_extcam.c"
+// The telemetry line of seat 0 (night run 1, measuring only): before the dispatcher that calls it.
+#include "platform/native_exttelemetry.c"
 // The moving obstacles (round of 2026-10-20): their header before the
 // dispatcher (it calls them), the part after it (it reads the draw node list).
 #include <platform/native_extobstacle.h>
@@ -476,6 +478,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-ext-kart-log", "", "with --ext-track, measuring only: one [CTR ExtKart] log line per kart and logic frame - the distance of the kart to the ground along the local up (the nearest nav frame's up), its lap, finish, kart and mask state; a log only"},
     {"--dev-ext-obstacle-place", "<timer>", "with --ext-track, measuring only: at the first logic frame with the game timer at or past <timer> (0..1000000) seat 0 is put onto the path of the track's first moving obstacle, where its front part is 1 s later, stopped; one log line"},
     {"--dev-ext-crate-log", "", "with --ext-track, measuring only: [CTR ExtCrateLog] lines - each crate at the race start with the ground under it along the local up, each contact with the kart's ground contact and the jump input before it, each crate back at full size with its delay; a log only"},
+    {"--dev-ext-telemetry", "", "with --ext-track, measuring only: one [CTR ExtTel] line per logic frame of seat 0 - position, velocity, the kart's rotation matrix and up, ground contact and normal, zone and its up, kart state, the camera this frame's logic set and the matrix last drawn; a log only"},
     {"--dev-ext-cam-log", "<H>", "with --ext-track, measuring only: one [CTR ExtCam] measure line per frame of seat 0 - the camera as drawn (eye, its up), where the kart lies in the picture and whether ground or a wall lies between the eye and the kart's middle (0.5 H along its up), the last H/2 units before it left out; H = the kart's height in world units, 1..1000 (decimals allowed, e.g. 66.2); a log only"},
     {"--ext-selftest", "<json|coll|race|nav|crates|music|phys|obstacle>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates, the music, the physics values or the moving obstacles, then end (ctest ext_selftest_<name>)"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
@@ -1580,6 +1583,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int kartLogGiven = 0;
 		const char *obstaclePlace = NULL;
 		int crateLogGiven = 0;
+		int telemetryGiven = 0;
 		const char *camLogValue = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
@@ -1613,6 +1617,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--dev-ext-crate-log") == 0)
 			{
 				crateLogGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-ext-telemetry") == 0)
+			{
+				telemetryGiven = 1;
 			}
 			else if (strcmp(argv[argIndex], "--dev-ext-cam-log") == 0)
 			{
@@ -1654,6 +1662,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (crateLogGiven && !extGiven)
 			{
 				refusal = "switch --dev-ext-crate-log requires --ext-track";
+			}
+			else if (telemetryGiven && !extGiven)
+			{
+				refusal = "switch --dev-ext-telemetry requires --ext-track";
 			}
 			else if ((camLogValue != NULL) && !extGiven)
 			{
@@ -1918,6 +1930,11 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		{
 			// Checked before any window (needs --ext-track); a log only (platform/native_extcrates.c).
 			g_cfg_extCrateLog = 1;
+		}
+		else if (strcmp(argv[argIndex], "--dev-ext-telemetry") == 0)
+		{
+			// Checked before any window (needs --ext-track); a log only (platform/native_exttelemetry.c).
+			g_cfg_extTelemetry = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--dev-ext-cam-log") == 0) && ((argIndex + 1) < argc))
 		{
