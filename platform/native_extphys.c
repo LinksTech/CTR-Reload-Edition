@@ -33,6 +33,31 @@ enum
 	EXT_PHYS_ZONE_AIR_HOLD_MS = 1500,
 	EXT_PHYS_ZONE_UP_BLEND = 64,
 	EXT_PHYS_ZONE_MAX_UP_DEG = 150,
+	// the source game's anti-gravity data (night run 1, cnk\report\poc\NL1_M1_SPEZ.md)
+	EXT_PHYS_MAGLEV_MAX = 32,
+	EXT_PHYS_MAGGRAV_MAX = 16,
+	EXT_PHYS_SPLINES_MAX = 16,
+	EXT_PHYS_SPLINE_NODES_MAX = 512,
+	EXT_PHYS_LOW_SPEED_MAX = 32767,
+};
+
+// A box of the track (Reload units): centre, its own unit axes, half extents
+// along them; a point is in it when |(p - centre) . axis| <= half on every
+// axis (the source game's slab test 0x23CF10 takes its limits inclusive).
+typedef struct
+{
+	double center[3];
+	double axis[3][3];
+	double half[3];
+	char name[32];
+} ExtPhysBox;
+
+// the gravity types of a maggrav spline (eGRAVTYPE, NL1_M1_SPEZ.md D5)
+enum
+{
+	EXT_PHYS_GRAV_PLANE = 0,
+	EXT_PHYS_GRAV_POINT = 1,
+	EXT_PHYS_GRAV_INVPOINT = 2,
 };
 
 typedef enum
@@ -92,6 +117,35 @@ typedef struct
 		int gravityPercent;
 		char name[32];
 	} volumes[EXT_PHYS_VOLUMES_MAX];
+	// the source game's maglev switching boxes (physics.maglev_volumes): a
+	// driver outside a zone enters it in an "on" box, one in a zone leaves it
+	// in an "off" box (NL1_M1_SPEZ.md Z2)
+	int maglevCount;
+	struct
+	{
+		ExtPhysBox box;
+		int on; // 1 "on", 0 "off"
+	} maglev[EXT_PHYS_MAGLEV_MAX];
+	// the maggrav boxes (physics.maggrav_volumes) with the index of their
+	// gravity spline (physics.maggrav_splines), and the speed under which a
+	// driver on the ground keeps the zone's own gravity (maglev_low_speed, K4)
+	int maggravCount;
+	struct
+	{
+		ExtPhysBox box;
+		int spline;
+	} maggrav[EXT_PHYS_MAGGRAV_MAX];
+	int splineCount;
+	struct
+	{
+		int type;  // EXT_PHYS_GRAV_*, -1 an empty entry
+		int first; // its first node in nodes[]
+		int count; // its nodes (0: unusable)
+	} splines[EXT_PHYS_SPLINES_MAX];
+	int nodeCount;
+	double nodes[EXT_PHYS_SPLINE_NODES_MAX][6]; // position (Reload units), direction
+	int lowSpeedSet;
+	int lowSpeed; // the game's speed units (d->speed)
 } ExtPhysParams;
 
 global_variable struct
@@ -167,6 +221,140 @@ internal int ExtPhys_TerrainIndex(const char *name)
 		}
 	}
 	return -1;
+}
+
+// A box {"name", "center": [3], "axes": [[3], [3], [3]], "half": [3]}: 1 read
+// (axes normalised), 0 broken.
+internal int ExtPhys_ReadBox(const ExtJsonDoc *doc, int node, ExtPhysBox *b)
+{
+	const int axes = (ExtJson_Type(doc, node) == EXT_JSON_OBJECT) ? ExtJson_Get(doc, node, "axes") : -1;
+	int ok = (axes >= 0) && (ExtJson_Numbers(doc, ExtJson_Get(doc, node, "center"), b->center, 3) == 3) &&
+	         (ExtJson_Numbers(doc, ExtJson_Get(doc, node, "half"), b->half, 3) == 3);
+
+	for (int a = 0; ok && (a < 3); a++)
+	{
+		double len;
+
+		ok = (ExtJson_Numbers(doc, ExtJson_At(doc, axes, a), b->axis[a], 3) == 3) && (b->half[a] > 0.0);
+		len = ok ? sqrt(b->axis[a][0] * b->axis[a][0] + b->axis[a][1] * b->axis[a][1] + b->axis[a][2] * b->axis[a][2]) : 0.0;
+		ok = ok && (len > 1e-6);
+		for (int k = 0; ok && (k < 3); k++)
+		{
+			b->axis[a][k] /= len;
+		}
+	}
+	if (ok)
+	{
+		snprintf(b->name, sizeof(b->name), "%s", ExtJson_String(doc, ExtJson_Get(doc, node, "name"), "box"));
+	}
+	return ok;
+}
+
+// Is point p in box b.
+internal int ExtPhys_InBox(const ExtPhysBox *b, const double p[3])
+{
+	const double d[3] = {p[0] - b->center[0], p[1] - b->center[1], p[2] - b->center[2]};
+
+	for (int a = 0; a < 3; a++)
+	{
+		if (fabs(d[0] * b->axis[a][0] + d[1] * b->axis[a][1] + d[2] * b->axis[a][2]) > b->half[a])
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+// physics.maglev_volumes, physics.maggrav_volumes, physics.maggrav_splines,
+// physics.maglev_low_speed (tr1_phys.py antigrav_section).
+internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int key, ExtPhysParams *p)
+{
+	if (strcmp(name, "maglev_volumes") == 0)
+	{
+		for (int g = ExtJson_First(doc, key); g >= 0; g = ExtJson_Next(doc, g))
+		{
+			const char *kind = ExtJson_String(doc, ExtJson_Get(doc, g, "kind"), "");
+			const int on = (strcmp(kind, "on") == 0) ? 1 : ((strcmp(kind, "off") == 0) ? 0 : -1);
+
+			if ((p->maglevCount >= EXT_PHYS_MAGLEV_MAX) || (on < 0) || !ExtPhys_ReadBox(doc, g, &p->maglev[p->maglevCount].box))
+			{
+				p->badValues++;
+				continue;
+			}
+			p->maglev[p->maglevCount].on = on;
+			p->maglevCount++;
+		}
+	}
+	else if (strcmp(name, "maggrav_volumes") == 0)
+	{
+		for (int g = ExtJson_First(doc, key); g >= 0; g = ExtJson_Next(doc, g))
+		{
+			int spline = -1;
+
+			if ((p->maggravCount >= EXT_PHYS_MAGGRAV_MAX) || !ExtPhys_ReadBox(doc, g, &p->maggrav[p->maggravCount].box) ||
+			    (ExtPhys_ReadInt(doc, ExtJson_Get(doc, g, "spline"), 0, EXT_PHYS_SPLINES_MAX - 1, &spline, p) != 1))
+			{
+				p->badValues++;
+				continue;
+			}
+			p->maggrav[p->maggravCount].spline = spline;
+			p->maggravCount++;
+		}
+	}
+	else if (strcmp(name, "maggrav_splines") == 0)
+	{
+		for (int s = ExtJson_First(doc, key); (s >= 0) && (p->splineCount < EXT_PHYS_SPLINES_MAX); s = ExtJson_Next(doc, s))
+		{
+			const int nodes = (ExtJson_Type(doc, s) == EXT_JSON_OBJECT) ? ExtJson_Get(doc, s, "nodes") : -1;
+			const int n = (nodes >= 0) ? ExtJson_Count(doc, nodes) : 0;
+			int type = -1;
+			int ok = 1;
+
+			// the entry keeps its place in the list (the index of maggrav<NN>)
+			p->splines[p->splineCount].type = -1;
+			p->splines[p->splineCount].first = p->nodeCount;
+			p->splines[p->splineCount].count = 0;
+			// (a type outside -1..2 is no gravity type: not clamped, the entry unusable)
+			if ((ExtJson_Type(doc, s) == EXT_JSON_OBJECT) && (ExtPhys_ReadInt(doc, ExtJson_Get(doc, s, "type"), -1000, 1000, &type, p) == 1) &&
+			    ((type < -1) || (type > EXT_PHYS_GRAV_INVPOINT)))
+			{
+				type = -1;
+				ok = 0;
+			}
+			if (ok && (type >= 0) && (n >= 2) && (p->nodeCount + n <= EXT_PHYS_SPLINE_NODES_MAX))
+			{
+				for (int k = 0; ok && (k < n); k++)
+				{
+					ok = ExtJson_Numbers(doc, ExtJson_At(doc, nodes, k), p->nodes[p->nodeCount + k], 6) == 6;
+				}
+				if (ok)
+				{
+					p->splines[p->splineCount].type = type;
+					p->splines[p->splineCount].count = n;
+					p->nodeCount += n;
+				}
+				else
+				{
+					p->badValues++;
+				}
+			}
+			else if ((type >= 0) || !ok)
+			{
+				p->badValues++;
+			}
+			p->splineCount++;
+		}
+	}
+	else
+	{
+		int v = 0;
+
+		if (ExtPhys_ReadInt(doc, key, 1, EXT_PHYS_LOW_SPEED_MAX, &v, p) == 1)
+		{
+			p->lowSpeedSet = 1;
+			p->lowSpeed = v;
+		}
+	}
 }
 
 // Reads the section (or its absence) into p. A value equal to the game's own
@@ -374,6 +562,11 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 				p->zoneCount++;
 			}
 		}
+		else if ((strcmp(name, "maglev_volumes") == 0) || (strcmp(name, "maggrav_volumes") == 0) || (strcmp(name, "maggrav_splines") == 0) ||
+		         (strcmp(name, "maglev_low_speed") == 0))
+		{
+			ExtPhys_ReadAntigrav(doc, name, key, p);
+		}
 		else
 		{
 			p->unknownKeys++;
@@ -518,6 +711,21 @@ void ExtPhys_OnLevelLoaded(void)
 	             (p->padReservesSet || p->padFireSet) ? "" : " (neutral)", p->anySet ? "own values in force" : "all neutral - the game's own values",
 	             p->neutralGiven, p->unknownKeys, p->clamped, p->badValues);
 	Platform_Log("[CTR ExtPhys] zones %d, gravity volumes %d\n", p->zoneCount, p->volumeCount);
+	if ((p->maglevCount > 0) || (p->maggravCount > 0) || (p->splineCount > 0) || p->lowSpeedSet)
+	{
+		int on = 0;
+
+		for (int v = 0; v < p->maglevCount; v++)
+		{
+			on += p->maglev[v].on;
+		}
+		Platform_Log("[CTR ExtPhys] maglev volumes %d (on %d, off %d), maggrav volumes %d, splines %d (%d nodes), low speed %d%s\n", p->maglevCount, on,
+		             p->maglevCount - on, p->maggravCount, p->splineCount, p->nodeCount, p->lowSpeedSet ? p->lowSpeed : 0, p->lowSpeedSet ? "" : " (not set)");
+		for (int s = 0; s < p->splineCount; s++)
+		{
+			Platform_Log("[CTR ExtPhys] maggrav spline %d: type %d, %d node(s)\n", s, p->splines[s].type, p->splines[s].count);
+		}
+	}
 	for (int v = 0; v < p->volumeCount; v++)
 	{
 		Platform_Log("[CTR ExtPhys] gravity volume %d (%s): %d%%, centre %.0f %.0f %.0f, half %.0f %.0f %.0f\n", v, p->volumes[v].name, p->volumes[v].gravityPercent,
@@ -1556,6 +1764,33 @@ int ExtPhys_Selftest(void)
 			}
 			ExtPhys_TestCheck(same, "without volumes (and without --ext-track) ScaleGravityFor hands every gravity back", &checks, &failures);
 		}
+	}
+	{
+		// the source game's anti-gravity data: maglev boxes, maggrav boxes, the
+		// splines (an empty entry keeps its index), the low speed; the box test
+		// takes its limits inclusive
+		static ExtPhysParams ap;
+		const double edge[3] = {100.0, 0.0, 0.0};
+		const double past[3] = {100.5, 0.0, 0.0};
+
+		ExtPhys_TestRead("{\"physics\": {\"maglev_volumes\": [{\"name\": \"maglev-on01\", \"kind\": \"on\", \"center\": [0, 0, 0], \"axes\": [[2, 0, 0], [0, 1, 0], "
+		                 "[0, 0, 1]], \"half\": [100, 50, 50]}, {\"name\": \"maglev-off01\", \"kind\": \"off\", \"center\": [0, 0, 500], \"axes\": [[1, 0, 0], "
+		                 "[0, 1, 0], [0, 0, 1]], \"half\": [10, 10, 10]}, {\"kind\": \"maybe\", \"center\": [0, 0, 0], \"axes\": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], "
+		                 "\"half\": [1, 1, 1]}], \"maggrav_volumes\": [{\"name\": \"maggrav01\", \"spline\": 1, \"center\": [0, 0, 0], \"axes\": [[1, 0, 0], "
+		                 "[0, 1, 0], [0, 0, 1]], \"half\": [10, 10, 10]}], \"maggrav_splines\": [{\"type\": -1, \"nodes\": []}, {\"type\": 2, \"nodes\": "
+		                 "[[0, 0, 0, 0, 1, 0], [0, 0, 100, 0, 1, 0], [0, 0, 200, 0, 1, 0]]}, {\"type\": 1, \"nodes\": [[0, 0, 0, 0, 1, 0]]}], "
+		                 "\"maglev_low_speed\": 6291}}",
+		                 &ap);
+		snprintf(what, sizeof(what), "anti-gravity data: 2 maglev boxes (1 on), 1 maggrav box, 3 spline entries (1 usable), low speed (bad %d, unknown %d)",
+		         ap.badValues, ap.unknownKeys);
+		ExtPhys_TestCheck((ap.maglevCount == 2) && (ap.maglev[0].on == 1) && (ap.maglev[1].on == 0) && (strcmp(ap.maglev[0].box.name, "maglev-on01") == 0) &&
+		                      (fabs(ap.maglev[0].box.axis[0][0] - 1.0) < 1e-12) && (ap.maggravCount == 1) && (ap.maggrav[0].spline == 1) &&
+		                      (ap.splineCount == 3) && (ap.splines[0].count == 0) && (ap.splines[1].type == 2) && (ap.splines[1].count == 3) &&
+		                      (ap.splines[1].first == 0) && (ap.splines[2].count == 0) && (ap.nodeCount == 3) && (ap.nodes[2][2] == 200.0) && ap.lowSpeedSet &&
+		                      (ap.lowSpeed == 6291) && (ap.badValues == 2) && (ap.unknownKeys == 0) && !ap.anySet,
+		                  what, &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_InBox(&ap.maglev[0].box, edge) && !ExtPhys_InBox(&ap.maglev[0].box, past), "the box test holds its edge, not 0.5 past it",
+		                  &checks, &failures);
 	}
 	{
 		// outside the zones every zone hook is inert: no zones read, nothing in force
