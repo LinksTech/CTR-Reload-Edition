@@ -49,6 +49,7 @@ global_variable s16 s_extNavUp[EXTNAV_PATHS][EXTNAV_FRAMES_MAX][3];
 global_variable u8 s_extNavZone[EXTNAV_PATHS][EXTNAV_FRAMES_MAX];
 global_variable int s_extNavCount[EXTNAV_PATHS];
 global_variable int s_extNavZonesOn;
+global_variable int s_extNavInstalled; // the last ExtNav_Install took the paths (ExtNav_UpAt)
 global_variable int s_extNavBotZone[8];
 global_variable int s_extNavBotRespawns[8];
 
@@ -193,6 +194,7 @@ int ExtNav_Install(struct Level *lev, const struct ExtNavSrc *src)
 	}
 
 	s_extNavZonesOn = 0;
+	s_extNavInstalled = 0;
 	memset(s_extNavBotZone, 0, sizeof(s_extNavBotZone));
 	memset(s_extNavBotRespawns, 0, sizeof(s_extNavBotRespawns));
 	if ((src == NULL) || (src->pathCount != EXTNAV_PATHS))
@@ -234,6 +236,7 @@ int ExtNav_Install(struct Level *lev, const struct ExtNavSrc *src)
 	}
 
 	lev->LevNavTable = s_extNavTable;
+	s_extNavInstalled = 1;
 	Platform_Log("[CTR ExtTrack] nav: 3 paths in the level against %d checkpoints\n", lev->cnt_restart_points);
 	if (s_extNavZonesOn)
 	{
@@ -581,6 +584,150 @@ int ExtNav_Active(void)
 	return (gGT != NULL) && (gGT->level1 != NULL) && (gGT->level1->LevNavTable == s_extNavTable);
 }
 
+int ExtNav_UpAt(const double pos[3], short up[3], int *path, int *frame)
+{
+	double best = -1.0;
+	int bk = -1, bf = -1;
+
+	up[0] = 0;
+	up[1] = EXTNAV_UP_ONE;
+	up[2] = 0;
+	for (int k = 0; s_extNavInstalled && (pos != NULL) && (k < EXTNAV_PATHS); k++)
+	{
+		const struct NavFrame *base;
+
+		if (s_extNavTable[k] == NULL)
+		{
+			continue;
+		}
+		base = NAVHEADER_GETFRAME((struct NavHeader *)&s_extNavBlock[k][0]);
+		for (int f = 0; f < s_extNavCount[k]; f++)
+		{
+			const double dx = (double)base[f].pos.x - pos[0];
+			const double dy = (double)base[f].pos.y - pos[1];
+			const double dz = (double)base[f].pos.z - pos[2];
+			const double dd = (dx * dx) + (dy * dy) + (dz * dz);
+
+			if ((best < 0.0) || (dd < best))
+			{
+				best = dd;
+				bk = k;
+				bf = f;
+			}
+		}
+	}
+	if (path != NULL)
+	{
+		*path = bk;
+	}
+	if (frame != NULL)
+	{
+		*frame = bf;
+	}
+	if (bk < 0)
+	{
+		return 0;
+	}
+	if (s_extNavZone[bk][bf] != 0)
+	{
+		up[0] = s_extNavUp[bk][bf][0];
+		up[1] = s_extNavUp[bk][bf][1];
+		up[2] = s_extNavUp[bk][bf][2];
+	}
+	return 1;
+}
+
+//----------------------------------------------------------------------------------------
+// --dev-ext-kart-log: THE KART-ON-THE-ROAD LINE (measuring only, a log; it writes
+// no game state, draws no random number). Per logic frame and kart (seats 0..7),
+// after the game logic of the frame:
+//   [CTR ExtKart] f F s S bot B lap L fin 0|1 go 0|1 ks K mask 0|1 pos X Y Z u UX UY UZ node P:N rail P:N t T d D
+//   [CTR ExtKart] f F s S ... node P:N rail P:N none
+// F = logic frame since the level load (no pause, no loading; the arming of the
+// drive log), go = the race runs (start of race over, traffic lights out), ks =
+// kartState, mask = mask-grabbed (kartState 5, bots and the player), pos = posCurr
+// (units, 1/256 kept), u = ExtNav_UpAt(pos) (the up of the nearest nav frame of
+// any path), node = that frame, rail = the bot's own path:frame (-1:-1 for a
+// player). The line through pos along +-u up to EXT_NAV_KART_REACH: the nearest
+// ground record (ExtColl_LineQuery, ground class only - no wall, pad or kill); t
+// = its signed distance along u, d = (pos - hit) . front normal (negative = the
+// kart lies behind / under the face); "none" = no ground on the line. The
+// checker applies the gate's reach (8 H) to |t|.
+int g_cfg_extKartLog = 0;
+
+enum
+{
+	EXT_NAV_KART_SEATS = 8,
+	EXT_NAV_KART_REACH = 2048, // more than 8 H of any kart (the checker cuts at 8 H)
+};
+
+global_variable int s_extNavKartFrame;
+
+void ExtNav_OnLogicFrame(void)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	int go;
+
+	if (!g_cfg_extKartLog)
+	{
+		return;
+	}
+	if ((gGT == NULL) || ((gGT->gameMode1 & (MAIN_MENU | LOADING)) != 0) || (sdata->Loading.stage != LOAD_IDLE))
+	{
+		s_extNavKartFrame = 0;
+		return;
+	}
+	s_extNavKartFrame++;
+	go = ((gGT->gameMode1 & START_OF_RACE) == 0) && (gGT->trafficLightsTimer <= 0);
+	for (int seat = 0; seat < EXT_NAV_KART_SEATS; seat++)
+	{
+		const struct Driver *d = gGT->drivers[seat];
+		const int bot = (d != NULL) && ((d->actionsFlagSet & ACTION_BOT) != 0);
+		double pos[3], u[3], ul;
+		short up[3];
+		int np = -1, nf = -1, rp = -1, rf = -1;
+		ExtCollLineHit hit;
+		char head[192];
+
+		if (d == NULL)
+		{
+			continue;
+		}
+		pos[0] = d->posCurr.x / 256.0;
+		pos[1] = d->posCurr.y / 256.0;
+		pos[2] = d->posCurr.z / 256.0;
+		(void)ExtNav_UpAt(pos, up, &np, &nf);
+		u[0] = up[0];
+		u[1] = up[1];
+		u[2] = up[2];
+		ul = sqrt((u[0] * u[0]) + (u[1] * u[1]) + (u[2] * u[2]));
+		if (ul < 1.0)
+		{
+			u[0] = 0.0;
+			u[1] = 1.0;
+			u[2] = 0.0;
+		}
+		if (bot && (d->botData.botNavFrame != NULL))
+		{
+			rf = ExtNav_FrameIndex(d->botData.botNavFrame, &rp);
+			rp = (rf < 0) ? -1 : rp;
+		}
+		snprintf(head, sizeof(head), "[CTR ExtKart] f %d s %d bot %d lap %d fin %d go %d ks %d mask %d pos %.1f %.1f %.1f u %d %d %d node %d:%d rail %d:%d", s_extNavKartFrame,
+		         seat, bot, (int)d->lapIndex, ((d->actionsFlagSet & ACTION_RACE_FINISHED) != 0) ? 1 : 0, go, (int)d->kartState,
+		         (d->kartState == KS_MASK_GRABBED) ? 1 : 0, pos[0], pos[1], pos[2], up[0], up[1], up[2], np, nf, rp, rf);
+		if (ExtColl_LineQuery(pos, u, -(double)EXT_NAV_KART_REACH, (double)EXT_NAV_KART_REACH, EXT_COLL_LINE_GROUND, 1, &hit))
+		{
+			const double dd = ((pos[0] - hit.pos[0]) * hit.normal[0]) + ((pos[1] - hit.pos[1]) * hit.normal[1]) + ((pos[2] - hit.pos[2]) * hit.normal[2]);
+
+			Platform_Log("%s t %.2f d %.2f\n", head, hit.t, dd);
+		}
+		else
+		{
+			Platform_Log("%s none\n", head);
+		}
+	}
+}
+
 //----------------------------------------------------------------------------------------
 // --ext-selftest nav: 3 straight paths of 16 frames against 8 checkpoints, no
 // track data, no window.
@@ -731,10 +878,27 @@ int ExtNav_Selftest(void)
 		              "7 up half way between +y and +x is normalised", &n, &failures);
 		ExtNav_Expect(ExtNav_FrameUpLerp(f1 + 4, f1 + 5, 0, up) && (up[1] == 4096) && !ExtNav_FrameUpLerp(f1 + 2, f1 + 3, 0, up),
 		              "7 up at the zone edge, none outside", &n, &failures);
+		{
+			const double atZone[3] = {(7 * 240) + 30, 40, 10};  // nearest: path 1 frame 7 (zone, up +x)
+			const double atPlain[3] = {(7 * 240) - 200, 0, -190}; // nearest: path 0 frame 7 (no zone)
+			int pk = -2, pf = -2;
+
+			ExtNav_Expect(ExtNav_UpAt(atZone, up, &pk, &pf) && (pk == 1) && (pf == 7) && (up[0] == 4096) && (up[1] == 0) && (up[2] == 0),
+			              "7 UpAt: the nearest frame's up in a zone (path 1 frame 7, +x)", &n, &failures);
+			ExtNav_Expect(ExtNav_UpAt(atPlain, up, &pk, &pf) && (pk == 0) && (pf == 7) && (up[0] == 0) && (up[1] == 4096) && (up[2] == 0),
+			              "7 UpAt: a frame outside a zone gives world up", &n, &failures);
+		}
 
 		// 8: an up vector of the wrong length, and up without zone, are refused
 		ups[(6 * 3) + 1] = 3000;
 		ExtNav_Expect(!ExtNav_Install(&lev, &src) && !s_extNavZonesOn, "8 short up vector refused", &n, &failures);
+		{
+			const double any[3] = {0, 0, 0};
+			int pk = -2, pf = -2;
+
+			ExtNav_Expect(!ExtNav_UpAt(any, up, &pk, &pf) && (pk == -1) && (pf == -1) && (up[1] == 4096), "8 UpAt after a refusal: none, world up", &n,
+			              &failures);
+		}
 		ups[(6 * 3) + 1] = 4096;
 		src.path[1].zone = NULL;
 		ExtNav_Expect(!ExtNav_Install(&lev, &src), "8 up without zone refused", &n, &failures);

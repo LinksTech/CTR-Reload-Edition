@@ -797,6 +797,14 @@ if(BUILD_TESTING)
     set_tests_properties(ext_respawn_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-respawn requires --ext-track")
     add_test(NAME ext_respawn_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --level 14 --ext-track d --dev-ext-respawn x --dev-race-mode stop)
     set_tests_properties(ext_respawn_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-respawn expects a race frame 0..1000000")
+    add_test(NAME ext_kart_log_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --dev-ext-kart-log --dev-race-mode stop)
+    set_tests_properties(ext_kart_log_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-kart-log requires --ext-track")
+    add_test(NAME ext_crate_log_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --dev-ext-crate-log --dev-race-mode stop)
+    set_tests_properties(ext_crate_log_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-crate-log requires --ext-track")
+    add_test(NAME ext_cam_log_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --dev-ext-cam-log 52 --dev-race-mode stop)
+    set_tests_properties(ext_cam_log_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-cam-log requires --ext-track")
+    add_test(NAME ext_cam_log_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --level 14 --ext-track d --dev-ext-cam-log 0 --dev-race-mode stop)
+    set_tests_properties(ext_cam_log_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-cam-log expects the kart's height H in world units, 1..1000")
     # The engine program on the graphics card (platform/engine_testscene.c,
     # Engine_SampleSelfTest): a hidden window and the Vulkan device, made-up VRAM
     # with poisoned rings around small UV boxes, drawn magnified with 4 and 1

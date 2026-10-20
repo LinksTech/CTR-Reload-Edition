@@ -36,7 +36,9 @@
 // exactly as before.
 //
 // LOG (cnk\tools\poc_m5_pruef.py, gate D8): one line per crate and one summary
-// at the first build of a run, one line per contact, one line at exit.
+// at the first build of a run, one line per contact, one line at exit. With
+// --dev-ext-crate-log in addition the measuring lines "[CTR ExtCrateLog]"
+// (report, hit, back; format at g_cfg_extCrateLog below).
 
 // platform/engine_exttrack.c (later in the unity build): the drawing part's tint of an
 // instance from the floor around it (render.instance_tint); 0 and no change without the field.
@@ -60,6 +62,7 @@ struct ExtCrateDef
 	s16 yaw;
 	s16 dataY;  // with "capped": the middle the data asked for (world units)
 	u8 capped;  // the converter lowered the middle (written by the data, logged only)
+	int srcIndex; // the item's "index" of the data (the source's numbering), -1 without; logged only
 };
 
 struct ExtCrate
@@ -67,6 +70,37 @@ struct ExtCrate
 	struct Instance *inst;
 	int index; // in the data
 	int smashed;
+	int srcIndex;
+};
+
+// --dev-ext-crate-log (main.c; measuring only, 0 = off): THE CRATE LINES - a
+// log, no game state written, no random number drawn. Off: nothing below runs.
+//   [CTR ExtCrateLog] report build B crate I data D origin X Y Z centre CX CY CZ u UX UY UZ node P:N ground t T at HX HY HZ n NX NY NZ front 0|1 zone Z terrain K
+//   [CTR ExtCrateLog] report build B crate I data D origin X Y Z centre CX CY CZ u UX UY UZ node P:N ground none
+//       at the race start (frame 0), one per crate born: origin = the instance's
+//       position, centre = origin + EXTCRATE_MODEL_HALF_Y up (the middle of the
+//       crate model), u = ExtNav_UpAt(centre) (the up of the nearest nav frame;
+//       (0, 1, 0) outside zones), the line from the centre along -u up to
+//       EXTCRATE_LOG_REACH: the first ground record (ExtColl_LineQuery, ground
+//       class only - no wall, pad or kill record) at distance T; the checker
+//       takes bottom = centre - half height along u, gap = T - half height.
+//   [CTR ExtCrateLog] hit crate I seat S human|bot frame F ground G2 G1 G0 jumpago J
+//       at each contact: G2 G1 G0 = the kart's ground contact (ACTION_TOUCH_GROUND)
+//       after the logic of frames F-2, F-1, F (1 / 0, - = before the start); J =
+//       frames since R1 or L1 (the jump) was last held on the pad of seat 0 (0 =
+//       in frame F, -1 = not since the start; only seat 0, else -1).
+//   [CTR ExtCrateLog] back crate I frame F hit H delay D
+//       when a smashed crate is at full size again (scale 0x1000): F = that
+//       frame, H = the frame of the contact that smashed it, D = F - H.
+// F = logic frames since the race start (frame 0 = the report), paused frames
+// not counted.
+int g_cfg_extCrateLog = 0;
+
+enum
+{
+	EXTCRATE_MODEL_HALF_Y = 54,    // the retail item crate (model 8) spans y 0..108.3 above its origin, the same in all 18 race LEVs
+	EXTCRATE_LOG_REACH = 2048,     // the checker cuts at its own reach (8 H)
+	EXTCRATE_LOG_RING = 4,         // ground contact kept for the last frames (3 needed)
 };
 
 global_variable struct ExtCrate s_extCrates[EXTCRATE_MAX];
@@ -78,6 +112,107 @@ global_variable s64 s_extCrateHitsHuman;
 global_variable s64 s_extCrateHitsBot;
 global_variable s64 s_extCrateItems;
 global_variable s64 s_extCrateRegrown;
+// --dev-ext-crate-log only (written by nothing else, read by nothing of the game)
+global_variable int s_extCrateFrame;
+global_variable s8 s_extCrateGround[EXTCRATE_DRIVER_SLOTS][EXTCRATE_LOG_RING]; // -1 = not seen
+global_variable int s_extCrateGroundFrame[EXTCRATE_DRIVER_SLOTS][EXTCRATE_LOG_RING];
+global_variable int s_extCrateJumpFrame; // the last frame with R1 or L1 held on pad 0, -1 none
+global_variable int s_extCrateHitFrame[EXTCRATE_MAX];
+
+// The ground contact of seat after frame f, from the ring: 1 / 0, -1 = not recorded.
+internal int ExtCrates_GroundAt(int seat, int f)
+{
+	const int k = ((f % EXTCRATE_LOG_RING) + EXTCRATE_LOG_RING) % EXTCRATE_LOG_RING;
+
+	if ((f < 0) || (seat < 0) || (seat >= EXTCRATE_DRIVER_SLOTS) || (s_extCrateGroundFrame[seat][k] != f))
+	{
+		return -1;
+	}
+	return s_extCrateGround[seat][k];
+}
+
+internal void ExtCrates_GroundSet(int seat, int f, int onGround)
+{
+	const int k = ((f % EXTCRATE_LOG_RING) + EXTCRATE_LOG_RING) % EXTCRATE_LOG_RING;
+
+	s_extCrateGround[seat][k] = (s8)(onGround ? 1 : 0);
+	s_extCrateGroundFrame[seat][k] = f;
+}
+
+internal void ExtCrates_LogReset(void)
+{
+	int s;
+	int k;
+
+	s_extCrateFrame = 0;
+	s_extCrateJumpFrame = -1;
+	for (s = 0; s < EXTCRATE_DRIVER_SLOTS; s++)
+	{
+		for (k = 0; k < EXTCRATE_LOG_RING; k++)
+		{
+			s_extCrateGround[s][k] = -1;
+			s_extCrateGroundFrame[s][k] = -1;
+		}
+	}
+	for (k = 0; k < EXTCRATE_MAX; k++)
+	{
+		s_extCrateHitFrame[k] = -1;
+	}
+}
+
+internal const char *ExtCrates_GroundText(int g)
+{
+	return (g < 0) ? "-" : ((g != 0) ? "1" : "0");
+}
+
+// The report line of one crate at the race start (see the format above).
+internal void ExtCrates_LogReport(const struct ExtCrate *c, int build)
+{
+	double centre[3];
+	double u[3];
+	double len;
+	short up[3];
+	int path = -1;
+	int frame = -1;
+	ExtCollLineHit hit;
+	char head[256];
+
+	centre[0] = c->inst->matrix.t[0];
+	centre[1] = (double)c->inst->matrix.t[1] + EXTCRATE_MODEL_HALF_Y;
+	centre[2] = c->inst->matrix.t[2];
+	(void)ExtNav_UpAt(centre, up, &path, &frame);
+	u[0] = up[0];
+	u[1] = up[1];
+	u[2] = up[2];
+	len = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+	if (len <= 0.0)
+	{
+		u[0] = 0.0;
+		u[1] = 1.0;
+		u[2] = 0.0;
+	}
+	else
+	{
+		u[0] /= len;
+		u[1] /= len;
+		u[2] /= len;
+	}
+	snprintf(head, sizeof(head), "[CTR ExtCrateLog] report build %d crate %d data %d origin %d %d %d centre %.1f %.1f %.1f u %.4f %.4f %.4f node %d:%d", build, c->index,
+	         c->srcIndex, (int)c->inst->matrix.t[0], (int)c->inst->matrix.t[1], (int)c->inst->matrix.t[2], centre[0], centre[1], centre[2], u[0], u[1], u[2], path, frame);
+	{
+		const double down[3] = {-u[0], -u[1], -u[2]};
+
+		if (ExtColl_LineQuery(centre, down, 0.0, (double)EXTCRATE_LOG_REACH, EXT_COLL_LINE_GROUND, 0, &hit))
+		{
+			Platform_Log("%s ground t %.2f at %.1f %.1f %.1f n %.4f %.4f %.4f front %d zone %d terrain %d\n", head, hit.t, hit.pos[0], hit.pos[1], hit.pos[2], hit.normal[0],
+			             hit.normal[1], hit.normal[2], hit.front, hit.zone, hit.terrain);
+		}
+		else
+		{
+			Platform_Log("%s ground none\n", head);
+		}
+	}
+}
 
 // The contact rule: a point within +-101 of the crate on every axis.
 internal int ExtCrates_InBox(int dx, int dy, int dz)
@@ -148,6 +283,11 @@ internal int ExtCrates_ReadItems(const ExtJsonDoc *doc, int section, struct ExtC
 			out[n].pos[k] = (s16)((p[k] < 0.0) ? (p[k] - 0.5) : (p[k] + 0.5));
 		}
 		out[n].yaw = (s16)yaw;
+		{
+			const double src = ExtJson_Number(doc, ExtJson_Get(doc, node, "index"), -1.0);
+
+			out[n].srcIndex = ((src >= 0.0) && (src <= 1000000.0)) ? (int)src : -1;
+		}
 		out[n].capped = (u8)(ExtJson_Bool(doc, ExtJson_Get(doc, node, "capped"), 0) != 0);
 		{
 			const double dataY = ExtJson_Number(doc, ExtJson_Get(doc, node, "dataY"), 0.0);
@@ -180,6 +320,7 @@ void ExtCrates_OnRaceStart(void)
 
 	s_extCrateCount = 0;
 	s_extCrateCenterY = 0;
+	ExtCrates_LogReset();
 	if (gGT == NULL)
 	{
 		return;
@@ -239,6 +380,7 @@ void ExtCrates_OnRaceStart(void)
 		c->inst = inst;
 		c->index = i;
 		c->smashed = 0;
+		c->srcIndex = defs[i].srcIndex;
 		s_extCrateCount++;
 		capped += defs[i].capped;
 		if ((s_extCrateBuilds == 1) && (s_extCrateCenterY == 0))
@@ -265,6 +407,13 @@ void ExtCrates_OnRaceStart(void)
 	Platform_Log("[CTR ExtCrates] spawned %d of %d crate(s) (model 0x%02x, explosion 0x%02x %s), instance pool %d of %d taken, build %d\n", s_extCrateCount,
 	             wanted, PU_RANDOM_CRATE, STATIC_CRATE_EXPLOSION, (gGT->modelPtr[STATIC_CRATE_EXPLOSION] != NULL) ? "ok" : "missing",
 	             (int)gGT->JitPools.instance.maxItems - (int)gGT->JitPools.instance.free.count, (int)gGT->JitPools.instance.maxItems, s_extCrateBuilds);
+	if (g_cfg_extCrateLog)
+	{
+		for (i = 0; i < s_extCrateCount; i++)
+		{
+			ExtCrates_LogReport(&s_extCrates[i], s_extCrateBuilds);
+		}
+	}
 }
 
 internal void ExtCrates_Hit(struct ExtCrate *c, struct Driver *d, int seat, int bot)
@@ -291,6 +440,16 @@ internal void ExtCrates_Hit(struct ExtCrate *c, struct Driver *d, int seat, int 
 		}
 	}
 	Platform_Log("[CTR ExtCrates] crate %d hit by seat %d (%s)\n", c->index, seat, bot ? "bot" : "human");
+	if (g_cfg_extCrateLog)
+	{
+		const int f = s_extCrateFrame;
+		const int jumpAgo = ((seat == 0) && (s_extCrateJumpFrame >= 0)) ? (f - s_extCrateJumpFrame) : -1;
+
+		s_extCrateHitFrame[c->index] = f;
+		Platform_Log("[CTR ExtCrateLog] hit crate %d seat %d %s frame %d ground %s %s %s jumpago %d\n", c->index, seat, bot ? "bot" : "human", f,
+		             ExtCrates_GroundText(ExtCrates_GroundAt(seat, f - 2)), ExtCrates_GroundText(ExtCrates_GroundAt(seat, f - 1)),
+		             ExtCrates_GroundText(ExtCrates_GroundAt(seat, f)), jumpAgo);
+	}
 }
 
 // From the dispatcher once per logic frame: the drivers have moved.
@@ -305,6 +464,25 @@ void ExtCrates_OnLogicFrame(void)
 		return;
 	}
 
+	if (g_cfg_extCrateLog)
+	{
+		// The state after the logic of this frame, before the contacts below.
+		s_extCrateFrame++;
+		for (seat = 0; seat < EXTCRATE_DRIVER_SLOTS; seat++)
+		{
+			const struct Driver *d = gGT->drivers[seat];
+
+			if (d != NULL)
+			{
+				ExtCrates_GroundSet(seat, s_extCrateFrame, (d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0);
+			}
+		}
+		if ((sdata->gGamepads != NULL) && ((sdata->gGamepads->gamepad[0].buttonsHeldCurrFrame & (BTN_R1 | BTN_L1)) != 0))
+		{
+			s_extCrateJumpFrame = s_extCrateFrame;
+		}
+	}
+
 	for (i = 0; i < s_extCrateCount; i++)
 	{
 		struct ExtCrate *c = &s_extCrates[i];
@@ -317,6 +495,12 @@ void ExtCrates_OnLogicFrame(void)
 		{
 			c->smashed = 0;
 			s_extCrateRegrown++;
+			if (g_cfg_extCrateLog)
+			{
+				const int h = s_extCrateHitFrame[c->index];
+
+				Platform_Log("[CTR ExtCrateLog] back crate %d frame %d hit %d delay %d\n", c->index, s_extCrateFrame, h, (h >= 0) ? (s_extCrateFrame - h) : -1);
+			}
 		}
 	}
 
@@ -445,6 +629,28 @@ int ExtCrates_Selftest(void)
 	n = ExtCrates_ReadItems(&doc, ExtJson_Get(&doc, 0, "crates"), defs, EXTCRATE_MAX, &bad, &total);
 	EXTCRATE_CHECK((n == 2) && (bad == 0) && (defs[0].capped == 0) && (defs[1].capped == 1) && (defs[1].dataY == 230) && (defs[1].pos[1] == 62));
 	ExtJson_Free(&doc);
+
+	// The data's own numbering is kept for the log (missing = -1).
+	EXTCRATE_CHECK(ExtJson_Parse(&doc, json, sizeof(json) - 1, why, (int)sizeof(why)) == 1);
+	n = ExtCrates_ReadItems(&doc, ExtJson_Get(&doc, 0, "crates"), defs, EXTCRATE_MAX, &bad, &total);
+	EXTCRATE_CHECK((n == 2) && (defs[0].srcIndex == 0) && (defs[1].srcIndex == 1));
+	ExtJson_Free(&doc);
+
+	// The measuring lines: off unless asked for; the ground ring answers only for
+	// the frames it holds (the last EXTCRATE_LOG_RING), -1 before and after.
+	EXTCRATE_CHECK(g_cfg_extCrateLog == 0);
+	ExtCrates_LogReset();
+	EXTCRATE_CHECK((ExtCrates_GroundAt(0, 0) == -1) && (ExtCrates_GroundAt(0, -1) == -1) && (s_extCrateJumpFrame == -1));
+	ExtCrates_GroundSet(3, 10, 1);
+	ExtCrates_GroundSet(3, 11, 0);
+	ExtCrates_GroundSet(3, 12, 1);
+	EXTCRATE_CHECK((ExtCrates_GroundAt(3, 10) == 1) && (ExtCrates_GroundAt(3, 11) == 0) && (ExtCrates_GroundAt(3, 12) == 1));
+	EXTCRATE_CHECK((ExtCrates_GroundAt(3, 9) == -1) && (ExtCrates_GroundAt(2, 12) == -1) && (ExtCrates_GroundAt(8, 12) == -1));
+	ExtCrates_GroundSet(3, 14, 0);
+	EXTCRATE_CHECK((ExtCrates_GroundAt(3, 10) == -1) && (ExtCrates_GroundAt(3, 14) == 0) && (ExtCrates_GroundAt(3, 12) == 1));
+	EXTCRATE_CHECK((strcmp(ExtCrates_GroundText(-1), "-") == 0) && (strcmp(ExtCrates_GroundText(0), "0") == 0) && (strcmp(ExtCrates_GroundText(1), "1") == 0));
+	ExtCrates_LogReset();
+	EXTCRATE_CHECK((ExtCrates_GroundAt(3, 12) == -1) && (s_extCrateHitFrame[0] == -1) && (s_extCrateHitFrame[EXTCRATE_MAX - 1] == -1));
 
 	// Nothing of the running game was touched.
 	EXTCRATE_CHECK((s_extCrateCount == 0) && (s_extCrateBuilds == 0) && (s_extCrateCenterY == 0));

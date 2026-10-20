@@ -31,6 +31,39 @@
 // the pull-in: what the player sees), C0 the same before the pull-in, A = the
 // angle camera up to kart up (degrees), R = the change of the camera's roll
 // against the frame before (degrees), W = the blend weight; one summary at exit.
+//
+// THE MEASURE LINE (--dev-ext-cam-log <H>, main.c; measuring only, 0 = off;
+// fix round 1 of 2026-10-20, gate F2): one line per frame of seat 0 (one
+// player), the camera AS DRAWN - read after the frame was drawn, from the push
+// buffer's matrices that PushBuffer_SetMatrixVP built for it (matrix_Camera:
+// the eye and the camera's axes; matrix_ViewProj with distanceToScreen_PREV and
+// rect: the projection the engine draws with, Engine_CameraFromPushBuffer). So
+// the line of frame F is written in the logic of frame F + 1, from what was kept
+// of frame F (the kart, its zone, the flags) and the matrices drawn for it. It
+// reads only: no game state, no scratchpad, no GTE register is touched (the
+// occlusion test is ExtColl_LineQuery, exact and read-only). Format:
+//   [CTR ExtCam] measure frame F zone Z since S lap L fin FI follow FO end E
+//     grab G ext X pull P kart KX KY KZ eye EX EY EZ up UX UY UZ ndc NX NY NW
+//     mid MX MY MW top TX TY TW occ O at A len LN
+// zone = ExtPhys_DriverZone after the logic; since = frames since the last
+// frame in a zone (0 in a zone, -1 none yet); lap = lapIndex; fin = the race is
+// over for the kart (ACTION_RACE_FINISHED); follow = CAM_FollowDriver_Normal ran
+// for seat 0 in F, end = then with a transition or the end-of-race turn
+// (CAMERA_FLAG_TRANSITION_AWAY | CAMERA_FLAG_BATTLE_END_OF_RACE); grab = mask
+// grab; ext = this camera set the push buffer in F; pull = it pulled the camera
+// in (or lifted it, or took the retail one); kart = the driver's position
+// (posCurr >> 8); eye = matrix_Camera.t; up = minus the matrix's second column
+// (the picture's rows run down), unit length; ndc = the driver's position in the
+// picture, x and y in -1..1 over the view rectangle (y down), and w = its depth
+// in front of the eye (<= 0: behind it); mid / top = the same for the points
+// 0.5 H and H along the kart's up (AxisAngle2_normalVec, the drawn kart's);
+// occ = 1 when a ground or wall triangle (both faces) lies on the segment from
+// the eye towards the kart's middle (the mid point, 0.5 H along the kart's up:
+// gate F2's reference point, PLAN section 5 21:40), leaving out its last H / 2;
+// at = that hit's distance from the eye (-1 none), len = eye to the kart's
+// middle. Once per level "measure on" with H,
+// at exit the number of lines and how often the eye moved between the logic and
+// the drawing (the push buffer's position of F against matrix_Camera.t).
 
 #define EXT_CAM_BLEND 15
 #define EXT_CAM_ROLL_STEP 8.0  // degrees per frame
@@ -56,7 +89,13 @@ global_variable struct
 	u32 raised, retail, blockedLogged;
 	double angleMax;
 	double rollStepMax;
-} s_extCam;
+	// for the measure line (--dev-ext-cam-log): the frame (gGT->timer) in which
+	// CAM_FollowDriver_Normal ran for seat 0 / this camera set the push buffer /
+	// pulled the camera in; -1 never
+	int followFrame, followEnd;
+	int extFrame;
+	int pullFrame;
+} s_extCam = {.followFrame = -1, .extFrame = -1, .pullFrame = -1};
 
 internal void ExtCam_ReadJson(void)
 {
@@ -273,6 +312,221 @@ internal int ExtCam_RayFree(const double a[3], const double b[3], double *t)
 	return isFree;
 }
 
+// --------------------------------------------------------------------------
+// THE MEASURE LINE (see the head of this file)
+
+double g_cfg_extCamLogH = 0.0; // --dev-ext-cam-log <H>: the kart's height in world units (PLAN 3a: 66.2); 0 = off
+
+typedef struct
+{
+	int valid;
+	const void *level1;
+	int frame;
+	int zone, since, lap, fin, follow, end, grab, ext, pull;
+	double kart[3];
+	double kartUp[3];
+	s16 pbPos[3];
+	int screen; // distanceToScreen_PREV
+	int rectW, rectH;
+} ExtCamMeasureFrame;
+
+global_variable struct
+{
+	ExtCamMeasureFrame kept; // the frame whose picture is drawn next
+	const void *level1;
+	int lastZoneFrame;  // -1 none on this level
+	int headerLevelLogged;
+	int reportOn;
+	u32 lines;
+	u32 eyeMoved;
+} s_extCamMeasure = {.lastZoneFrame = -1};
+
+// The camera's up and its eye from a push buffer's matrix_Camera (the matrix
+// ConvertRotToMatrix makes of pb->rot: its columns are the camera's axes in the
+// world - x right, y down the picture, z the view; PushBuffer_SetMatrixVP).
+internal void ExtCam_MeasureUp(const MATRIX *camera, double up[3])
+{
+	up[0] = -(double)camera->m[0][1];
+	up[1] = -(double)camera->m[1][1];
+	up[2] = -(double)camera->m[2][1];
+	ExtCam_Norm(up);
+}
+
+// A world point in the picture: view = R p / 4096 + t with R, t of
+// matrix_ViewProj (its rows already squeezed as the game's), then the screen as
+// Engine_CameraFromPushBuffer / Engine_ProjectPoint make it: offset + H * v.xy / v.z,
+// offset = rect / 2. Out: x, y in -1..1 over the view rectangle (y down), w = v.z.
+internal void ExtCam_MeasureProject(const MATRIX *viewProj, int screen, int rectW, int rectH, const double p[3], double out[3])
+{
+	double v[3];
+	int r;
+
+	for (r = 0; r < 3; r++)
+	{
+		v[r] = ((double)viewProj->m[r][0] * p[0] + (double)viewProj->m[r][1] * p[1] + (double)viewProj->m[r][2] * p[2]) / 4096.0 + (double)viewProj->t[r];
+	}
+	out[2] = v[2];
+	if ((fabs(v[2]) < 1e-9) || ((rectW >> 1) <= 0) || ((rectH >> 1) <= 0))
+	{
+		out[0] = 0.0;
+		out[1] = 0.0;
+		return;
+	}
+	out[0] = (double)screen * v[0] / (v[2] * (double)(rectW >> 1));
+	out[1] = (double)screen * v[1] / (v[2] * (double)(rectH >> 1));
+}
+
+// The segment eye -> kart (its middle) without its last `keep` units: 1 = a ground or wall
+// triangle lies on it (both faces), *at = the first hit's distance from the eye.
+internal int ExtCam_MeasureOccluded(const double eye[3], const double kart[3], double keep, double *at, double *len)
+{
+	const double d[3] = {kart[0] - eye[0], kart[1] - eye[1], kart[2] - eye[2]};
+	ExtCollLineHit hit;
+
+	*len = sqrt(ExtCam_Dot(d, d));
+	*at = -1.0;
+	if (*len - keep <= 0.0)
+	{
+		return 0;
+	}
+	if (!ExtColl_LineQuery(eye, d, 0.0, *len - keep, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_WALL, 0, &hit))
+	{
+		return 0;
+	}
+	*at = hit.t;
+	return 1;
+}
+
+internal void ExtCam_MeasureReport(void)
+{
+	Platform_Log("[CTR ExtCam] measure at exit: %u line(s), eye moved between the logic and the drawing in %u frame(s)\n", s_extCamMeasure.lines,
+	             s_extCamMeasure.eyeMoved);
+}
+
+// game/CAM.c, CAM_FollowDriver_Normal of every driver: notes the frame in which
+// it ran for seat 0 (and whether the camera turns away). Writes this file's
+// state only.
+void ExtCam_NoteFollow(const struct GameTracker *gGT, const struct Driver *d, int turningAway)
+{
+	if ((g_cfg_extCamLogH <= 0.0) || (gGT == NULL) || (d == NULL) || (d->driverID != 0))
+	{
+		return;
+	}
+	s_extCam.followFrame = gGT->timer;
+	s_extCam.followEnd = turningAway;
+}
+
+// The dispatcher ExtTrack_OnLogicFrame, after the game logic of a frame (the
+// picture of the frame before is drawn by now): the line of the kept frame, then
+// this frame kept.
+void ExtCam_OnLogicFrame(void)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const struct Driver *d;
+	const struct PushBuffer *pb;
+	ExtCamMeasureFrame *k = &s_extCamMeasure.kept;
+
+	if ((g_cfg_extCamLogH <= 0.0) || (gGT == NULL))
+	{
+		return;
+	}
+	d = gGT->drivers[0];
+	pb = &gGT->pushBuffer[0];
+	if ((gGT->level1 != s_extCamMeasure.level1) || (d == NULL) || (gGT->numPlyrCurrGame != 1))
+	{
+		s_extCamMeasure.level1 = gGT->level1;
+		s_extCamMeasure.lastZoneFrame = -1;
+		s_extCamMeasure.headerLevelLogged = 0;
+		k->valid = 0;
+		if ((d == NULL) || (gGT->numPlyrCurrGame != 1))
+		{
+			return;
+		}
+	}
+	if (!s_extCamMeasure.headerLevelLogged)
+	{
+		s_extCamMeasure.headerLevelLogged = 1;
+		Platform_Log("[CTR ExtCam] measure on: seat 0, H %.1f, the occlusion test runs to the kart's middle and leaves out the last %.1f units before it\n",
+		             g_cfg_extCamLogH, 0.5 * g_cfg_extCamLogH);
+		if (!s_extCamMeasure.reportOn)
+		{
+			s_extCamMeasure.reportOn = 1;
+			Platform_AtExitReport(ExtCam_MeasureReport);
+		}
+	}
+	if (k->valid && (k->level1 == gGT->level1) && (gGT->timer != k->frame))
+	{
+		// the picture of frame k->frame: the matrices PushBuffer_SetMatrixVP built for it
+		double eye[3], up[3], ndc[3], mid[3], top[3], p[3], midPoint[3], at, len;
+		const double keep = 0.5 * g_cfg_extCamLogH;
+		int occ;
+		int i;
+
+		for (i = 0; i < 3; i++)
+		{
+			eye[i] = (double)pb->matrix_Camera.t[i];
+		}
+		ExtCam_MeasureUp(&pb->matrix_Camera, up);
+		ExtCam_MeasureProject(&pb->matrix_ViewProj, k->screen, k->rectW, k->rectH, k->kart, ndc);
+		for (i = 0; i < 3; i++)
+		{
+			midPoint[i] = k->kart[i] + 0.5 * g_cfg_extCamLogH * k->kartUp[i];
+		}
+		ExtCam_MeasureProject(&pb->matrix_ViewProj, k->screen, k->rectW, k->rectH, midPoint, mid);
+		for (i = 0; i < 3; i++)
+		{
+			p[i] = k->kart[i] + g_cfg_extCamLogH * k->kartUp[i];
+		}
+		ExtCam_MeasureProject(&pb->matrix_ViewProj, k->screen, k->rectW, k->rectH, p, top);
+		// the reference point of gate F2 (PLAN section 5, 21:40): the kart's middle
+		occ = ExtCam_MeasureOccluded(eye, midPoint, keep, &at, &len);
+		if ((pb->matrix_Camera.t[0] != k->pbPos[0]) || (pb->matrix_Camera.t[1] != k->pbPos[1]) || (pb->matrix_Camera.t[2] != k->pbPos[2]))
+		{
+			s_extCamMeasure.eyeMoved++;
+		}
+		s_extCamMeasure.lines++;
+		Platform_Log("[CTR ExtCam] measure frame %d zone %d since %d lap %d fin %d follow %d end %d grab %d ext %d pull %d kart %.0f %.0f %.0f eye %.0f %.0f %.0f "
+		             "up %.4f %.4f %.4f ndc %.4f %.4f %.1f mid %.4f %.4f %.1f top %.4f %.4f %.1f occ %d at %.1f len %.1f\n",
+		             k->frame, k->zone, k->since, k->lap, k->fin, k->follow, k->end, k->grab, k->ext, k->pull, k->kart[0], k->kart[1], k->kart[2], eye[0],
+		             eye[1], eye[2], up[0], up[1], up[2], ndc[0], ndc[1], ndc[2], mid[0], mid[1], mid[2], top[0], top[1], top[2], occ, at, len);
+	}
+	// keep this frame (drawn next)
+	k->valid = 1;
+	k->level1 = gGT->level1;
+	k->frame = gGT->timer;
+	k->zone = ExtPhys_DriverZone(d);
+	if (k->zone != 0)
+	{
+		s_extCamMeasure.lastZoneFrame = gGT->timer;
+	}
+	k->since = (k->zone != 0) ? 0 : ((s_extCamMeasure.lastZoneFrame >= 0) ? (gGT->timer - s_extCamMeasure.lastZoneFrame) : -1);
+	k->lap = (int)d->lapIndex;
+	k->fin = ((d->actionsFlagSet & ACTION_RACE_FINISHED) != 0) ? 1 : 0;
+	k->follow = (s_extCam.followFrame == gGT->timer) ? 1 : 0;
+	k->end = (k->follow && s_extCam.followEnd) ? 1 : 0;
+	k->grab = (d->kartState == KS_MASK_GRABBED) ? 1 : 0;
+	k->ext = (s_extCam.extFrame == gGT->timer) ? 1 : 0;
+	k->pull = (s_extCam.pullFrame == gGT->timer) ? 1 : 0;
+	k->kart[0] = (double)(d->posCurr.x >> 8);
+	k->kart[1] = (double)(d->posCurr.y >> 8);
+	k->kart[2] = (double)(d->posCurr.z >> 8);
+	k->kartUp[0] = (double)d->AxisAngle2_normalVec.x;
+	k->kartUp[1] = (double)d->AxisAngle2_normalVec.y;
+	k->kartUp[2] = (double)d->AxisAngle2_normalVec.z;
+	if (ExtCam_Norm(k->kartUp) < 1e-6)
+	{
+		k->kartUp[0] = 0.0;
+		k->kartUp[1] = 1.0;
+		k->kartUp[2] = 0.0;
+	}
+	k->pbPos[0] = pb->pos.x;
+	k->pbPos[1] = pb->pos.y;
+	k->pbPos[2] = pb->pos.z;
+	k->screen = pb->distanceToScreen_PREV;
+	k->rectW = pb->rect.w;
+	k->rectH = pb->rect.h;
+}
+
 // game/CAM.c, CAM_FollowDriver_Normal, after the retail camera of this frame
 // is in the push buffer (camPos, lookAt: its wanted camera and look point).
 void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct PushBuffer *pb, const Vec3 *camPos, const Vec3 *lookAt)
@@ -400,6 +654,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 					C[k] = A[k] + keep * v[k];
 				}
 				s_extCam.pulled++;
+				s_extCam.pullFrame = gGT->timer;
 				isFree = ExtCam_RayFree(A, C, &t);
 			}
 			// Still a surface in between (the road of a concave curve right behind the kart):
@@ -418,6 +673,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 					memcpy(C, Cu, sizeof(Cu));
 					isFree = 1;
 					s_extCam.raised++;
+					s_extCam.pullFrame = gGT->timer;
 				}
 				else
 				{
@@ -429,6 +685,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 						memcpy(C, Cr, sizeof(Cr));
 						isFree = 1;
 						s_extCam.retail++;
+						s_extCam.pullFrame = gGT->timer;
 					}
 				}
 			}
@@ -474,6 +731,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 			rot.x = (s16)(0x800 - ratan2((int)dir[1], horiz));
 			rot.z = ExtCam_RollFor(rot, fwd, s_extCam.up);
 			pb->rot = rot;
+			s_extCam.extFrame = gGT->timer;
 			ExtCam_Axes(&rot, fwd, camUp, camRight);
 			{
 				const double a = ExtCam_AngleDeg(camUp, U);
@@ -559,6 +817,97 @@ int ExtCam_Selftest(int *n, int *failures)
 					(*failures)++;
 					printf("ext selftest cam: yaw %d pitch %d turn %d deg: camera up %.2f deg off the wanted\n", yaws[yi], pitches[pi], ai * 45, a);
 				}
+			}
+		}
+	}
+	// The measure line's reading of a push buffer: the view as
+	// PushBuffer_SetMatrixVP builds it (the transpose of the camera matrix, the
+	// rows of y times 0x360 / 0x600, t = R * -pos / 4096), a camera of the
+	// retail kind (yaw and pitch from eye minus look point, as the follow
+	// camera's ratan2) - the look point lies in the middle of the picture, a
+	// point above it higher up (y < 0), a point behind the eye has w < 0, the
+	// up points up the world; and the occlusion segment leaves out the last
+	// units before the kart.
+	{
+		static const int eyes[3][3] = {{100, 50, -300}, {-2000, 900, 400}, {0, 0, 0}};
+		static const int looks[3][3] = {{120, 60, 0}, {-1800, 800, 300}, {-300, 10, 40}};
+		int c;
+
+		for (c = 0; c < 3; c++)
+		{
+			const int dx = eyes[c][0] - looks[c][0], dy = eyes[c][1] - looks[c][1], dz = eyes[c][2] - looks[c][2];
+			SVec3 rot;
+			MATRIX cam, vp;
+			double up[3], look[3], above[3], behind[3], o1[3], o2[3], o3[3];
+			int r, k;
+			s64 tr;
+
+			rot.y = (s16)ratan2(dx, dz);
+			rot.x = (s16)(0x800 - ratan2(dy, (int)sqrt((double)dx * dx + (double)dz * dz)));
+			rot.z = 0;
+			ConvertRotToMatrix(&cam, &rot);
+			for (r = 0; r < 3; r++)
+			{
+				cam.t[r] = eyes[c][r];
+				tr = 0;
+				for (k = 0; k < 3; k++)
+				{
+					vp.m[r][k] = cam.m[k][r];
+					tr += (s64)cam.m[k][r] * (s64)(-eyes[c][k]);
+				}
+				vp.t[r] = (s32)(tr >> 12);
+			}
+			vp.t[1] = vp.t[1] * 0x360 / 0x600;
+			for (k = 0; k < 3; k++)
+			{
+				vp.m[1][k] = (s16)(vp.m[1][k] * 0x360 / 0x600);
+				look[k] = (double)looks[c][k];
+				above[k] = look[k] + ((k == 1) ? 50.0 : 0.0);
+				behind[k] = 2.0 * (double)eyes[c][k] - look[k];
+			}
+			ExtCam_MeasureUp(&cam, up);
+			ExtCam_MeasureProject(&vp, 0x100, 512, 216, look, o1);
+			ExtCam_MeasureProject(&vp, 0x100, 512, 216, above, o2);
+			ExtCam_MeasureProject(&vp, 0x100, 512, 216, behind, o3);
+			*n += 5;
+			if (up[1] < 0.9)
+			{
+				(*failures)++;
+				printf("ext selftest cam: measure case %d: the camera's up %.3f %.3f %.3f does not point up\n", c, up[0], up[1], up[2]);
+			}
+			// within the rounding of the game's angles (ratan2 and the 4.12 matrix: about a degree)
+			if ((fabs(o1[0]) > 0.03) || (fabs(o1[1]) > 0.03) || (o1[2] <= 0.0))
+			{
+				(*failures)++;
+				printf("ext selftest cam: measure case %d: the look point at %.4f %.4f w %.1f, not in the middle\n", c, o1[0], o1[1], o1[2]);
+			}
+			if ((o2[1] >= o1[1] - 0.05) || (fabs(o2[0] - o1[0]) > 0.03) || (o2[2] <= 0.0))
+			{
+				(*failures)++;
+				printf("ext selftest cam: measure case %d: the point above the look point at %.4f %.4f w %.1f\n", c, o2[0], o2[1], o2[2]);
+			}
+			if (o3[2] >= 0.0)
+			{
+				(*failures)++;
+				printf("ext selftest cam: measure case %d: the point behind the eye has w %.1f\n", c, o3[2]);
+			}
+			// the depth is the distance along the view: eye to look point
+			if (fabs(o1[2] - sqrt((double)dx * dx + (double)dy * dy + (double)dz * dz)) > 2.0)
+			{
+				(*failures)++;
+				printf("ext selftest cam: measure case %d: depth %.1f of the look point is not its distance\n", c, o1[2]);
+			}
+		}
+		{
+			const double eye[3] = {0.0, 0.0, 0.0}, kart[3] = {0.0, 0.0, 20.0};
+			double at, len;
+
+			(*n)++;
+			// no collision is built in the selftest: a segment shorter than the part left out is free at once
+			if (ExtCam_MeasureOccluded(eye, kart, 26.0, &at, &len) || (fabs(len - 20.0) > 1e-9) || (at != -1.0))
+			{
+				(*failures)++;
+				printf("ext selftest cam: measure: a segment of 20 within the 26 left out is not free\n");
 			}
 		}
 	}

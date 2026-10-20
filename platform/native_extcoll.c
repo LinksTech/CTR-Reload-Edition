@@ -1564,6 +1564,179 @@ int ExtColl_ProbeSurface(const SVec3 *from, const SVec3 *dir, int len, ExtCollHi
 }
 
 // ---------------------------------------------------------------------------
+// the line query (see the header): exact, both faces, over the leaves whose box
+// the line's piece meets (the leaves are walked as an array: no search stack,
+// no scratchpad)
+
+internal int ExtColl_RecordLineClass(const struct QuadBlock *q)
+{
+	switch (q->quadFlags)
+	{
+	case EXT_COLL_FLAGS_GROUND:
+		return EXT_COLL_LINE_GROUND;
+	case EXT_COLL_FLAGS_WALL_NOSCRUB:
+	case EXT_COLL_FLAGS_WALL_SOLID:
+		return EXT_COLL_LINE_WALL;
+	case EXT_COLL_FLAGS_KILL:
+		return EXT_COLL_LINE_KILL;
+	case EXT_COLL_FLAGS_TRIGGER:
+		return EXT_COLL_LINE_TRIGGER;
+	default:
+		return 0;
+	}
+}
+
+// The segment p + t d (t in [t0, t1]) against a box grown by 1: 1 = it may meet it.
+internal int ExtColl_SegmentBox(const double p[3], const double d[3], double t0, double t1, const struct BoundingBox *b)
+{
+	const double lo[3] = {(double)b->min.x - 1.0, (double)b->min.y - 1.0, (double)b->min.z - 1.0};
+	const double hi[3] = {(double)b->max.x + 1.0, (double)b->max.y + 1.0, (double)b->max.z + 1.0};
+
+	for (int a = 0; a < 3; a++)
+	{
+		if (fabs(d[a]) < 1e-12)
+		{
+			if ((p[a] < lo[a]) || (p[a] > hi[a]))
+			{
+				return 0;
+			}
+			continue;
+		}
+		{
+			double ta = (lo[a] - p[a]) / d[a];
+			double tb = (hi[a] - p[a]) / d[a];
+
+			if (ta > tb)
+			{
+				const double s = ta;
+				ta = tb;
+				tb = s;
+			}
+			t0 = (ta > t0) ? ta : t0;
+			t1 = (tb < t1) ? tb : t1;
+			if (t0 > t1)
+			{
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+int ExtColl_LineQuery(const double from[3], const double dir[3], double tMin, double tMax, int classes, int nearestAbs, ExtCollLineHit *out)
+{
+	double d[3];
+	double len;
+	int found = 0;
+	double bestKey = 0.0;
+
+	if (!s_extColl.ready || (from == NULL) || (dir == NULL) || (out == NULL) || (tMin > tMax))
+	{
+		return 0;
+	}
+	len = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+	if (len < 1e-9)
+	{
+		return 0;
+	}
+	d[0] = dir[0] / len;
+	d[1] = dir[1] / len;
+	d[2] = dir[2] / len;
+	for (int b = 0; b < s_extColl.numBsp; b++)
+	{
+		const struct BSP *node = &s_extColl.bsp[b];
+
+		if (((node->flag & BSP_NODE_FLAG_LEAF) == 0) || !ExtColl_SegmentBox(from, d, tMin, tMax, &node->box))
+		{
+			continue;
+		}
+		for (int r = 0; r < node->data.leaf.numQuads; r++)
+		{
+			const struct QuadBlock *q = &node->data.leaf.ptrQuadBlockArray[r];
+			const int cls = ExtColl_RecordLineClass(q);
+			// the record keeps the file's triangle (a, b, c) as corners (a, c, b):
+			// v0 v1 v2 below are the file's a b c again, and the front
+			// (counter-clockwise in the file) is (v1 - v0) x (v2 - v0)
+			const SVec3 v0 = s_extColl.verts[q->index[0]].pos;
+			const SVec3 v1 = s_extColl.verts[q->index[2]].pos;
+			const SVec3 v2 = s_extColl.verts[q->index[1]].pos;
+			double e1[3], e2[3], h[3], s[3], qv[3], a, f, u, v, t, n[3], nl, key;
+
+			if (((cls & classes) == 0) || !ExtColl_SegmentBox(from, d, tMin, tMax, &q->bbox))
+			{
+				continue;
+			}
+			e1[0] = (double)v1.x - v0.x;
+			e1[1] = (double)v1.y - v0.y;
+			e1[2] = (double)v1.z - v0.z;
+			e2[0] = (double)v2.x - v0.x;
+			e2[1] = (double)v2.y - v0.y;
+			e2[2] = (double)v2.z - v0.z;
+			// Moeller-Trumbore, both faces
+			h[0] = d[1] * e2[2] - d[2] * e2[1];
+			h[1] = d[2] * e2[0] - d[0] * e2[2];
+			h[2] = d[0] * e2[1] - d[1] * e2[0];
+			a = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+			if (fabs(a) < 1e-9)
+			{
+				continue;
+			}
+			f = 1.0 / a;
+			s[0] = from[0] - v0.x;
+			s[1] = from[1] - v0.y;
+			s[2] = from[2] - v0.z;
+			u = f * (s[0] * h[0] + s[1] * h[1] + s[2] * h[2]);
+			if ((u < -1e-9) || (u > 1.0 + 1e-9))
+			{
+				continue;
+			}
+			qv[0] = s[1] * e1[2] - s[2] * e1[1];
+			qv[1] = s[2] * e1[0] - s[0] * e1[2];
+			qv[2] = s[0] * e1[1] - s[1] * e1[0];
+			v = f * (d[0] * qv[0] + d[1] * qv[1] + d[2] * qv[2]);
+			if ((v < -1e-9) || (u + v > 1.0 + 1e-9))
+			{
+				continue;
+			}
+			t = f * (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]);
+			if ((t < tMin) || (t > tMax))
+			{
+				continue;
+			}
+			key = nearestAbs ? fabs(t) : t;
+			if (found && (key >= bestKey))
+			{
+				continue;
+			}
+			n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+			n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+			n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+			nl = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+			if (nl < 1e-9)
+			{
+				continue;
+			}
+			found = 1;
+			bestKey = key;
+			out->t = t;
+			out->pos[0] = from[0] + t * d[0];
+			out->pos[1] = from[1] + t * d[1];
+			out->pos[2] = from[2] + t * d[2];
+			out->normal[0] = n[0] / nl;
+			out->normal[1] = n[1] / nl;
+			out->normal[2] = n[2] / nl;
+			out->front = (d[0] * n[0] + d[1] * n[1] + d[2] * n[2]) < 0.0;
+			out->cls = cls;
+			out->zone = ExtColl_RecordZone(q);
+			out->terrain = q->terrain_type;
+			out->recordIndex = (int)(q - s_extColl.quads);
+			out->record = q;
+		}
+	}
+	return found;
+}
+
+// ---------------------------------------------------------------------------
 // the limits line: each fixed size against what the build used of it
 
 internal void ExtColl_FormatLimits(char *out, size_t size)
@@ -2108,6 +2281,54 @@ int ExtColl_Selftest(void)
 		ExtColl_TestCheck(ExtColl_ProbeSurface(&from, &slant, 400, &h) && (h.zone == 0) && (h.pos.y >= -1) && (h.pos.y <= 1) && (h.pos.z >= -702) &&
 		                      (h.pos.z <= -698),
 		                  "probe at 45 degrees onto the floor: 200 down is 200 on in z, the hit at z -700, y 0", &checks, &failures);
+
+		// the line query (exact, both faces, by class)
+		{
+			ExtCollLineHit lh;
+			const double vUp[3] = {0.0, 1.0, 0.0};
+			const double vDown[3] = {0.0, -3.0, 0.0}; // any length
+			const double vWest[3] = {-1.0, 0.0, 0.0};
+
+			{
+				const double p[3] = {0.0, 120.0, 0.0};
+
+				ExtColl_TestCheck(ExtColl_LineQuery(p, vUp, -300.0, 300.0, EXT_COLL_LINE_GROUND, 1, &lh) && (fabs(lh.t - 80.0) < 1e-6) &&
+				                      (fabs(lh.pos[1] - 200.0) < 1e-6) && (lh.normal[1] > 0.999) && !lh.front && (lh.zone == 7) && (lh.cls == EXT_COLL_LINE_GROUND) &&
+				                      (lh.terrain == TERRAIN_WOOD) && (lh.record == &s_extColl.quads[lh.recordIndex]),
+				                  "line +-300 up from 120 under the deck: the nearest is the deck (+80), its back face, front normal up, zone 7", &checks, &failures);
+				ExtColl_TestCheck(ExtColl_LineQuery(p, vUp, -300.0, 300.0, EXT_COLL_LINE_GROUND, 0, &lh) && (fabs(lh.t + 120.0) < 1e-6) && (lh.zone == 0) &&
+				                      (lh.normal[1] > 0.999) && !lh.front,
+				                  "the same line by smallest t: the floor (-120); +dir points up, so the line meets its back face", &checks, &failures);
+				ExtColl_TestCheck(!ExtColl_LineQuery(p, vUp, -100.0, 60.0, EXT_COLL_LINE_GROUND, 1, &lh), "the same line within -100..60: nothing", &checks, &failures);
+			}
+			{
+				const double p[3] = {-900.0, 50.0, -900.0};
+
+				ExtColl_TestCheck(ExtColl_LineQuery(p, vDown, 0.0, 500.0, EXT_COLL_LINE_KILL, 1, &lh) && (fabs(lh.t - 450.0) < 1e-6) && (lh.cls == EXT_COLL_LINE_KILL),
+				                  "down onto kills only: the kill plane at -400", &checks, &failures);
+				ExtColl_TestCheck(ExtColl_LineQuery(p, vDown, 0.0, 500.0, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_KILL, 1, &lh) && (fabs(lh.t - 50.0) < 1e-6) &&
+				                      (lh.cls == EXT_COLL_LINE_GROUND),
+				                  "down onto ground or kill: the floor comes first", &checks, &failures);
+				ExtColl_TestCheck(ExtColl_LineQuery(p, vWest, 0.0, 500.0, EXT_COLL_LINE_WALL, 1, &lh) && (fabs(lh.t - 124.0) < 1e-6) && (lh.cls == EXT_COLL_LINE_WALL),
+				                  "west onto walls: the wall at x -1024", &checks, &failures);
+				ExtColl_TestCheck(!ExtColl_LineQuery(p, vWest, 0.0, 500.0, EXT_COLL_LINE_GROUND, 1, &lh), "west onto ground: none", &checks, &failures);
+			}
+			{
+				const double p[3] = {1280.0, 200.0, 0.0};
+
+				ExtColl_TestCheck(ExtColl_LineQuery(p, vDown, 0.0, 400.0, EXT_COLL_LINE_GROUND, 1, &lh) && (fabs(lh.pos[1] - 64.0) < 1e-6) && (lh.normal[0] < -0.2) &&
+				                      (lh.normal[1] > 0.95) && lh.front && (lh.terrain == TERRAIN_DIRT),
+				                  "down onto the ramp: exactly y 64, the front normal leans back", &checks, &failures);
+			}
+			{
+				const double p[3] = {5000.0, 0.0, 5000.0};
+				const double zero[3] = {0.0, 0.0, 0.0};
+
+				ExtColl_TestCheck(!ExtColl_LineQuery(p, vDown, -1000.0, 1000.0, EXT_COLL_LINE_ALL, 1, &lh) &&
+				                      !ExtColl_LineQuery(p, zero, -1000.0, 1000.0, EXT_COLL_LINE_ALL, 1, &lh),
+				                  "no hit outside the track, none for a zero direction", &checks, &failures);
+			}
+		}
 	}
 
 	printf("ext selftest coll: made-up track %d record(s), %d vertex(es), %d node(s), depth %d, ray %d point(s), %d edge point(s) skipped; the game's "

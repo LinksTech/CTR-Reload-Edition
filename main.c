@@ -469,6 +469,9 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-static-lit-sun", "<x,y,z,ambient,diffuse[,below]>", "with --engine-static-lit: the direction towards the sun (world axes, y up; normalised), the ambient light from above, the sun's strength and the ambient light from below (each 0..2; without below the same as above); default 0.35,0.85,0.40,0.95,0.40,0.80"},
     {"--ext-track", "<dir>", "with --level, --engine and --engine-track: the external track of <dir> (exttrack.json and the files it names) takes the slot of the level of --level - the donor's geometry, water and sky are not drawn (as --engine-hide sky,water,track) and its level instances are not made; one log line per level load"},
     {"--dev-ext-respawn", "<list>", "with --ext-track, measuring only: the player is put back at the respawn point at each item - a race frame (0..1000000) or a node cpN (when the player's last ground names node N); up to 8 items, comma separated, one after the other"},
+    {"--dev-ext-kart-log", "", "with --ext-track, measuring only: one [CTR ExtKart] log line per kart and logic frame - the distance of the kart to the ground along the local up (the nearest nav frame's up), its lap, finish, kart and mask state; a log only"},
+    {"--dev-ext-crate-log", "", "with --ext-track, measuring only: [CTR ExtCrateLog] lines - each crate at the race start with the ground under it along the local up, each contact with the kart's ground contact and the jump input before it, each crate back at full size with its delay; a log only"},
+    {"--dev-ext-cam-log", "<H>", "with --ext-track, measuring only: one [CTR ExtCam] measure line per frame of seat 0 - the camera as drawn (eye, its up), where the kart lies in the picture and whether ground or a wall lies between the eye and the kart's middle (0.5 H along its up), the last H/2 units before it left out; H = the kart's height in world units, 1..1000 (decimals allowed, e.g. 66.2); a log only"},
     {"--ext-selftest", "<json|coll|race|nav|crates|music>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates or the music, then end (ctest ext_selftest_<name>)"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
     {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
@@ -1569,6 +1572,9 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int levelGiven = 0;
 		int trackGiven = 0;
 		const char *respawnValue = NULL;
+		int kartLogGiven = 0;
+		int crateLogGiven = 0;
+		const char *camLogValue = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
 		{
@@ -1590,6 +1596,18 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				respawnValue = value;
 			}
+			else if (strcmp(argv[argIndex], "--dev-ext-kart-log") == 0)
+			{
+				kartLogGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-ext-crate-log") == 0)
+			{
+				crateLogGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-ext-cam-log") == 0)
+			{
+				camLogValue = value;
+			}
 			else if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && (strcmp(value, "json") != 0) && (strcmp(value, "coll") != 0) &&
 			         (strcmp(value, "race") != 0) && (strcmp(value, "nav") != 0) && (strcmp(value, "crates") != 0) && (strcmp(value, "music") != 0) &&
 			         (strcmp(value, "phys") != 0))
@@ -1610,6 +1628,23 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (extGiven && !trackGiven)
 			{
 				refusal = "switch --ext-track requires --engine-track";
+			}
+			else if (kartLogGiven && !extGiven)
+			{
+				refusal = "switch --dev-ext-kart-log requires --ext-track";
+			}
+			else if (crateLogGiven && !extGiven)
+			{
+				refusal = "switch --dev-ext-crate-log requires --ext-track";
+			}
+			else if ((camLogValue != NULL) && !extGiven)
+			{
+				refusal = "switch --dev-ext-cam-log requires --ext-track";
+			}
+			else if ((camLogValue != NULL) && ((strspn(camLogValue, "0123456789.") != strlen(camLogValue)) || (strlen(camLogValue) == 0) || (strlen(camLogValue) > 8) ||
+			                                  (strchr(camLogValue, '.') != strrchr(camLogValue, '.')) || (atof(camLogValue) < 1.0) || (atof(camLogValue) > 1000.0)))
+			{
+				refusal = "switch --dev-ext-cam-log expects the kart's height H in world units, 1..1000";
 			}
 			else if ((respawnValue != NULL) && !extGiven)
 			{
@@ -1850,6 +1885,21 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			}
 			g_cfg_engineHide |= ENGINE_HIDE_SKY | ENGINE_HIDE_WATER | ENGINE_HIDE_TRACK;
 			printf("[CTR Native] external track '%s' in the slot of level %d\n", g_cfg_extTrackDir, g_cfg_extTrackSlot);
+		}
+		else if (strcmp(argv[argIndex], "--dev-ext-kart-log") == 0)
+		{
+			// Checked before any window (needs --ext-track); a log only.
+			g_cfg_extKartLog = 1;
+		}
+		else if (strcmp(argv[argIndex], "--dev-ext-crate-log") == 0)
+		{
+			// Checked before any window (needs --ext-track); a log only (platform/native_extcrates.c).
+			g_cfg_extCrateLog = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--dev-ext-cam-log") == 0) && ((argIndex + 1) < argc))
+		{
+			// Checked before any window (needs --ext-track, H 1..1000); a log only (platform/native_extcam.c).
+			g_cfg_extCamLogH = atof(argv[++argIndex]);
 		}
 		else if ((strcmp(argv[argIndex], "--dev-ext-respawn") == 0) && ((argIndex + 1) < argc))
 		{

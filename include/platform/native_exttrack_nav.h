@@ -72,6 +72,18 @@ void ExtNav_BotTick(const struct Driver *bot, const struct NavFrame *curr);
 void ExtNav_BotRespawn(const struct Driver *bot, int zone, int frameIndex);
 // 1 = the level's nav table is the external one (the paths of this file).
 int ExtNav_Active(void);
+// THE LOCAL UP u (for measuring; it does not depend on a kart): the up of the
+// installed nav frame nearest to pos (world units, 3D distance, all paths);
+// a frame outside a zone (and every frame of a path without zones) gives
+// (0, 4096, 0). 1 = paths are installed (up set; *path / *frame = that frame
+// when the pointers are not NULL), 0 = none (up = (0, 4096, 0), path/frame -1).
+int ExtNav_UpAt(const double pos[3], short up[3], int *path, int *frame);
+// --dev-ext-kart-log (main.c; measuring only, 0 = off): from the dispatcher
+// after the game logic of a frame, one "[CTR ExtKart]" line per kart - its
+// distance to the ground along the local up (format in native_exttrack_nav.c).
+// A log only: no game state is written. Off: returns at once.
+extern int g_cfg_extKartLog;
+void ExtNav_OnLogicFrame(void);
 
 // From the dispatcher, once per level load of the active external track,
 // after the collision and the race part (the checkpoint table) and before

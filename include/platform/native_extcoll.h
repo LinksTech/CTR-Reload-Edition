@@ -53,6 +53,36 @@ int ExtColl_RecordZone(const struct QuadBlock *q);
 int ExtColl_ZoneRecords(void);
 int ExtColl_ProbeSurface(const SVec3 *from, const SVec3 *dir, int len, ExtCollHit *out);
 
+// THE LINE QUERY (for measuring and for the CPU drivers): which record's
+// triangle a line meets, exactly (double arithmetic on the record's own corners,
+// the triangles the game's tests read; the game's stored planes lie up to ~2
+// units off them). Both faces count. From `from` (world units) along dir (any
+// length, normalised inside) for t in [tMin, tMax] units (tMin may be
+// negative: a line through `from`); `classes` = a mask of EXT_COLL_LINE_*; the
+// hit with the smallest |t| (nearestAbs = 1) or the smallest t (0). Read only:
+// no scratchpad, no game state. 1 = hit (out set), 0 = none or nothing built.
+enum
+{
+	EXT_COLL_LINE_GROUND = 1,  // ground records (anti-gravity zones included); no wall, pad or kill record
+	EXT_COLL_LINE_WALL = 2,
+	EXT_COLL_LINE_KILL = 4,
+	EXT_COLL_LINE_TRIGGER = 8, // turbo pads
+	EXT_COLL_LINE_ALL = 15,
+};
+typedef struct
+{
+	double pos[3];    // the point on the triangle, world units
+	double t;         // signed distance from `from` along the unit dir
+	double normal[3]; // the triangle's front normal, unit length: the side the game's one-sided test is hit from (ground: the driving side)
+	int front;        // 1 = the line meets the front face first along +dir (dot(dir, normal) < 0)
+	int cls;          // the record's EXT_COLL_LINE_* bit
+	int zone;         // its anti-gravity zone, 0 none
+	int terrain;      // terrain_type (pads: the trigger bits)
+	int recordIndex;  // its index in the external collision (blockID)
+	const struct QuadBlock *record;
+} ExtCollLineHit;
+int ExtColl_LineQuery(const double from[3], const double dir[3], double tMin, double tMax, int classes, int nearestAbs, ExtCollLineHit *out);
+
 // --ext-selftest coll: prints "ext selftest coll passed: N checks, 0 failures"
 // (or FAILED); returns 0 / 1.
 int ExtColl_Selftest(void);
