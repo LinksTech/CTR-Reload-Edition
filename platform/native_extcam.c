@@ -22,7 +22,10 @@
 //                   retail camera itself. The eye is pulled in on the line to
 //                   the kart's middle when ground or a wall lies between (the
 //                   measure line's own test), the aim of the retail picture
-//                   kept; in over EXT_CAM_IN frames, out by EXT_CAM_OUT_END
+//                   kept; the view aims at the kart's middle so that it sits at
+//                   (0, EXT_CAM_FRAME_Y) in the picture at every speed (attempt
+//                   2: the retail picture puts it at y 0.46..0.64, outside the
+//                   middle half when slow); in over EXT_CAM_IN frames, out by EXT_CAM_OUT_END
 //                   frames after the zone; the camera turns at most
 //                   EXT_CAM_TURN_MAX per frame (checked on the rotation the
 //                   picture is drawn with). Writes the push buffer's position and
@@ -77,6 +80,9 @@
 #define EXT_CAM_HANDOVER 7.0    // back to retail when the retail camera is within this of the frame before
 #define EXT_CAM_MIN_EYE 60.0    // the eye stays this far from the kart's middle
 #define EXT_CAM_GROW 0.04       // a pulled-in eye goes back out by this share per frame
+#define EXT_CAM_FRAME_Y 0.30    // the kart's middle sits this far below the picture's middle (-1..1) ...
+#define EXT_CAM_FRAME_BOX 0.42  // ... and never outside this box when the step allows (gate F2a: 0.5; chief: 0.45)
+#define EXT_CAM_ORIENT_OUT 38   // after the zone the view turns towards the retail one from this frame on
 
 global_variable struct
 {
@@ -94,7 +100,7 @@ global_variable struct
 	double fwd[3];     // the soft course across it
 	double weight;     // 0..1 blend with the retail camera
 	double sigma;      // the eye's share of the rig's distance (pulled in < 1)
-	u32 frames, pulled, raised, blocked, limited, halved, lateHandover, idles;
+	u32 frames, pulled, raised, blocked, limited, halved, lateHandover, idles, framingWide, framingOut;
 	double sigmaMin;
 	// notes of game/CAM.c (this file's state only): the frame (gGT->timer) in
 	// which CAM_FollowDriver_Normal ran for seat 0 and the one before; the rig's
@@ -636,18 +642,6 @@ internal void ExtCam_OrientDelta(const ExtCamOrient *a, const ExtCamOrient *b, d
 	}
 }
 
-// a turned towards b by t of the way (0..1) - or by at most maxRad when t < 0.
-internal void ExtCam_OrientToward(const ExtCamOrient *a, const ExtCamOrient *b, double t, double maxRad, ExtCamOrient *out)
-{
-	double axis[3], ang, step;
-
-	ExtCam_OrientDelta(a, b, axis, &ang);
-	step = (t >= 0.0) ? (t * ang) : ((ang > maxRad) ? maxRad : ang);
-	ExtCam_Turn(a->f, axis, step, out->f);
-	ExtCam_Turn(a->u, axis, step, out->u);
-	ExtCam_OrientMake(out, out->f, out->u);
-}
-
 // The roll for yaw/pitch rot that brings the DRAWN up (minus the second column
 // of ConvertRotToMatrix, as the measure line reads it) closest to want: the
 // roll turns about the view, so the drawn up of roll t is cos t u0 + sin t u90
@@ -691,7 +685,7 @@ internal SVec3 ExtCam_RotOf(const ExtCamOrient *o)
 // over EXT_CAM_TURN_CHECK the step is halved, at most 4 times, then prev's own
 // rotation. *cut = 1 when the step was cut, *halvings = how often it was halved.
 // Returns the rotation.
-internal SVec3 ExtCam_LimitedRot(const ExtCamOrient *prev, const ExtCamOrient *want, int *cut, int *halvings, double *drawnStep)
+internal SVec3 ExtCam_LimitedRotMax(const ExtCamOrient *prev, const ExtCamOrient *want, double maxDeg, int *cut, int *halvings, double *drawnStep)
 {
 	ExtCamOrient o;
 	double axis[3], ang, step;
@@ -701,9 +695,9 @@ internal SVec3 ExtCam_LimitedRot(const ExtCamOrient *prev, const ExtCamOrient *w
 	step = ang;
 	*cut = 0;
 	*halvings = 0;
-	if (step > EXT_CAM_TURN_MAX * 3.14159265358979323846 / 180.0)
+	if (step > maxDeg * 3.14159265358979323846 / 180.0)
 	{
-		step = EXT_CAM_TURN_MAX * 3.14159265358979323846 / 180.0;
+		step = maxDeg * 3.14159265358979323846 / 180.0;
 		*cut = 1;
 	}
 	for (tries = 0; tries <= 4; tries++)
@@ -728,6 +722,86 @@ internal SVec3 ExtCam_LimitedRot(const ExtCamOrient *prev, const ExtCamOrient *w
 		(*halvings)++;
 	}
 	return ExtCam_RotOf(prev);
+}
+
+internal SVec3 ExtCam_LimitedRot(const ExtCamOrient *prev, const ExtCamOrient *want, int *cut, int *halvings, double *drawnStep)
+{
+	return ExtCam_LimitedRotMax(prev, want, EXT_CAM_TURN_MAX, cut, halvings, drawnStep);
+}
+
+// The view matrix of rotation rot at eye as PushBuffer_SetMatrixVP builds it
+// (the transpose of ConvertRotToMatrix, t = R * -eye / 4096, the rows of y
+// times 0x360 / 0x600), the eye in whole units as the push buffer holds it.
+internal void ExtCam_ViewOf(const SVec3 *rot, const double eye[3], MATRIX *vp)
+{
+	MATRIX cam;
+	s32 e[3];
+	int r, k;
+
+	ConvertRotToMatrix(&cam, rot);
+	for (k = 0; k < 3; k++)
+	{
+		e[k] = (s32)(s16)lround(eye[k]);
+	}
+	for (r = 0; r < 3; r++)
+	{
+		s64 tr = 0;
+
+		for (k = 0; k < 3; k++)
+		{
+			vp->m[r][k] = cam.m[k][r];
+			tr += (s64)cam.m[k][r] * (s64)(-e[k]);
+		}
+		vp->t[r] = (s32)(tr >> 12);
+	}
+	vp->t[1] = vp->t[1] * 0x360 / 0x600;
+	for (k = 0; k < 3; k++)
+	{
+		vp->m[1][k] = (s16)(vp->m[1][k] * 0x360 / 0x600);
+	}
+}
+
+// The view from eye that puts point mid at (0, yWant) of the picture (y down;
+// screen = distanceToScreen, rectH = the view's height; the rows count 9/16):
+// the direction to mid turned towards up by the angle of yWant; the camera's up
+// = up across the view (or alt when the view runs along up).
+internal int ExtCam_AimAt(const double eye[3], const double mid[3], const double up[3], const double alt[3], int screen, int rectH, double yWant,
+                          ExtCamOrient *out)
+{
+	double a[3] = {mid[0] - eye[0], mid[1] - eye[1], mid[2] - eye[2]};
+	double axis[3], f[3];
+	const double half = (double)(((rectH >> 1) > 0) ? (rectH >> 1) : 1);
+	const double sy = (double)screen * (double)0x360 / (double)0x600 / half;
+	const double theta = atan(yWant / ((sy > 1e-6) ? sy : 1.0));
+
+	if (ExtCam_Norm(a) < 1e-6)
+	{
+		return 0;
+	}
+	ExtCam_Cross(a, up, axis);
+	if (ExtCam_Norm(axis) < 1e-6)
+	{
+		ExtCam_Cross(a, alt, axis);
+		if (ExtCam_Norm(axis) < 1e-6)
+		{
+			return 0;
+		}
+	}
+	ExtCam_Turn(a, axis, theta, f);
+	if (!ExtCam_OrientMake(out, f, up))
+	{
+		return ExtCam_OrientMake(out, f, alt);
+	}
+	return 1;
+}
+
+// Where point p lies in the picture of rotation rot at eye (the measure line's projection).
+internal void ExtCam_InPicture(const SVec3 *rot, const double eye[3], const struct PushBuffer *pb, const double p[3], double out[3])
+{
+	MATRIX vp;
+
+	ExtCam_ViewOf(rot, eye, &vp);
+	ExtCam_MeasureProject(&vp, pb->distanceToScreen_PREV, pb->rect.w, pb->rect.h, p, out);
 }
 
 // The kart's course in its surface as the retail camera reads it: the moving
@@ -777,9 +851,9 @@ internal void ExtCam_RetailCourse(const struct Driver *d, double k[3])
 internal void ExtCam_Report(void)
 {
 	Platform_Log("[CTR ExtCam] at exit: %u zone camera frame(s) of seat 0, pulled in %u, lifted %u, no free place %u, step cut %u, halved %u, "
-	             "late hand-over %u, back to retail %u time(s), closest pull %.2f\n",
+	             "late hand-over %u, back to retail %u time(s), closest pull %.2f, kart's middle outside the box %u (wider step %u)\n",
 	             s_extCam.frames, s_extCam.pulled, s_extCam.raised, s_extCam.blocked, s_extCam.limited, s_extCam.halved, s_extCam.lateHandover,
-	             s_extCam.idles, s_extCam.sigmaMin);
+	             s_extCam.idles, s_extCam.sigmaMin, s_extCam.framingOut, s_extCam.framingWide);
 }
 
 internal void ExtCam_Idle(void)
@@ -823,9 +897,8 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	int zone, since, grab;
 	double P[3], mid[3], n2[3], target[3], course[3], k[3], v[3];
 	double eyeWant[3], lookWant[3], off[3], eye[3], E[3];
-	double aimAxis[3], aimAng;
-	ExtCamOrient zoneO, retailO, prevO, outO;
-	int havePrev;
+	ExtCamOrient retailO, prevO, outO;
+	int havePrev, framed;
 	int i;
 
 	if ((gGT == NULL) || (d == NULL) || (pb == NULL) || !ExtCam_On(gGT->levelID) || !s_extCam.follow || (gGT->numPlyrCurrGame != 1) ||
@@ -961,16 +1034,6 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 			off[i] = eyeWant[i] - mid[i];
 		}
 	}
-	// the retail picture's aim: the turn from "towards the kart's middle" to "towards the look point"
-	{
-		double a[3] = {mid[0] - eyeWant[0], mid[1] - eyeWant[1], mid[2] - eyeWant[2]};
-		double b[3] = {lookWant[0] - eyeWant[0], lookWant[1] - eyeWant[1], lookWant[2] - eyeWant[2]};
-
-		ExtCam_Norm(a);
-		ExtCam_Norm(b);
-		ExtCam_Cross(a, b, aimAxis);
-		aimAng = (ExtCam_Norm(aimAxis) > 1e-9) ? acos(fmax(-1.0, fmin(1.0, ExtCam_Dot(a, b)))) : 0.0;
-	}
 	// 4. a place with nothing between the eye and the kart: pulled in on the line to the kart's middle
 	//    (the aim stays the same), then lifted along up; sigma grows back slowly
 	if (grab)
@@ -1051,20 +1114,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		}
 		s_extCam.sigmaMin = (s_extCam.sigma < s_extCam.sigmaMin) ? s_extCam.sigma : s_extCam.sigmaMin;
 	}
-	// the zone camera's orientation: towards the kart's middle, turned by the retail aim; up = the soft up
-	{
-		double a[3] = {mid[0] - eye[0], mid[1] - eye[1], mid[2] - eye[2]};
-		double f[3];
-
-		ExtCam_Norm(a);
-		ExtCam_Turn(a, aimAxis, aimAng, f);
-		if (!ExtCam_OrientMake(&zoneO, f, s_extCam.up))
-		{
-			// looking along the up: the course as up
-			ExtCam_OrientMake(&zoneO, f, s_extCam.fwd);
-		}
-	}
-	// 5. the blend with the retail camera: in over EXT_CAM_IN frames, out so that it ends by EXT_CAM_OUT_END
+	// 5. the blend of the eye with the retail one: in over EXT_CAM_IN frames, out so that it ends by EXT_CAM_OUT_END
 	if ((zone != 0) || (since <= EXT_CAM_OUT_END - EXT_CAM_OUT))
 	{
 		s_extCam.weight += 1.0 / EXT_CAM_IN;
@@ -1076,6 +1126,10 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 
 		s_extCam.weight = (wOut < s_extCam.weight) ? wOut : s_extCam.weight;
 		s_extCam.weight = (s_extCam.weight < 0.0) ? 0.0 : s_extCam.weight;
+	}
+	for (i = 0; i < 3; i++)
+	{
+		E[i] = (double)(&pb->pos.x)[i] + s_extCam.weight * (eye[i] - (double)(&pb->pos.x)[i]);
 	}
 	{
 		MATRIX m;
@@ -1090,8 +1144,16 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	{
 		ExtCam_OrientOfMatrix(&pb->matrix_Camera, &prevO);
 	}
-	// 6. back to retail: when the blend is over and the retail camera is within the step of the frame before
-	if (s_extCam.weight <= 0.0)
+	// 6. the view: in the zone and up to EXT_CAM_ORIENT_OUT frames after it aimed at the kart's middle
+	//    (EXT_CAM_FRAME_Y below the picture's middle, up = the soft up); then towards the retail view,
+	//    and back to retail when the eye's blend is over and the retail view is within the step
+	framed = (zone != 0) || (since < EXT_CAM_ORIENT_OUT);
+	if (!framed || !ExtCam_AimAt(E, mid, s_extCam.up, s_extCam.fwd, pb->distanceToScreen_PREV, pb->rect.h, EXT_CAM_FRAME_Y, &outO))
+	{
+		outO = retailO;
+		framed = 0;
+	}
+	if (!framed && (s_extCam.weight <= 0.0))
 	{
 		double axis[3], ang = 0.0;
 
@@ -1107,12 +1169,9 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		}
 		s_extCam.lateHandover++;
 	}
-	for (i = 0; i < 3; i++)
-	{
-		E[i] = (double)(&pb->pos.x)[i] + s_extCam.weight * (eye[i] - (double)(&pb->pos.x)[i]);
-	}
-	ExtCam_OrientToward(&retailO, &zoneO, s_extCam.weight, 0.0, &outO);
-	// 7. at most EXT_CAM_TURN_MAX from the frame before, checked on the rotation itself
+	// 7. at most EXT_CAM_TURN_MAX from the frame before, checked on the rotation itself; when that leaves the
+	//    kart's middle outside EXT_CAM_FRAME_BOX (the first zone frame after the retail picture, a slow kart),
+	//    up to EXT_CAM_TURN_CHECK
 	{
 		SVec3 rot;
 		int cut = 0, halvings = 0;
@@ -1121,6 +1180,19 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		if (havePrev)
 		{
 			rot = ExtCam_LimitedRot(&prevO, &outO, &cut, &halvings, &drawnStep);
+			if (framed)
+			{
+				double pic[3];
+
+				ExtCam_InPicture(&rot, E, pb, mid, pic);
+				if ((pic[2] <= 0.0) || (fabs(pic[0]) > EXT_CAM_FRAME_BOX) || (fabs(pic[1]) > EXT_CAM_FRAME_BOX))
+				{
+					rot = ExtCam_LimitedRotMax(&prevO, &outO, EXT_CAM_TURN_CHECK, &cut, &halvings, &drawnStep);
+					s_extCam.framingWide++;
+					ExtCam_InPicture(&rot, E, pb, mid, pic);
+					s_extCam.framingOut += ((pic[2] <= 0.0) || (fabs(pic[0]) > EXT_CAM_FRAME_BOX) || (fabs(pic[1]) > EXT_CAM_FRAME_BOX)) ? 1u : 0u;
+				}
+			}
 			s_extCam.limited += cut ? 1u : 0u;
 			s_extCam.halved += (halvings > 0) ? 1u : 0u;
 		}
@@ -1382,6 +1454,63 @@ int ExtCam_Selftest(int *n, int *failures)
 			{
 				(*failures)++;
 				printf("ext selftest cam: step limit case %d: the drawn up turned %.2f deg\n", c, ExtCam_AngleDeg(drawn.u, prev.u));
+			}
+		}
+	}
+	// THE AIM (attempt 2): the view of ExtCam_AimAt puts the kart's middle at (0, EXT_CAM_FRAME_Y) of the
+	// picture drawn with the push buffer's rotation (within the rounding), for eyes all round and ups tilted
+	{
+		struct PushBuffer tpb;
+		int c;
+
+		memset(&tpb, 0, sizeof(tpb));
+		tpb.distanceToScreen_PREV = 0x100;
+		tpb.rect.w = 1216;
+		tpb.rect.h = 216;
+		for (c = 0; c < 48; c++)
+		{
+			const double yaw = (double)c * 0.53, tilt = (double)(c % 6) * 0.5;
+			const double mid[3] = {1000.0, 2000.0, -500.0};
+			double up[3] = {sin(tilt) * cos(yaw * 0.7), cos(tilt), sin(tilt) * sin(yaw * 0.7)};
+			const double alt[3] = {1.0, 0.0, 0.0};
+			double eye[3], pic[3], back[3];
+			ExtCamOrient o;
+			SVec3 rot;
+			int k;
+
+			ExtCam_Norm(up);
+			// an eye behind and above the middle in the frame of up
+			{
+				double side[3], fw[3];
+				const double ref[3] = {cos(yaw), 0.0, sin(yaw)};
+
+				ExtCam_Cross(up, ref, side);
+				ExtCam_Norm(side);
+				ExtCam_Cross(side, up, fw);
+				for (k = 0; k < 3; k++)
+				{
+					eye[k] = mid[k] - (150.0 + 10.0 * (double)(c % 5)) * fw[k] + 70.0 * up[k];
+				}
+			}
+			for (k = 0; k < 3; k++)
+			{
+				eye[k] = (double)lround(eye[k]);
+			}
+			(*n)++;
+			if (!ExtCam_AimAt(eye, mid, up, alt, tpb.distanceToScreen_PREV, tpb.rect.h, EXT_CAM_FRAME_Y, &o))
+			{
+				(*failures)++;
+				printf("ext selftest cam: aim case %d: no view\n", c);
+				continue;
+			}
+			rot = ExtCam_RotOf(&o);
+			ExtCam_InPicture(&rot, eye, &tpb, mid, pic);
+			(void)back;
+			(*n)++;
+			if ((pic[2] <= 0.0) || (fabs(pic[0]) > 0.03) || (fabs(pic[1] - EXT_CAM_FRAME_Y) > 0.03))
+			{
+				(*failures)++;
+				printf("ext selftest cam: aim case %d: the middle at %.3f %.3f w %.1f, not 0 %.2f\n", c, pic[0], pic[1], pic[2], EXT_CAM_FRAME_Y);
 			}
 		}
 	}
