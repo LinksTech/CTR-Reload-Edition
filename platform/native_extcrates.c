@@ -426,6 +426,19 @@ internal void ExtCrates_Hit(struct ExtCrate *c, struct Driver *d, int seat, int 
 	memset(&sps, 0, sizeof(sps));
 	sps.Input1.modelID = bot ? DYNAMIC_ROBOT_CAR : DYNAMIC_PLAYER;
 	RB_CrateWeapon_LInC(c->inst, d->instSelf->thread, &sps);
+	// THE SAME FRAME AS RETAIL: a retail contact happens inside the drivers'
+	// buckets, and the crate thread it gives birth to runs in the STATIC bucket
+	// of the same frame (game/PROC.c:258-262 links it at the head, the buckets run
+	// in order, game/MAIN/MainFrame.c:362-402): its first tick takes the cooldown
+	// 30 -> 29 in the frame of the contact, and the crate is full size again 45
+	// frames after it (RB_Crate.c:146-191). This pass runs after the game logic, so
+	// a thread born here would first run one frame later (46). Its first tick runs
+	// here instead. Every thread found here was born by this contact: the pass
+	// skips crates that already have one (ExtCrates_OnLogicFrame).
+	if (c->inst->thread != NULL)
+	{
+		RB_CrateAny_ThTick_Grow(c->inst->thread);
+	}
 
 	if (bot)
 	{
