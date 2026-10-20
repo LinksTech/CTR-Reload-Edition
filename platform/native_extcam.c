@@ -36,7 +36,8 @@
 #define EXT_CAM_ROLL_STEP 8.0  // degrees per frame
 #define EXT_CAM_LIFT 30        // the ray starts this far above the kart (its up)
 #define EXT_CAM_MARGIN 40      // the camera stays this far in front of a surface
-#define EXT_CAM_MIN_DIST 80
+#define EXT_CAM_MIN_DIST 40   // closest pull-in (Anlauf 3: 80 before)
+#define EXT_CAM_RAISE 120     // the lift of the last resort along the kart's up
 
 global_variable struct
 {
@@ -52,6 +53,7 @@ global_variable struct
 	double rollUp[3]; // the camera's up of the frame before (the roll step)
 	int haveRoll;
 	u32 frames, clear, pulled;
+	u32 raised, retail, blockedLogged;
 	double angleMax;
 	double rollStepMax;
 } s_extCam;
@@ -226,10 +228,10 @@ internal s16 ExtCam_RollFor(SVec3 rot, const double fwd[3], const double want[3]
 
 internal void ExtCam_Report(void)
 {
-	Platform_Log("[CTR ExtCam] at exit: %u zone camera frame(s) of seat 0, ray free %u (%.1f %%), pulled in %u, angle camera up to kart up max %.1f deg, "
-	             "roll step max %.1f deg\n",
+	Platform_Log("[CTR ExtCam] at exit: %u zone camera frame(s) of seat 0, ray free %u (%.1f %%), pulled in %u, lifted %u, retail camera taken %u, "
+	             "angle camera up to kart up max %.1f deg, roll step max %.1f deg\n",
 	             s_extCam.frames, s_extCam.clear, (s_extCam.frames > 0u) ? 100.0 * (double)s_extCam.clear / (double)s_extCam.frames : 0.0, s_extCam.pulled,
-	             s_extCam.angleMax, s_extCam.rollStepMax);
+	             s_extCam.raised, s_extCam.retail, s_extCam.angleMax, s_extCam.rollStepMax);
 }
 
 // 1 = the ray from a to b is free of surfaces (both ways: a surface facing
@@ -260,6 +262,12 @@ internal int ExtCam_RayFree(const double a[3], const double b[3], double *t)
 	dir2 = (SVec3){(s16)(-dir.x), (s16)(-dir.y), (s16)(-dir.z)};
 	if (ExtColl_ProbeSurface(&from2, &dir2, (int)len, &hit))
 	{
+		// A surface facing the camera: its place from a as well (Anlauf 3 - before, only the
+		// surface facing the kart set *t, and a camera behind one facing it was never pulled in).
+		const double h[3] = {(double)hit.pos.x - b[0], (double)hit.pos.y - b[1], (double)hit.pos.z - b[2]};
+		const double ta = (len - sqrt(ExtCam_Dot(h, h))) / len;
+
+		*t = (ta < *t) ? ((ta > 0.0) ? ta : 0.0) : *t;
 		isFree = 0;
 	}
 	return isFree;
@@ -370,23 +378,67 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		}
 		rawFree = ExtCam_RayFree(A, C, &t);
 		isFree = rawFree;
-		if (!isFree && (t < 1.0))
 		{
-			double v[3] = {C[0] - A[0], C[1] - A[1], C[2] - A[2]};
-			const double len = ExtCam_Norm(v);
-			double keep = t * len - EXT_CAM_MARGIN;
+			const double C0[3] = {C[0], C[1], C[2]};
+			const double t0 = t;
+			int iter;
 
-			keep = (keep < EXT_CAM_MIN_DIST) ? EXT_CAM_MIN_DIST : keep;
-			if (keep < len)
+			// Pulled in front of the nearest surface, again until free (at most 3 times).
+			for (iter = 0; (iter < 3) && !isFree; iter++)
 			{
+				double v[3] = {C[0] - A[0], C[1] - A[1], C[2] - A[2]};
+				const double len = ExtCam_Norm(v);
+				double keep = t * len - EXT_CAM_MARGIN;
+
+				keep = (keep < EXT_CAM_MIN_DIST) ? EXT_CAM_MIN_DIST : keep;
+				if (keep >= len)
+				{
+					break;
+				}
 				for (k = 0; k < 3; k++)
 				{
 					C[k] = A[k] + keep * v[k];
 				}
 				s_extCam.pulled++;
+				isFree = ExtCam_RayFree(A, C, &t);
 			}
-			// what the player sees: the ray to the camera where it is now
-			isFree = ExtCam_RayFree(A, C, &t);
+			// Still a surface in between (the road of a concave curve right behind the kart):
+			// the camera lifted along the kart's up, then the retail camera, whichever is free.
+			if (!isFree)
+			{
+				double Cu[3];
+				double tu;
+
+				for (k = 0; k < 3; k++)
+				{
+					Cu[k] = A[k] + 0.6 * (C0[k] - A[k]) + EXT_CAM_RAISE * U[k];
+				}
+				if (ExtCam_RayFree(A, Cu, &tu))
+				{
+					memcpy(C, Cu, sizeof(Cu));
+					isFree = 1;
+					s_extCam.raised++;
+				}
+				else
+				{
+					const double Cr[3] = {(double)camPos->x, (double)camPos->y, (double)camPos->z};
+					double tr;
+
+					if (ExtCam_RayFree(A, Cr, &tr))
+					{
+						memcpy(C, Cr, sizeof(Cr));
+						isFree = 1;
+						s_extCam.retail++;
+					}
+				}
+			}
+			if (!isFree && (s_extCam.blockedLogged < 64u))
+			{
+				s_extCam.blockedLogged++;
+				Platform_Log("[CTR ExtCam] blocked frame %d: kart %.0f %.0f %.0f up %.2f %.2f %.2f, camera wanted %.0f %.0f %.0f (first surface at %.2f of the ray), "
+				             "now %.0f %.0f %.0f\n",
+				             gGT->timer, P[0], P[1], P[2], U[0], U[1], U[2], C0[0], C0[1], C0[2], t0, C[0], C[1], C[2]);
+			}
 		}
 		s_extCam.clear += isFree ? 1u : 0u;
 		s_extCam.frames++;

@@ -1596,7 +1596,8 @@ LAB_8001ab04:
 	// "zones", platform/native_extcam.c): the push buffer laid into the kart's
 	// frame. Returns at once without the switch, the section or a zone.
 	{
-		if (d->kartState != KS_MASK_GRABBED)
+		// Not while the camera turns away (end of the race: the spin round the driver, camera.end) or flies a transition.
+		if ((d->kartState != KS_MASK_GRABBED) && ((cDC->flags & (CAMERA_FLAG_TRANSITION_AWAY | CAMERA_FLAG_BATTLE_END_OF_RACE)) == 0))
 		{
 			ExtCam_Follow(gGT, d, pb, &cam->pos, &cam->delta);
 		}

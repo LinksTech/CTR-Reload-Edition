@@ -53,6 +53,8 @@
 //   [CTR ExtTrack] respawn seat S seeded ...  B5: the zone state set after the teleport (tracks with zones)
 //   [CTR ExtTrack] respawn seat 0 ground ...  B5: frames until the kart has ground again, its up
 //                                             against the surface normal there
+//   [CTR ExtTrack] respawn seat 0 up after 10 frames on the ground ...  B5: the kart's up then (it lands
+//                                             with the attitude of its fall and lines up on the ground)
 //   [CTR ExtTrack] respawn seat 0 stable ...  B5: 90 frames after that without a new mask grab
 //   [CTR ExtTrack] kill height: ...           kill_y grabbed a kart
 //   [CTR ExtTrack] results screen ...         D6: the arcade results screen is up (+ snapshot)
@@ -80,6 +82,7 @@ enum
 	EXTRACE_DRIVERS = 8,
 	EXTRACE_GROUND_WAIT = 300,     // B5: frames the ground watch waits after a respawn
 	EXTRACE_STABLE_FRAMES = 90,    // B5: frames without a new mask grab after the ground contact
+	EXTRACE_SETTLE_FRAMES = 10,    // B5: the kart's up against the surface is judged this many frames after the ground contact
 	EXTRACE_RESPAWN_Y_OFFSET = 0x80, // the respawn's height over the surface (VehStuckProc.c, VEH_STUCK_RESPAWN_Y_OFFSET)
 	EXTRACE_SEED_PROBE_LEN = 384,  // B5: the surface probe after a respawn: from the kart's place (node + 0x80) this far down (to node - 0x100)
 	EXTRACE_KIND_LINE = 0,
@@ -859,6 +862,21 @@ internal void ExtRace_WatchAfterRespawn(struct GameTracker *gGT)
 			s_extRaceWatchPhase = 0;
 		}
 		return;
+	}
+	if (s_extRaceWatchFrames == EXTRACE_SETTLE_FRAMES)
+	{
+		// In the air the game resets the up to world up every frame (VehPhysForce.c:570-572), so a kart
+		// put back over a ramp lands with the attitude of its fall; on the ground it lines up. B5 judges
+		// the up here (PLAN section 7).
+		const int upTenths = ExtRace_VecAngleTenths(d->matrixFacingDir.m[0][1], d->matrixFacingDir.m[1][1], d->matrixFacingDir.m[2][1],
+		                                            d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z);
+		const int worldTenths = ExtRace_VecAngleTenths(d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z, 0, 4096, 0);
+
+		Platform_Log("[CTR ExtTrack] respawn seat 0 up after %d frames on the ground: kart up to surface normal %d.%d deg, surface normal to world up %d.%d deg, "
+		             "ground %d, pos %d %d %d cp %d\n",
+		             EXTRACE_SETTLE_FRAMES, upTenths / 10, upTenths % 10, worldTenths / 10, worldTenths % 10,
+		             ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) ? 1 : 0, d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8,
+		             (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1);
 	}
 	if (s_extRaceWatchFrames >= EXTRACE_STABLE_FRAMES)
 	{
