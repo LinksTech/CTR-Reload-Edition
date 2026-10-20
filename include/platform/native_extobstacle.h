@@ -25,6 +25,7 @@
 //   [CTR ExtObstacle] <name>: N box(es), M node(s) (K drawn by the track), period P s, damage D
 //   [CTR ExtObstacle] exit <name> frame F timer T loop L.LLL s view V nodes drawable n/m
 //   [CTR ExtObstacle] hit <name> seat S frame F timer T box B (phantom) kartState A -> B result R
+//   [CTR ExtObstacle] hit+1 <name> seat S frame F+1 timer T+1 kartState K botDamage 0|1 (-1 for a player)
 //   [CTR ExtObstacle] place seat 0 frame F timer T at X Y Z (--dev-ext-obstacle-place)
 // view = the exit point lies in the view of the drawn camera of seat 0 (in
 // front, NDC within +-1); nodes drawable = the obstacle's nodes registered by the

@@ -79,6 +79,7 @@ global_variable struct
 	int animCount;
 	ExtObstAnim anim[EXT_OBST_ANIMS_MAX];
 	u8 inside[EXT_OBST_ITEMS_MAX][EXT_OBST_SEATS]; // seat is in a box of the item (hit given)
+	int hitFrame[EXT_OBST_ITEMS_MAX][EXT_OBST_SEATS]; // the frame of the last hit (for the line one frame later), 0 none
 	int frame;
 	int placed;
 } s_extObst;
@@ -379,6 +380,7 @@ void ExtObstacle_OnLevelLoaded(void)
 void ExtObstacle_OnRestart(void)
 {
 	memset(s_extObst.inside, 0, sizeof(s_extObst.inside));
+	memset(s_extObst.hitFrame, 0, sizeof(s_extObst.hitFrame));
 	for (int i = 0; i < s_extObst.itemCount; i++)
 	{
 		s_extObst.item[i].planeSideSet = 0;
@@ -463,6 +465,19 @@ void ExtObstacle_OnLogicFrame(void)
 			it->planeSide = side;
 			it->planeSideSet = 1;
 		}
+		// one frame after a hit: the state the hit left (a bot's damage state shows
+		// in kartState only on its next tick)
+		for (int seat = 0; seat < EXT_OBST_SEATS; seat++)
+		{
+			const struct Driver *d = gGT->drivers[seat];
+
+			if ((s_extObst.hitFrame[i][seat] != 0) && (s_extObst.hitFrame[i][seat] == s_extObst.frame - 1) && (d != NULL))
+			{
+				Platform_Log("[CTR ExtObstacle] hit+1 %s seat %d frame %d timer %d kartState %d botDamage %d\n", it->name, seat, s_extObst.frame, (int)gGT->timer,
+				             (int)d->kartState, ((d->actionsFlagSet & ACTION_BOT) != 0) ? (((d->botData.botFlags & BOT_FLAG_DAMAGE_ACTIVE) != 0) ? 1 : 0) : -1);
+				s_extObst.hitFrame[i][seat] = 0;
+			}
+		}
 		// the hits
 		for (int seat = 0; seat < EXT_OBST_SEATS; seat++)
 		{
@@ -496,6 +511,7 @@ void ExtObstacle_OnLogicFrame(void)
 				const int result = RB_Hazard_HurtDriver(d, it->damage, NULL, 0);
 
 				s_extObst.inside[i][seat] = 1;
+				s_extObst.hitFrame[i][seat] = s_extObst.frame;
 				it->hits++;
 				Platform_Log("[CTR ExtObstacle] hit %s seat %d frame %d timer %d box %d (%s) kartState %d -> %d result %d\n", it->name, seat, s_extObst.frame,
 				             (int)gGT->timer, box, it->box[box].phantom, before, (int)d->kartState, result);

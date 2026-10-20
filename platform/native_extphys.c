@@ -976,6 +976,80 @@ int ExtPhys_GroundProbe(const struct Driver *d, const s32 pos[3], const SVec3 *u
 	return ExtColl_ProbeSurface(&from, &dir, EXT_PHYS_PROBE_TOP + EXT_PHYS_PROBE_BOTTOM, hit);
 }
 
+// A face found from behind still counts this close (a kart a little under the
+// surface on a chord between two frames); farther behind it is not its ground.
+enum
+{
+	EXT_PHYS_BOT_BEHIND_MAX = 32,
+};
+
+int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, int below, ExtCollHit *hit, SVec3 *upUsed, int *fallback)
+{
+	SVec3 up = {0, 4096, 0};
+	double from[3], dir[3];
+	ExtCollLineHit lh;
+
+	if (fallback != NULL)
+	{
+		*fallback = 0;
+	}
+	if ((d == NULL) || (pos == NULL) || (hit == NULL))
+	{
+		return 0;
+	}
+	if (ExtPhys_GroundProbe(d, pos, upHint, hit, &up))
+	{
+		// its height over the kart along up: a face above the step is no floor
+		const s32 over = (s32)((((s64)(hit->pos.x - CTR_MipsSra(pos[0], 8)) * up.x) + ((s64)(hit->pos.y - CTR_MipsSra(pos[1], 8)) * up.y) +
+		                        ((s64)(hit->pos.z - CTR_MipsSra(pos[2], 8)) * up.z)) >> 12);
+
+		if (upUsed != NULL)
+		{
+			*upUsed = up;
+		}
+		if (over <= EXT_PHYS_BOT_STEP)
+		{
+			return 1;
+		}
+	}
+	else if (upUsed != NULL)
+	{
+		*upUsed = up;
+	}
+	from[0] = pos[0] / 256.0;
+	from[1] = pos[1] / 256.0;
+	from[2] = pos[2] / 256.0;
+	dir[0] = up.x;
+	dir[1] = up.y;
+	dir[2] = up.z;
+	if (!ExtColl_LineQuery(from, dir, -(double)below, (double)EXT_PHYS_BOT_STEP, EXT_COLL_LINE_GROUND, 1, &lh))
+	{
+		return 0;
+	}
+	{
+		const double side = ((from[0] - lh.pos[0]) * lh.normal[0]) + ((from[1] - lh.pos[1]) * lh.normal[1]) + ((from[2] - lh.pos[2]) * lh.normal[2]);
+
+		if (side < -(double)EXT_PHYS_BOT_BEHIND_MAX)
+		{
+			return 0;
+		}
+	}
+	hit->pos.x = (s16)floor(lh.pos[0] + 0.5);
+	hit->pos.y = (s16)floor(lh.pos[1] + 0.5);
+	hit->pos.z = (s16)floor(lh.pos[2] + 0.5);
+	hit->normal.x = (s16)floor((lh.normal[0] * 4096.0) + 0.5);
+	hit->normal.y = (s16)floor((lh.normal[1] * 4096.0) + 0.5);
+	hit->normal.z = (s16)floor((lh.normal[2] * 4096.0) + 0.5);
+	hit->record = lh.record;
+	hit->zone = lh.zone;
+	hit->terrain = lh.terrain;
+	if (fallback != NULL)
+	{
+		*fallback = 1;
+	}
+	return 1;
+}
+
 // ---------------------------------------------------------------------------
 // GRAVITY VOLUMES (physics.gravity_volumes): boxes in which the gravity has its
 // own share (a track's low-gravity jumps, a tube that presses harder). The box

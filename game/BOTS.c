@@ -2125,9 +2125,16 @@ UpdateTireColorTimer:
 
 		COLL_SearchBSP_CallbackQUADBLK(&probeTop, &probeBottom, sps, 0);
 
-		if (sps->boolDidTouchQuadblock != 0)
+		// (External nav paths: no floor more than EXT_PHYS_BOT_STEP over the bot, and
+		// the bot sits EXT_PHYS_BOT_LIFT over the game's plane - as in the drive
+		// state below; without the external paths the retail test as it was.)
+		if ((sps->boolDidTouchQuadblock != 0) && (!ExtNav_Active() || ((sps->Union.QuadBlockColl.hitPos.y - probeY) <= EXT_PHYS_BOT_STEP)))
 		{
 			botDriver->quadBlockHeight = CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.y, 8);
+			if (ExtNav_Active())
+			{
+				botDriver->quadBlockHeight = CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.y + EXT_PHYS_BOT_LIFT, 8);
+			}
 
 			botDriver->botData.ai_quadblock_checkpointIndex = sps->hit.ptrQuadblock->checkpointIndex;
 
@@ -2166,7 +2173,9 @@ UpdateTireColorTimer:
 		    CTR_MipsAddLo(botDriver->botData.positionBackup.z, botDriver->botData.aiPhysics.velocity.z),
 		};
 
-		extHitOk = ExtPhys_GroundProbe(botDriver, at, NULL, &extHit, &extUp);
+		// (no floor over the step; a miss of the game's test inside its window is
+		// taken by the exact line on the same records, ExtPhys_BotGroundAt)
+		extHitOk = ExtPhys_BotGroundAt(botDriver, at, NULL, EXT_PHYS_PROBE_BOTTOM, &extHit, &extUp, NULL);
 		if (extHitOk)
 		{
 			botDriver->quadBlockHeight = CTR_MipsSll(extHit.pos.y + EXT_PHYS_BOT_LIFT, 8);
@@ -2800,7 +2809,9 @@ UpdateTireColorTimer:
 	// the zone rule of the player physics runs on that probe (ExtPhys_BotGround,
 	// its [CTR ExtZone] lines), and the kart's up is the player physics' zone up
 	// (ExtPhys_DriverUp) - outside a zone the ground's normal while on the ground.
-	if (extGround)
+	// In a zone frame also while estimating (the start of the race: free physics
+	// is off in a zone, the position is the rail's).
+	if (extGround || (ExtNav_Active() && (ExtNav_FrameZone(navFrameCurr) != 0)))
 	{
 		SVec3 kartUp = {0, 4096, 0};
 		int kartUpSet = 0;
@@ -2815,12 +2826,15 @@ UpdateTireColorTimer:
 			hint.x = zu[0];
 			hint.y = zu[1];
 			hint.z = zu[2];
-			extHitOk = ExtPhys_GroundProbe(botDriver, at, &hint, &extHit, &extUp);
+			// (a miss of the game's test - the zone's up lags behind a turning
+			// surface - is taken by the exact line on the same records; the lift
+			// runs along the face's own normal, so the kart is on its front side)
+			extHitOk = ExtPhys_BotGroundAt(botDriver, at, &hint, EXT_PHYS_PROBE_BOTTOM, &extHit, &extUp, NULL);
 			if (extHitOk)
 			{
-				botDriver->posCurr.x = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.x, 8), (extUp.x * EXT_PHYS_BOT_LIFT) >> 4);
-				botDriver->posCurr.y = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.y, 8), (extUp.y * EXT_PHYS_BOT_LIFT) >> 4);
-				botDriver->posCurr.z = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.z, 8), (extUp.z * EXT_PHYS_BOT_LIFT) >> 4);
+				botDriver->posCurr.x = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.x, 8), (extHit.normal.x * EXT_PHYS_BOT_LIFT) >> 4);
+				botDriver->posCurr.y = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.y, 8), (extHit.normal.y * EXT_PHYS_BOT_LIFT) >> 4);
+				botDriver->posCurr.z = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.z, 8), (extHit.normal.z * EXT_PHYS_BOT_LIFT) >> 4);
 			}
 			kartUp = hint;
 			kartUpSet = 1;

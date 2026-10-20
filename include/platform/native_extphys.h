@@ -113,8 +113,23 @@ enum
 	// stored planes lie up to ~2.1 off the exact triangles (ExtColl check) and the
 	// hit point is rounded to whole units - 4 keeps the kart on the driving side.
 	EXT_PHYS_BOT_LIFT = 4,
+	// A CPU driver never takes ground more than this far over its own height
+	// along its up (one tick of a steep climb; a face of an overhang or a bridge
+	// inside the probe's window above the kart is no floor for it).
+	EXT_PHYS_BOT_STEP = 64,
+	// How far under the kart the exact fallback looks for ground in the open
+	// (the kart high in the air over a dip: the ground it falls to).
+	EXT_PHYS_BOT_FALL_REACH = 2048,
 };
 int ExtPhys_GroundProbe(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, ExtCollHit *hit, SVec3 *upUsed);
+// The ground of a CPU driver (game/BOTS.c, the external nav paths): the player's
+// probe above; a hit more than EXT_PHYS_BOT_STEP over pos (along the probe's up)
+// is no ground. Without a ground hit the exact line on the same collision
+// records (ExtColl_LineQuery, ground class, both faces) along the probe's up,
+// from EXT_PHYS_BOT_STEP over pos down to `below` under it, the nearest face
+// (hit->normal = its front normal, 4096 = 1.0). 1 = ground (*fallback 1 when
+// the line found it).
+int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, int below, ExtCollHit *hit, SVec3 *upUsed, int *fallback);
 
 // --ext-selftest phys: prints "ext selftest phys passed: N checks, 0 failures"
 // (or FAILED); returns 0 / 1.
