@@ -944,6 +944,7 @@ void ExtTrack_OnLevelLoaded(struct Level *lev)
 	ExtRace_OnLevelLoaded(lev);
 	ExtNav_OnLevelLoaded(lev);
 	ExtMusic_OnLevelLoaded(lev);
+	ExtObstacle_OnLevelLoaded();
 }
 
 int ExtTrack_LevInstanceCount(int levelID, int count)
@@ -976,6 +977,7 @@ void ExtTrack_OnRestart(void)
 		return;
 	}
 	ExtCrates_OnRestart();
+	ExtObstacle_OnRestart();
 }
 
 void ExtTrack_OnLogicFrame(void)
@@ -991,6 +993,7 @@ void ExtTrack_OnLogicFrame(void)
 	ExtCrates_OnLogicFrame();
 	ExtMusic_OnLogicFrame();
 	ExtCam_OnLogicFrame();
+	ExtObstacle_OnLogicFrame();
 }
 
 // The game's audio pause (MainFrame_TogglePauseAudio): kept for the parts, read
@@ -2611,6 +2614,10 @@ int ExtTrack_Selftest(const char *name)
 	if (strcmp(name, "phys") == 0)
 	{
 		return ExtPhys_Selftest();
+	}
+	if (strcmp(name, "obstacle") == 0)
+	{
+		return ExtObstacle_Selftest();
 	}
 	return -1;
 }

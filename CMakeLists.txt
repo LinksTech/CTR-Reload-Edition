@@ -777,14 +777,14 @@ if(BUILD_TESTING)
     # The external track (--ext-track, platform/engine_exttrack.c): the JSON
     # reader and each part's selftest, without a window, game data or track
     # data. The switch's refusals before any window.
-    foreach(ext_part json coll race nav crates music phys)
+    foreach(ext_part json coll race nav crates music phys obstacle)
         add_test(NAME ext_selftest_${ext_part} COMMAND $<TARGET_FILE:ctr_native> --dev --ext-selftest ${ext_part})
         set_tests_properties(ext_selftest_${ext_part} PROPERTIES
             PASS_REGULAR_EXPRESSION "ext selftest ${ext_part} passed: [0-9]+ checks, 0 failures"
         )
     endforeach()
     add_test(NAME ext_selftest_unknown COMMAND $<TARGET_FILE:ctr_native> --dev --ext-selftest other)
-    set_tests_properties(ext_selftest_unknown PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-selftest expects json, coll, race, nav, crates, music or phys, not 'other'")
+    set_tests_properties(ext_selftest_unknown PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-selftest expects json, coll, race, nav, crates, music, phys or obstacle, not 'other'")
     add_test(NAME ext_track_needs_dev COMMAND $<TARGET_FILE:ctr_native> --ext-track d --engine --engine-track --level 14)
     set_tests_properties(ext_track_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-track requires --dev")
     add_test(NAME ext_track_needs_engine COMMAND $<TARGET_FILE:ctr_native> --dev --level 14 --ext-track d --dev-race-mode stop)
@@ -797,6 +797,10 @@ if(BUILD_TESTING)
     set_tests_properties(ext_respawn_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-respawn requires --ext-track")
     add_test(NAME ext_respawn_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --level 14 --ext-track d --dev-ext-respawn x --dev-race-mode stop)
     set_tests_properties(ext_respawn_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-respawn expects a race frame 0..1000000")
+    add_test(NAME ext_obstacle_place_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --dev-ext-obstacle-place 600 --dev-race-mode stop)
+    set_tests_properties(ext_obstacle_place_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-obstacle-place requires --ext-track")
+    add_test(NAME ext_obstacle_place_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --level 14 --ext-track d --dev-ext-obstacle-place x --dev-race-mode stop)
+    set_tests_properties(ext_obstacle_place_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-obstacle-place expects a game timer 0..1000000")
     add_test(NAME ext_kart_log_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --dev-ext-kart-log --dev-race-mode stop)
     set_tests_properties(ext_kart_log_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-kart-log requires --ext-track")
     add_test(NAME ext_crate_log_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --dev-ext-crate-log --dev-race-mode stop)

@@ -127,7 +127,11 @@
 #include "platform/native_extmusic.c"
 #include "platform/native_extmap.c"
 #include "platform/native_extcam.c"
+// The moving obstacles (round of 2026-10-20): their header before the
+// dispatcher (it calls them), the part after it (it reads the draw node list).
+#include <platform/native_extobstacle.h>
 #include "platform/engine_exttrack.c"
+#include "platform/native_extobstacle.c"
 // The hi-res drivers of the .rldchar (round of 2026-10-17): the pose maths
 // (header-only, after cgltf), the selftests' GLB builder, the clip state
 // machine, the characters, their selftests.
@@ -470,9 +474,10 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ext-track", "<dir>", "with --level, --engine and --engine-track: the external track of <dir> (exttrack.json and the files it names) takes the slot of the level of --level - the donor's geometry, water and sky are not drawn (as --engine-hide sky,water,track) and its level instances are not made; one log line per level load"},
     {"--dev-ext-respawn", "<list>", "with --ext-track, measuring only: the player is put back at the respawn point at each item - a race frame (0..1000000) or a node cpN (when the player's last ground names node N); up to 8 items, comma separated, one after the other"},
     {"--dev-ext-kart-log", "", "with --ext-track, measuring only: one [CTR ExtKart] log line per kart and logic frame - the distance of the kart to the ground along the local up (the nearest nav frame's up), its lap, finish, kart and mask state; a log only"},
+    {"--dev-ext-obstacle-place", "<timer>", "with --ext-track, measuring only: at the first logic frame with the game timer at or past <timer> (0..1000000) seat 0 is put onto the path of the track's first moving obstacle, where its front part is 1 s later, stopped; one log line"},
     {"--dev-ext-crate-log", "", "with --ext-track, measuring only: [CTR ExtCrateLog] lines - each crate at the race start with the ground under it along the local up, each contact with the kart's ground contact and the jump input before it, each crate back at full size with its delay; a log only"},
     {"--dev-ext-cam-log", "<H>", "with --ext-track, measuring only: one [CTR ExtCam] measure line per frame of seat 0 - the camera as drawn (eye, its up), where the kart lies in the picture and whether ground or a wall lies between the eye and the kart's middle (0.5 H along its up), the last H/2 units before it left out; H = the kart's height in world units, 1..1000 (decimals allowed, e.g. 66.2); a log only"},
-    {"--ext-selftest", "<json|coll|race|nav|crates|music>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates or the music, then end (ctest ext_selftest_<name>)"},
+    {"--ext-selftest", "<json|coll|race|nav|crates|music|phys|obstacle>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates, the music, the physics values or the moving obstacles, then end (ctest ext_selftest_<name>)"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
     {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
     {"--engine-flycam-smooth", "", "with --engine-flycam-auto, for videos: no hold at the stations - one centripetal Catmull-Rom curve through the stations and one through their look points, travelled at a constant speed in <frames> game frames from the first station to the last (no way back), then the camera stays; no snapshot per station (use --shot-series)"},
@@ -1565,7 +1570,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 
 	// --ext-track needs --level (the slot it takes) and --engine-track (it is
 	// drawn by the engine; --engine is checked above); --dev-ext-respawn needs
-	// --ext-track and a frame; --ext-selftest knows six names. Refused here,
+	// --ext-track and a frame; --ext-selftest knows eight names. Refused here,
 	// before any window.
 	{
 		int extGiven = 0;
@@ -1573,6 +1578,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int trackGiven = 0;
 		const char *respawnValue = NULL;
 		int kartLogGiven = 0;
+		const char *obstaclePlace = NULL;
 		int crateLogGiven = 0;
 		const char *camLogValue = NULL;
 
@@ -1600,6 +1606,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				kartLogGiven = 1;
 			}
+			else if (strcmp(argv[argIndex], "--dev-ext-obstacle-place") == 0)
+			{
+				obstaclePlace = value;
+			}
 			else if (strcmp(argv[argIndex], "--dev-ext-crate-log") == 0)
 			{
 				crateLogGiven = 1;
@@ -1610,10 +1620,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			}
 			else if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && (strcmp(value, "json") != 0) && (strcmp(value, "coll") != 0) &&
 			         (strcmp(value, "race") != 0) && (strcmp(value, "nav") != 0) && (strcmp(value, "crates") != 0) && (strcmp(value, "music") != 0) &&
-			         (strcmp(value, "phys") != 0))
+			         (strcmp(value, "phys") != 0) && (strcmp(value, "obstacle") != 0))
 			{
 				fflush(stdout);
-				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates, music or phys, not '%s'\n", value);
+				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates, music, phys or obstacle, not '%s'\n", value);
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
 			}
@@ -1628,6 +1638,14 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (extGiven && !trackGiven)
 			{
 				refusal = "switch --ext-track requires --engine-track";
+			}
+			else if ((obstaclePlace != NULL) && !extGiven)
+			{
+				refusal = "switch --dev-ext-obstacle-place requires --ext-track";
+			}
+			else if ((obstaclePlace != NULL) && ((obstaclePlace[0] < '0') || (obstaclePlace[0] > '9') || (atoi(obstaclePlace) > 1000000)))
+			{
+				refusal = "switch --dev-ext-obstacle-place expects a game timer 0..1000000";
 			}
 			else if (kartLogGiven && !extGiven)
 			{
@@ -1885,6 +1903,11 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			}
 			g_cfg_engineHide |= ENGINE_HIDE_SKY | ENGINE_HIDE_WATER | ENGINE_HIDE_TRACK;
 			printf("[CTR Native] external track '%s' in the slot of level %d\n", g_cfg_extTrackDir, g_cfg_extTrackSlot);
+		}
+		else if ((strcmp(argv[argIndex], "--dev-ext-obstacle-place") == 0) && ((argIndex + 1) < argc))
+		{
+			// Checked before any window (needs --ext-track, a timer 0..1000000).
+			g_cfg_extObstaclePlace = atoi(argv[++argIndex]);
 		}
 		else if (strcmp(argv[argIndex], "--dev-ext-kart-log") == 0)
 		{
