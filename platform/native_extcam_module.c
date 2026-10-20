@@ -53,7 +53,7 @@ global_variable const ExtCamModParams s_extCamModDefaults = {
     .rigRate = 0.25,
     .frameY = 0.25, .frameBox = 0.42,
     .ownAheadFrames = 25, .handoverSince = 44, .inFrames = 12, .occlAhead = 6,
-    .kartLength = 100.0,
+    .kartLength = 89.9, // L (PLAN NL1 3a): length of the retail kart model of driver 0 in world units
     .maxPullL = 0.6, .minEyeL = 1.0, .minEyeTubeL = 0.6, .grow = 0.04, .tubeRayL = 4.0,
 };
 
