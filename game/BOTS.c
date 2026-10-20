@@ -712,6 +712,12 @@ void BOTS_MaskGrab(struct Thread *botThread)
 		bot->botData.botNavFrame = frame;
 	}
 	ExtNav_BotRespawn(bot, respawnZone, (int)(frame - sdata->NavPath_ptrNavFrameArray[bot->botData.botPath]));
+	// External nav paths: the bot is set down outside any zone - its zone state
+	// (the player physics' rule, ExtPhys_BotGround) starts again from world up.
+	if (ExtNav_Active())
+	{
+		ExtPhys_SeedDriver(bot, NULL, 0);
+	}
 	struct NavFrame *nextFrame = frame + 1;
 
 	// if the next nav point is a farther address than last point
@@ -1696,7 +1702,16 @@ UpdateTireColorTimer:
 	}
 	// The external track's physics.gravity_percent (platform/native_extphys.c);
 	// without the section (every other track) the value comes back unchanged.
-	gravity = ExtPhys_ScaleGravity(gravity);
+	// With the external nav paths the player's own function: the track's share
+	// and the gravity volume that holds the bot (the low-gravity jumps).
+	if (ExtNav_Active())
+	{
+		gravity = ExtPhys_ScaleGravityFor(botDriver, gravity);
+	}
+	else
+	{
+		gravity = ExtPhys_ScaleGravity(gravity);
+	}
 
 	botDriver->botData.aiPhysics.speedY =
 	    CTR_MipsSubLo(botDriver->botData.aiPhysics.speedY, CTR_MipsSra(CTR_MipsMulLo(gravity, elapsedMilliseconds), 5)); // iVar3
@@ -2129,6 +2144,35 @@ UpdateTireColorTimer:
 			}
 		}
 	}
+	// External nav paths (fixup round 1): the ground under the bot every tick with
+	// the player's own ground probe (ExtPhys_GroundProbe: the window of
+	// COLL_FIXED_PlayerSearch along the driver's up, the game's ray test with the
+	// player's flags), not the rail's chord between two frames - the landing below
+	// works with the ground's height, EXT_PHYS_BOT_LIFT over it. No ground in the
+	// window (a gap, the bot high in the air): the rail's height stays the floor
+	// (the AI line through the air, as in the estimate state). A zone frame's rail
+	// point lies on the surface; the bot is put onto the probed surface once its
+	// position is made (below). Without the external paths nothing of this runs.
+	ExtCollHit extHit;
+	SVec3 extUp = {0, 4096, 0};
+	int extHitOk = 0;
+	const int extGround = ExtNav_Active() && ((botDriver->botData.botFlags & (BOT_FLAG_ESTIMATE_NAV | BOT_FLAG_FREE_PHYSICS)) == 0);
+
+	if (extGround && (ExtNav_FrameZone(navFrameCurr) == 0))
+	{
+		const s32 at[3] = {
+		    CTR_MipsAddLo(botDriver->botData.positionBackup.x, botDriver->botData.aiPhysics.velocity.x),
+		    CTR_MipsAddLo(botDriver->botData.positionBackup.y, botDriver->botData.aiPhysics.velocity.y),
+		    CTR_MipsAddLo(botDriver->botData.positionBackup.z, botDriver->botData.aiPhysics.velocity.z),
+		};
+
+		extHitOk = ExtPhys_GroundProbe(botDriver, at, NULL, &extHit, &extUp);
+		if (extHitOk)
+		{
+			botDriver->quadBlockHeight = CTR_MipsSll(extHit.pos.y + EXT_PHYS_BOT_LIFT, 8);
+		}
+	}
+
 	deltaPosThisFrame = CTR_MipsSra(deltaPosThisFrame, 8);
 	// External anti-gravity zone: the bot stays on its rail - its height is the
 	// frames' height every tick (the landing branch below sets it), no air phase
@@ -2750,11 +2794,64 @@ UpdateTireColorTimer:
 	botDriver->posCurr.y = CTR_MipsAddLo(botDriver->botData.aiPhysics.velocity.y, botDriver->botData.positionBackup.y);
 	botDriver->posCurr.z = CTR_MipsAddLo(botDriver->botData.aiPhysics.velocity.z, botDriver->botData.positionBackup.z);
 
+	// External nav paths (fixup round 1): in a zone frame the bot is put onto the
+	// surface the player's ground probe finds along the driver's up (the zone's
+	// up of the player physics, else the frames' up), EXT_PHYS_BOT_LIFT over it;
+	// the zone rule of the player physics runs on that probe (ExtPhys_BotGround,
+	// its [CTR ExtZone] lines), and the kart's up is the player physics' zone up
+	// (ExtPhys_DriverUp) - outside a zone the ground's normal while on the ground.
+	if (extGround)
+	{
+		SVec3 kartUp = {0, 4096, 0};
+		int kartUpSet = 0;
+
+		if (ExtNav_FrameZone(navFrameCurr) != 0)
+		{
+			short zu[3] = {0, 4096, 0};
+			SVec3 hint;
+			const s32 at[3] = {botDriver->posCurr.x, botDriver->posCurr.y, botDriver->posCurr.z};
+
+			(void)ExtNav_FrameUpLerp(navFrameCurr, navFrameNext, percentage, zu);
+			hint.x = zu[0];
+			hint.y = zu[1];
+			hint.z = zu[2];
+			extHitOk = ExtPhys_GroundProbe(botDriver, at, &hint, &extHit, &extUp);
+			if (extHitOk)
+			{
+				botDriver->posCurr.x = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.x, 8), (extUp.x * EXT_PHYS_BOT_LIFT) >> 4);
+				botDriver->posCurr.y = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.y, 8), (extUp.y * EXT_PHYS_BOT_LIFT) >> 4);
+				botDriver->posCurr.z = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.z, 8), (extUp.z * EXT_PHYS_BOT_LIFT) >> 4);
+			}
+			kartUp = hint;
+			kartUpSet = 1;
+		}
+		ExtPhys_BotGround(botDriver, extHitOk ? extHit.record : NULL, extHitOk ? &extHit.normal : &extUp);
+		{
+			SVec3 zoneUp; // world up when not in a zone (then not taken)
+
+			if (ExtPhys_DriverUp(botDriver, &zoneUp))
+			{
+				kartUp = zoneUp;
+				kartUpSet = 1;
+			}
+			else if (extHitOk && (ExtNav_FrameZone(navFrameCurr) == 0))
+			{
+				kartUp = extHit.normal;
+				kartUpSet = 1;
+			}
+		}
+		if (kartUpSet)
+		{
+			botDriver->AxisAngle2_normalVec = kartUp;
+			botDriver->AxisAngle3_normalVec = kartUp;
+			botInstance->compressedNormalAndDriverIndex = INST_CompressNormalVectorAndDriverIndex(kartUp.x, kartUp.y, kartUp.z, botDriver->driverID);
+		}
+	}
 	// External anti-gravity zones: the zone rule of the player physics also for
 	// the bot (platform/native_extphys.c, its [CTR ExtZone] lines) - the surface
 	// under the bot along its up vector (the frames' up in a zone, else world up).
 	// Read only for the bot's movement: the rail decides where it drives.
-	if ((ExtNav_FrameZone(navFrameCurr) != 0) || (ExtPhys_DriverZone(botDriver) != 0))
+	else if ((ExtNav_FrameZone(navFrameCurr) != 0) || (ExtPhys_DriverZone(botDriver) != 0))
 	{
 		short zu[3] = {0, 4096, 0};
 		SVec3 from, dir, upv;

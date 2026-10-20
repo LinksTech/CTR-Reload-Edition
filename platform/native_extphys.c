@@ -943,6 +943,39 @@ int ExtPhys_ZoneHeadingTo(const struct Driver *d, int dx, int dy, int dz, int *h
 	return 1;
 }
 
+int ExtPhys_GroundProbe(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, ExtCollHit *hit, SVec3 *upUsed)
+{
+	SVec3 up = {0, 4096, 0};
+	SVec3 from, dir;
+	s32 px, py, pz;
+
+	if ((d == NULL) || (pos == NULL) || (hit == NULL))
+	{
+		return 0;
+	}
+	if (!ExtPhys_DriverUp(d, &up) && (upHint != NULL))
+	{
+		up = *upHint;
+	}
+	if (upUsed != NULL)
+	{
+		*upUsed = up;
+	}
+	px = CTR_MipsSra(pos[0], 8);
+	py = CTR_MipsSra(pos[1], 8);
+	pz = CTR_MipsSra(pos[2], 8);
+	// from EXT_PHYS_PROBE_TOP over the driver along up, EXT_PHYS_PROBE_TOP +
+	// EXT_PHYS_PROBE_BOTTOM long against up: the player's window (COLL.c,
+	// COLL_FIXED_PlayerSearch_SetupSearch)
+	from.x = (s16)(px + ((up.x * EXT_PHYS_PROBE_TOP) >> 12));
+	from.y = (s16)(py + ((up.y * EXT_PHYS_PROBE_TOP) >> 12));
+	from.z = (s16)(pz + ((up.z * EXT_PHYS_PROBE_TOP) >> 12));
+	dir.x = (s16)-up.x;
+	dir.y = (s16)-up.y;
+	dir.z = (s16)-up.z;
+	return ExtColl_ProbeSurface(&from, &dir, EXT_PHYS_PROBE_TOP + EXT_PHYS_PROBE_BOTTOM, hit);
+}
+
 // ---------------------------------------------------------------------------
 // GRAVITY VOLUMES (physics.gravity_volumes): boxes in which the gravity has its
 // own share (a track's low-gravity jumps, a tube that presses harder). The box
@@ -1470,6 +1503,18 @@ int ExtPhys_Selftest(void)
 		                      !ExtPhys_ZoneGravity(&td2, -900, g) && (g[1] == 0) && !ExtPhys_ZoneLocalToWorld(&td2, local, &world) && (world.x == 7) &&
 		                      (world.y == 8) && (world.z == 9),
 		                  "without zones: DriverUp gives world up, no zone gravity, no frame turn", &checks, &failures);
+		{
+			// the ground probe: nothing without a driver, a position or the
+			// external collision; the probe's up is the hint outside a zone
+			const s32 at[3] = {0, 0, 0};
+			const SVec3 hint = {0, 0, 4096};
+			SVec3 probeUp = {0, 0, 0};
+			ExtCollHit h;
+
+			ExtPhys_TestCheck(!ExtPhys_GroundProbe(NULL, at, NULL, &h, NULL) && !ExtPhys_GroundProbe(&td2, NULL, NULL, &h, NULL) &&
+			                      !ExtPhys_GroundProbe(&td2, at, &hint, &h, &probeUp) && (probeUp.z == 4096) && (probeUp.y == 0),
+			                  "ground probe: none without driver, position or built collision; outside a zone along the hint", &checks, &failures);
+		}
 	}
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));

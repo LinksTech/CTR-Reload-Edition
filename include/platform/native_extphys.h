@@ -1,6 +1,8 @@
 #ifndef NATIVE_EXTPHYS_H
 #define NATIVE_EXTPHYS_H
 
+#include <platform/native_extcoll.h> // ExtCollHit (ExtPhys_GroundProbe)
+
 // THE EXTERNAL TRACK'S PHYSICS VALUES (platform/native_extphys.c; --ext-track,
 // see platform/engine_exttrack.c). Owner: the collision/physics part.
 //
@@ -93,6 +95,26 @@ int ExtPhys_ZoneWorldToLocal(const struct Driver *d, const Vec3 *world, s32 loca
 // away: in a zone taken in the surface frame (as d->angle is there), else
 // untouched (the caller keeps its ratan2(dx, dz)); 1 = in a zone (*heading set).
 int ExtPhys_ZoneHeadingTo(const struct Driver *d, int dx, int dy, int dz, int *heading);
+
+// THE GROUND PROBE OF THE PLAYER PHYSICS for any driver (fixup round 1: the CPU
+// drivers on the external nav paths, game/BOTS.c): the window of
+// COLL_FIXED_PlayerSearch (EXT_PHYS_PROBE_TOP over pos to EXT_PHYS_PROBE_BOTTOM
+// under it) along the driver's up - its zone's up (ExtPhys_DriverUp) in a zone,
+// else upHint (NULL = world up) - with the game's ray test and the player's
+// flags (ExtColl_ProbeSurface: GROUND | COLLISION_SURFACE, NO_COLLISION_RESPONSE
+// ignored, the leaf test COLL_FIXED_BSPLEAF_TestQuadblocks). pos in the
+// driver's 1/256 units. 1 = ground hit (*hit set); *upUsed = the probe's up.
+// Reads only; 0 while the external collision is not built.
+enum
+{
+	EXT_PHYS_PROBE_TOP = 0x80,    // COLL_FIXED_PLAYER_SEARCH_TOP_Y_OFFSET (game/COLL.c)
+	EXT_PHYS_PROBE_BOTTOM = 0x100, // COLL_FIXED_PLAYER_SEARCH_BOTTOM_Y_OFFSET
+	// A CPU driver sits this far over the probed ground along its up: the game's
+	// stored planes lie up to ~2.1 off the exact triangles (ExtColl check) and the
+	// hit point is rounded to whole units - 4 keeps the kart on the driving side.
+	EXT_PHYS_BOT_LIFT = 4,
+};
+int ExtPhys_GroundProbe(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, ExtCollHit *hit, SVec3 *upUsed);
 
 // --ext-selftest phys: prints "ext selftest phys passed: N checks, 0 failures"
 // (or FAILED); returns 0 / 1.
