@@ -1478,6 +1478,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 	local_persist int usBacks = 0;
 	local_persist int usRespawns = 0;
 	local_persist int usLastBack = 0;
+	local_persist int usWaitGround = 0;
 
 	struct PlatformInputPadSnapshot pads[4];
 	struct Driver *d;
@@ -1516,6 +1517,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 				usBacks = 0;
 				usRespawns = 0;
 				usLastBack = 0;
+				usWaitGround = 0;
 			}
 		}
 		return;
@@ -1657,8 +1659,21 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		const int px = d->posCurr.x >> 8;
 		const int py = d->posCurr.y >> 8;
 		const int pz = d->posCurr.z >> 8;
-		const int racing = ((gGT->gameMode1 & START_OF_RACE) == 0) && (gGT->trafficLightsTimer <= 0) && (d->kartState != KS_MASK_GRABBED);
-		const long long mx = (long long)px - usAnchor[0];
+		int racing;
+		long long mx;
+
+		// No detection while the mask carries the kart or it revs up again, and
+		// not until it touched the ground after that (a respawn is no stand-still).
+		if ((d->kartState == KS_MASK_GRABBED) || (d->kartState == KS_ENGINE_REVVING))
+		{
+			usWaitGround = 1;
+		}
+		else if (usWaitGround && ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0))
+		{
+			usWaitGround = 0;
+		}
+		racing = ((gGT->gameMode1 & START_OF_RACE) == 0) && (gGT->trafficLightsTimer <= 0) && !usWaitGround;
+		mx = (long long)px - usAnchor[0];
 		const long long my = (long long)py - usAnchor[1];
 		const long long mz = (long long)pz - usAnchor[2];
 

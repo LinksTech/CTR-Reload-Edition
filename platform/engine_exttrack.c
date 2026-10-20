@@ -1056,7 +1056,7 @@ int ExtTrack_AudioPaused(void)
 #define EXT_CELL_BLEND 0x3fc
 #define EXT_TEXTURES_MAX 256
 #define EXT_RANGES_MAX 1024 // per piece
-#define EXT_NODES_MAX 64    // uv nodes of the track plus sky nodes
+#define EXT_NODES_MAX 128   // uv and node-animated nodes of the track plus sky nodes (64 before node_anims)
 #define EXT_NODE_NAME_MAX 96
 #define EXT_BLEND_CUTOFF (1.0f / 255.0f) // a texel with alpha 0 is not drawn in a blend
 
@@ -1108,6 +1108,13 @@ typedef struct
 	float *offset; // 2 per key
 	int keyCount;
 	float period;
+	// Its node animation (node_anims, round of 2026-10-20), matCount 0 = none:
+	// per key a 3x4 matrix (rows, world units) applied to the baked rest
+	// vertices, linear between keys, repeated with matPeriod.
+	float *matTimes;
+	float *mats; // 12 per key
+	int matCount;
+	float matPeriod;
 } ExtDrawNode;
 
 global_variable struct
@@ -1137,6 +1144,8 @@ global_variable struct
 	int skyEyeRelative; // sky.follow "xyz": the camera's rotation only
 	int uvAnimsNamed; // nodes named by uv_anims
 	int uvAnimsFound;
+	int nodeAnimsNamed; // nodes named by node_anims
+	int nodeAnimsFound;
 	// Per level
 	int levelReady;
 	int levelId;
@@ -1199,6 +1208,52 @@ void ExtTrack_UvOffsetAt(const float *times, const float *offset, int count, flo
 	}
 	out[0] = offset[2 * (count - 1)];
 	out[1] = offset[2 * (count - 1) + 1];
+}
+
+// THE NODE ANIMATIONS (node_anims, round of 2026-10-20): moving parts of the
+// scenery (rotating panels, lifts, signs that pulse) as keyed 3x4 matrices on
+// the vertices of their node, baked in the rest pose: the matrix of time t,
+// linear between the keys (the converter keeps the keys close, at most a few
+// degrees apart, so the blend of two rotations stays a rotation to the eye),
+// repeated with the period (0: the last key holds). Draw side only.
+void ExtTrack_MatAt(const float *times, const float *mats, int count, float period, float t, float out[12])
+{
+	int k;
+	int j;
+
+	for (j = 0; j < 12; j++)
+	{
+		out[j] = ((j == 0) || (j == 5) || (j == 10)) ? 1.0f : 0.0f;
+	}
+	if ((times == NULL) || (mats == NULL) || (count <= 0))
+	{
+		return;
+	}
+	if (period > 0.0f)
+	{
+		t = fmodf(t, period);
+		t = (t < 0.0f) ? (t + period) : t;
+	}
+	if ((count == 1) || (t <= times[0]))
+	{
+		memcpy(out, mats, 12 * sizeof(float));
+		return;
+	}
+	for (k = 0; k + 1 < count; k++)
+	{
+		if (t < times[k + 1])
+		{
+			const float span = times[k + 1] - times[k];
+			const float f = (span > 0.0f) ? ((t - times[k]) / span) : 0.0f;
+
+			for (j = 0; j < 12; j++)
+			{
+				out[j] = mats[12 * k + j] + (mats[12 * (k + 1) + j] - mats[12 * k + j]) * f;
+			}
+			return;
+		}
+	}
+	memcpy(out, &mats[12 * (count - 1)], 12 * sizeof(float));
 }
 
 internal double ExtDraw_Ms(u64 from)
@@ -1888,6 +1943,81 @@ internal int ExtDraw_TakeAnimation(ExtDrawNode *n, const ExtJsonDoc *doc, int en
 	return 1;
 }
 
+// The node animation of entry (node_anims) for node n. 1 = taken. Its box
+// becomes the box of the rest box under every key (the view test).
+internal int ExtDraw_TakeNodeAnimation(ExtDrawNode *n, const ExtJsonDoc *doc, int entry)
+{
+	const int times = ExtJson_Get(doc, entry, "times");
+	const int mats = ExtJson_Get(doc, entry, "matrices");
+	const int count = ExtJson_Count(doc, times);
+	float lo[3], hi[3];
+	int child;
+	int k;
+
+	if ((count < 1) || (ExtJson_Count(doc, mats) != count) || (n->matCount > 0))
+	{
+		return 0;
+	}
+	n->matTimes = (float *)malloc((size_t)count * sizeof(float));
+	n->mats = (float *)malloc((size_t)count * 12u * sizeof(float));
+	if ((n->matTimes == NULL) || (n->mats == NULL))
+	{
+		free(n->matTimes);
+		free(n->mats);
+		n->matTimes = NULL;
+		n->mats = NULL;
+		return 0;
+	}
+	for (k = 0, child = ExtJson_First(doc, times); (child >= 0) && (k < count); child = ExtJson_Next(doc, child), k++)
+	{
+		n->matTimes[k] = (float)ExtJson_Number(doc, child, 0.0);
+	}
+	for (k = 0, child = ExtJson_First(doc, mats); (child >= 0) && (k < count); child = ExtJson_Next(doc, child), k++)
+	{
+		double m[12];
+		int j;
+
+		if (ExtJson_Numbers(doc, child, m, 12) != 12)
+		{
+			free(n->matTimes);
+			free(n->mats);
+			n->matTimes = NULL;
+			n->mats = NULL;
+			return 0;
+		}
+		for (j = 0; j < 12; j++)
+		{
+			n->mats[12 * k + j] = (float)m[j];
+		}
+	}
+	n->matCount = count;
+	n->matPeriod = (float)ExtJson_Number(doc, ExtJson_Get(doc, entry, "period"), 0.0);
+	memcpy(lo, n->boxMin, sizeof(lo));
+	memcpy(hi, n->boxMax, sizeof(hi));
+	for (k = 0; k < count; k++)
+	{
+		const float *m = &n->mats[12 * k];
+		int c;
+
+		for (c = 0; c < 8; c++)
+		{
+			const float p[3] = {(c & 1) ? n->boxMax[0] : n->boxMin[0], (c & 2) ? n->boxMax[1] : n->boxMin[1], (c & 4) ? n->boxMax[2] : n->boxMin[2]};
+			int r;
+
+			for (r = 0; r < 3; r++)
+			{
+				const float v = m[4 * r] * p[0] + m[4 * r + 1] * p[1] + m[4 * r + 2] * p[2] + m[4 * r + 3];
+
+				lo[r] = (v < lo[r]) ? v : lo[r];
+				hi[r] = (v > hi[r]) ? v : hi[r];
+			}
+		}
+	}
+	memcpy(n->boxMin, lo, sizeof(lo));
+	memcpy(n->boxMax, hi, sizeof(hi));
+	return 1;
+}
+
 internal void ExtDraw_Report(void)
 {
 	Platform_Log("[CTR ExtTrack] draw at exit: frames %llu; sky draws %llu, static draws %llu, node draws %llu, left out by the view test %llu, refused %llu\n",
@@ -2033,6 +2163,46 @@ internal void ExtDraw_ReadOnce(void)
 				continue;
 			}
 			s_extDraw.uvAnimsFound++;
+		}
+	}
+
+	// The node animations (node_anims; none on a track without the section): each entry's nodes, from the track.
+	{
+		const int nodeAnims = ExtTrack_Section("node_anims");
+
+		for (entry = ExtJson_First(doc, nodeAnims); entry >= 0; entry = ExtJson_Next(doc, entry))
+		{
+			const int nodes = ExtJson_Get(doc, entry, "nodes");
+			int child;
+
+			for (child = ExtJson_First(doc, nodes); child >= 0; child = ExtJson_Next(doc, child))
+			{
+				const char *name = ExtJson_String(doc, child, NULL);
+				ExtDrawNode *n;
+
+				if (name == NULL)
+				{
+					continue;
+				}
+				s_extDraw.nodeAnimsNamed++;
+				n = ExtDraw_FindNode(name);
+				if ((n == NULL) && ExtDraw_LoadNode(trackPath, name, 0))
+				{
+					n = &s_extDraw.nodes[s_extDraw.nodeCount - 1];
+					s_extDraw.uvNodes++;
+				}
+				if ((n == NULL) || !ExtDraw_TakeNodeAnimation(n, doc, entry))
+				{
+					Platform_Log("[CTR ExtTrack] draw: animated node '%s' not found or its keys unusable - not moved\n", name);
+					continue;
+				}
+				s_extDraw.nodeAnimsFound++;
+			}
+		}
+		if (nodeAnims >= 0)
+		{
+			Platform_Log("[CTR ExtTrack] draw: node animations %d of %d named nodes (nodes in all %d of %d)\n", s_extDraw.nodeAnimsFound, s_extDraw.nodeAnimsNamed,
+			             s_extDraw.nodeCount, EXT_NODES_MAX);
 		}
 	}
 
@@ -2235,6 +2405,22 @@ internal void ExtDraw_NodeDraw(ExtDrawNode *n, float t, const EngineMat4 *clip, 
 	{
 		n->work[i].texcoord[0] = n->base[i].texcoord[0] + uv[0];
 		n->work[i].texcoord[1] = n->base[i].texcoord[1] + uv[1];
+	}
+	if (n->matCount > 0)
+	{
+		float m[12];
+
+		ExtTrack_MatAt(n->matTimes, n->mats, n->matCount, n->matPeriod, t, m);
+		for (i = 0; i < n->vertexCount; i++)
+		{
+			const float *p = n->base[i].position;
+			int r;
+
+			for (r = 0; r < 3; r++)
+			{
+				n->work[i].position[r] = m[4 * r] * p[0] + m[4 * r + 1] * p[1] + m[4 * r + 2] * p[2] + m[4 * r + 3];
+			}
+		}
 	}
 	memset(draw, 0, sizeof(*draw));
 	draw->mesh = -1;
@@ -2784,6 +2970,22 @@ int ExtJson_Selftest(void)
 	ExtMap_Selftest(&n, &failures);
 	// The zone camera's roll against the game's camera matrix (platform/native_extcam.c).
 	ExtCam_Selftest(&n, &failures);
+	// The node animation's matrix: linear between keys, repeated with the period, identity without keys.
+	{
+		static const float times[2] = {0.0f, 2.0f};
+		static const float mats[24] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 100, 0, 1, 0, 50, 0, 0, 1, -20};
+		float m[12];
+
+		ExtTrack_MatAt(times, mats, 2, 4.0f, 1.0f, m);
+		ExtJson_Check((fabsf(m[3] - 50.0f) < 1e-4f) && (fabsf(m[7] - 25.0f) < 1e-4f) && (fabsf(m[11] + 10.0f) < 1e-4f) && (m[0] == 1.0f),
+		              "node matrix halfway between two keys", &n, &failures);
+		ExtTrack_MatAt(times, mats, 2, 4.0f, 3.0f, m);
+		ExtJson_Check(fabsf(m[3] - 100.0f) < 1e-4f, "node matrix after the last key holds it", &n, &failures);
+		ExtTrack_MatAt(times, mats, 2, 4.0f, 5.0f, m);
+		ExtJson_Check(fabsf(m[3] - 50.0f) < 1e-4f, "node matrix repeats with the period", &n, &failures);
+		ExtTrack_MatAt(NULL, mats, 2, 4.0f, 1.0f, m);
+		ExtJson_Check((m[0] == 1.0f) && (m[5] == 1.0f) && (m[10] == 1.0f) && (m[3] == 0.0f), "node matrix without keys is the identity", &n, &failures);
+	}
 	ExtJson_Check(ExtTrack_AudioPaused() == 0, "audio pause is 0 without the switch", &n, &failures);
 
 	if (failures == 0)
