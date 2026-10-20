@@ -2175,7 +2175,7 @@ UpdateTireColorTimer:
 
 		// (no floor over the step; a miss of the game's test inside its window is
 		// taken by the exact line on the same records, ExtPhys_BotGroundAt)
-		extHitOk = ExtPhys_BotGroundAt(botDriver, at, NULL, EXT_PHYS_PROBE_BOTTOM, &extHit, &extUp, NULL);
+		extHitOk = ExtPhys_BotGroundAt(botDriver, at, NULL, EXT_PHYS_PROBE_BOTTOM, EXT_PHYS_BOT_STEP, EXT_PHYS_BOT_BEHIND_MAX, &extHit, &extUp, NULL);
 		if (extHitOk)
 		{
 			botDriver->quadBlockHeight = CTR_MipsSll(extHit.pos.y + EXT_PHYS_BOT_LIFT, 8);
@@ -2829,7 +2829,7 @@ UpdateTireColorTimer:
 			// (a miss of the game's test - the zone's up lags behind a turning
 			// surface - is taken by the exact line on the same records; the lift
 			// runs along the face's own normal, so the kart is on its front side)
-			extHitOk = ExtPhys_BotGroundAt(botDriver, at, &hint, EXT_PHYS_PROBE_BOTTOM, &extHit, &extUp, NULL);
+			extHitOk = ExtPhys_BotGroundAt(botDriver, at, &hint, EXT_PHYS_ZONE_REACH, EXT_PHYS_ZONE_REACH, EXT_PHYS_ZONE_REACH, &extHit, &extUp, NULL);
 			if (extHitOk)
 			{
 				botDriver->posCurr.x = CTR_MipsAddLo(CTR_MipsSll(extHit.pos.x, 8), (extHit.normal.x * EXT_PHYS_BOT_LIFT) >> 4);

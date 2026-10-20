@@ -976,14 +976,8 @@ int ExtPhys_GroundProbe(const struct Driver *d, const s32 pos[3], const SVec3 *u
 	return ExtColl_ProbeSurface(&from, &dir, EXT_PHYS_PROBE_TOP + EXT_PHYS_PROBE_BOTTOM, hit);
 }
 
-// A face found from behind still counts this close (a kart a little under the
-// surface on a chord between two frames); farther behind it is not its ground.
-enum
-{
-	EXT_PHYS_BOT_BEHIND_MAX = 32,
-};
-
-int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, int below, ExtCollHit *hit, SVec3 *upUsed, int *fallback)
+int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, int below, int above, int behindMax, ExtCollHit *hit, SVec3 *upUsed,
+                        int *fallback)
 {
 	SVec3 up = {0, 4096, 0};
 	double from[3], dir[3];
@@ -1007,7 +1001,7 @@ int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *u
 		{
 			*upUsed = up;
 		}
-		if (over <= EXT_PHYS_BOT_STEP)
+		if (over <= above)
 		{
 			return 1;
 		}
@@ -1022,14 +1016,14 @@ int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *u
 	dir[0] = up.x;
 	dir[1] = up.y;
 	dir[2] = up.z;
-	if (!ExtColl_LineQuery(from, dir, -(double)below, (double)EXT_PHYS_BOT_STEP, EXT_COLL_LINE_GROUND, 1, &lh))
+	if (!ExtColl_LineQuery(from, dir, -(double)below, (double)above, EXT_COLL_LINE_GROUND, 1, &lh))
 	{
 		return 0;
 	}
 	{
 		const double side = ((from[0] - lh.pos[0]) * lh.normal[0]) + ((from[1] - lh.pos[1]) * lh.normal[1]) + ((from[2] - lh.pos[2]) * lh.normal[2]);
 
-		if (side < -(double)EXT_PHYS_BOT_BEHIND_MAX)
+		if (side < -(double)behindMax)
 		{
 			return 0;
 		}

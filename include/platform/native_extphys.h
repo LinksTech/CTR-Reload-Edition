@@ -123,13 +123,22 @@ enum
 };
 int ExtPhys_GroundProbe(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, ExtCollHit *hit, SVec3 *upUsed);
 // The ground of a CPU driver (game/BOTS.c, the external nav paths): the player's
-// probe above; a hit more than EXT_PHYS_BOT_STEP over pos (along the probe's up)
-// is no ground. Without a ground hit the exact line on the same collision
+// probe above; a hit more than `above` over pos (along the probe's up) is no
+// ground. Without a ground hit the exact line on the same collision
 // records (ExtColl_LineQuery, ground class, both faces) along the probe's up,
-// from EXT_PHYS_BOT_STEP over pos down to `below` under it, the nearest face
-// (hit->normal = its front normal, 4096 = 1.0). 1 = ground (*fallback 1 when
-// the line found it).
-int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, int below, ExtCollHit *hit, SVec3 *upUsed, int *fallback);
+// from `above` over pos down to `below` under it, the nearest face, taken when
+// the kart lies at most `behindMax` behind it (hit->normal = its front normal,
+// 4096 = 1.0). 1 = ground (*fallback 1 when the line found it). Open track:
+// EXT_PHYS_BOT_STEP over, EXT_PHYS_PROBE_BOTTOM under, EXT_PHYS_BOT_BEHIND_MAX;
+// a zone frame: EXT_PHYS_ZONE_REACH each way and behind (the AI line dives under
+// a tube's floor where the tube ends - the kart stays on the floor up to its edge).
+enum
+{
+	EXT_PHYS_BOT_BEHIND_MAX = 32,
+	EXT_PHYS_ZONE_REACH = 256,
+};
+int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *upHint, int below, int above, int behindMax, ExtCollHit *hit, SVec3 *upUsed,
+                        int *fallback);
 
 // --ext-selftest phys: prints "ext selftest phys passed: N checks, 0 failures"
 // (or FAILED); returns 0 / 1.
