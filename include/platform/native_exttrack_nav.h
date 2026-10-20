@@ -23,6 +23,8 @@ struct ExtNavPathSrc
 {
 	int count;
 	const int *fields;
+	const int *up;   // NULL, or 3 ints per frame (see "up" below)
+	const int *zone; // NULL, or 1 int per frame (see "zone" below)
 };
 
 struct ExtNavSrc
@@ -38,6 +40,38 @@ struct Level;
 // problem lev->LevNavTable = NULL - no bots, never the donor's paths - and one
 // log line says why. 1 = installed.
 int ExtNav_Install(struct Level *lev, const struct ExtNavSrc *src);
+
+// ANTI-GRAVITY STRETCHES (optional, per path): "up" - one [x, y, z] per frame,
+// the surface normal at the frame (4096 = 1.0, length 4096 +- 64) - and "zone"
+// - one integer per frame, 0 = no zone, 1..EXTNAV_ZONES_MAX = the zone the
+// frame lies in. A path without them (every retail-like track) has no zone
+// frame, and every ExtNav_* query below answers 0 at once: BOTS.c runs its
+// original code. With them BOTS.c keeps a bot in a zone on its rail (no air
+// phase in world y), turns its up vector to the frames' `up`, never lets it
+// slide off in free physics, and takes a respawn in a zone back to the last
+// frame before the zone.
+enum
+{
+	EXTNAV_ZONES_MAX = 8,
+};
+struct NavFrame;
+struct Driver;
+// The zone of a frame of the external paths (0 = none, or not an external frame).
+int ExtNav_FrameZone(const struct NavFrame *frame);
+// The up vector between two frames at percentage (4096 = at next), normalised
+// to 4096; frames outside a zone count as (0, 4096, 0). 1 = one of the two is a
+// zone frame and *up is set, 0 = neither (up untouched).
+int ExtNav_FrameUpLerp(const struct NavFrame *curr, const struct NavFrame *next, int percentage, short up[3]);
+// The last frame before the zone stretch that contains frame (walking back on
+// its path); frame itself when it is not in a zone.
+struct NavFrame *ExtNav_ZoneEntryFrame(struct NavFrame *frame);
+// Per bot and logic frame (BOTS_ThTick_Drive): one log line when a bot enters
+// or leaves a zone.
+void ExtNav_BotTick(const struct Driver *bot, const struct NavFrame *curr);
+// A bot is mask-grabbed / reset; zone = the zone of its frame. One log line.
+void ExtNav_BotRespawn(const struct Driver *bot, int zone, int frameIndex);
+// 1 = the level's nav table is the external one (the paths of this file).
+int ExtNav_Active(void);
 
 // From the dispatcher, once per level load of the active external track,
 // after the collision and the race part (the checkpoint table) and before

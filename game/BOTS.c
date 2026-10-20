@@ -1,6 +1,8 @@
 #include <common.h>
 #include <platform/native_mods.h>
 #include <platform/native_extcoll.h>
+#include <platform/native_extphys.h>
+#include <platform/native_exttrack_nav.h>
 
 // From game/native_trackmod.c, which comes after this file in game_unity.h.
 // The answer is the bits the MaskGrab recovery should leave in place;
@@ -700,6 +702,16 @@ void BOTS_MaskGrab(struct Thread *botThread)
 {
 	struct Driver *bot = botThread->object;
 	struct NavFrame *frame = bot->botData.botNavFrame;
+	// External anti-gravity zone: the mask sets the bot down on the last frame
+	// before the zone (the drop below is in world y); one log line per respawn.
+	const int respawnZone = ExtNav_FrameZone(frame);
+
+	if (respawnZone != 0)
+	{
+		frame = ExtNav_ZoneEntryFrame(frame);
+		bot->botData.botNavFrame = frame;
+	}
+	ExtNav_BotRespawn(bot, respawnZone, (int)(frame - sdata->NavPath_ptrNavFrameArray[bot->botData.botPath]));
 	struct NavFrame *nextFrame = frame + 1;
 
 	// if the next nav point is a farther address than last point
@@ -1682,6 +1694,9 @@ UpdateTireColorTimer:
 	{
 		gravity = CTR_MipsDiv(CTR_MipsMulLo(botDriver->const_Gravity, gravityPercent), 100);
 	}
+	// The external track's physics.gravity_percent (platform/native_extphys.c);
+	// without the section (every other track) the value comes back unchanged.
+	gravity = ExtPhys_ScaleGravity(gravity);
 
 	botDriver->botData.aiPhysics.speedY =
 	    CTR_MipsSubLo(botDriver->botData.aiPhysics.speedY, CTR_MipsSra(CTR_MipsMulLo(gravity, elapsedMilliseconds), 5)); // iVar3
@@ -1919,6 +1934,9 @@ UpdateTireColorTimer:
 		botDriver->botData.botFlags |= BOT_FLAG_NAV_BOOST_ACTIVE;
 	}
 
+	// Anti-gravity zones of an external track: enter / leave log lines (no zone frames: returns at once).
+	ExtNav_BotTick(botDriver, navFrameCurr);
+
 	if ((botDriver->botData.botFlags & BOT_FLAG_ESTIMATE_NAV) == 0)
 	{
 		botDriver->botData.botNavFrame = navFrameCurr;
@@ -1957,6 +1975,14 @@ UpdateTireColorTimer:
 	    CTR_MipsAddLo(navFrameCurr->pos.y, CTR_MipsSra(CTR_MipsMulLo(CTR_MipsSubLo(navFrameNext->pos.y, navFrameCurr->pos.y), percentage), 0xc)), 8);
 	botDriver->botData.positionBackup.z = CTR_MipsSll(
 	    CTR_MipsAddLo(navFrameCurr->pos.z, CTR_MipsSra(CTR_MipsMulLo(CTR_MipsSubLo(navFrameNext->pos.z, navFrameCurr->pos.z), percentage), 0xc)), 8);
+
+	// External anti-gravity zone: no free-physics slide (it moves in world x/z,
+	// off a wall or ceiling); the bot stays on its rail.
+	if (((botDriver->botData.botFlags & BOT_FLAG_FREE_PHYSICS) != 0) && (ExtNav_FrameZone(navFrameCurr) != 0))
+	{
+		botDriver->botData.botFlags &= ~BOT_FLAG_FREE_PHYSICS;
+		CTR_SET_VEC3(CTR_VECTOR_DATA(&(botDriver->botData.aiPhysics.velocity)), 0, 0, 0);
+	}
 
 	if ((botDriver->botData.botFlags & BOT_FLAG_FREE_PHYSICS) != 0)
 	{
@@ -2047,8 +2073,10 @@ UpdateTireColorTimer:
 		}
 	}
 
-	if ((botDriver->botData.botFlags & (BOT_FLAG_ESTIMATE_NAV | BOT_FLAG_FREE_PHYSICS)) == 0)
+	if (((botDriver->botData.botFlags & (BOT_FLAG_ESTIMATE_NAV | BOT_FLAG_FREE_PHYSICS)) == 0) || (ExtNav_FrameZone(navFrameCurr) != 0))
 	{
+		// (In an external anti-gravity zone also while estimating: the vertical
+		// probe below would miss a wall or hit the tube's other side.)
 		botDriver->botData.ai_quadblock_checkpointIndex = navFrameCurr->goBackCount;
 	}
 	else
@@ -2102,6 +2130,13 @@ UpdateTireColorTimer:
 		}
 	}
 	deltaPosThisFrame = CTR_MipsSra(deltaPosThisFrame, 8);
+	// External anti-gravity zone: the bot stays on its rail - its height is the
+	// frames' height every tick (the landing branch below sets it), no air phase
+	// in world y on a wall or under a ceiling.
+	if (ExtNav_FrameZone(navFrameCurr) != 0)
+	{
+		botDriver->botData.positionBackup.y = CTR_MipsSubLo(botDriver->quadBlockHeight, 1);
+	}
 	if (botDriver->botData.positionBackup.y < botDriver->quadBlockHeight)
 	{
 		u32 oldBotFlags = botDriver->botData.botFlags; // uVar8
@@ -2660,6 +2695,25 @@ UpdateTireColorTimer:
 	botDriver->AxisAngle2_normalVec.x = botInstance->matrix.m[0][1];
 	botDriver->AxisAngle2_normalVec.y = botInstance->matrix.m[1][1];
 	botDriver->AxisAngle2_normalVec.z = botInstance->matrix.m[2][1];
+
+	// External anti-gravity zone: the kart's up vector is the frames' surface
+	// normal (VehPhysForce_TranslateMatrix turns any up vector with rotCurr.y,
+	// VehPhysForce.c:1074-1080); outside a zone nothing changes.
+	{
+		short zoneUp[3];
+
+		if (((botDriver->botData.botFlags & (BOT_FLAG_ESTIMATE_NAV | BOT_FLAG_FREE_PHYSICS)) == 0) &&
+		    ExtNav_FrameUpLerp(navFrameCurr, navFrameNext, percentage, zoneUp))
+		{
+			botDriver->AxisAngle2_normalVec.x = zoneUp[0];
+			botDriver->AxisAngle2_normalVec.y = zoneUp[1];
+			botDriver->AxisAngle2_normalVec.z = zoneUp[2];
+			botDriver->AxisAngle3_normalVec.x = zoneUp[0];
+			botDriver->AxisAngle3_normalVec.y = zoneUp[1];
+			botDriver->AxisAngle3_normalVec.z = zoneUp[2];
+			botInstance->compressedNormalAndDriverIndex = INST_CompressNormalVectorAndDriverIndex(zoneUp[0], zoneUp[1], zoneUp[2], botDriver->driverID);
+		}
+	}
 
 	botDriver->angle = botDriver->rotCurr.y;
 
@@ -3271,7 +3325,13 @@ void BOTS_Driver_Convert(struct Driver *d)
 
 	LIST_AddFront(&sdata->navBotList[navPathIndex], &d->botData.item);
 
-	BOTS_SetRotation(d, 0);
+	// On an external track before the start, the converted seat keeps its spawn
+	// heading (the yaw toward frame 0 of its path can be 40 degrees off from a
+	// grid spot); otherwise retail.
+	BOTS_SetRotation(d, (ExtNav_Active() && (d->driverID == 0) &&
+	                     (((sdata->gGT->gameMode1 & START_OF_RACE) != 0) || (sdata->gGT->trafficLightsTimer > 0)))
+	                        ? 1
+	                        : 0);
 
 	GAMEPAD_JogCon2(d, 0, 0);
 

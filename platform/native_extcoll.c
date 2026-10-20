@@ -74,16 +74,25 @@ enum
 	EXT_COLL_FLAGS_WALL_NOSCRUB = 0x2001,
 	EXT_COLL_FLAGS_WALL_SOLID = 0x2000,
 	EXT_COLL_FLAGS_KILL = 0xE210,
+	// a turbo pad as retail has it (184 of 184 pad quads in 12 LEVs, the retail
+	// one included): TRIGGER | COLLISION_SURFACE | SKIP_WATER_LIST, not GROUND,
+	// not double-sided, no checkpoint, 32 units over the road; touching it ORs
+	// terrain_type (1 turbo pad, 2 super pad) into the step flags (COLL.c:2092-2098)
+	EXT_COLL_FLAGS_TRIGGER = 0xA040,
+	EXT_COLL_PADS_MAX = 64,
 	EXT_COLL_CP_NONE = 0xFF,
 	EXT_COLL_PRODUCT_MAX = 1 << 30,
 	EXT_COLL_DIVIDEND_MAX = 0x7FFF,
 	EXT_COLL_VERTEX_MAX = 65535,
 	EXT_COLL_NODE_MAX = 0x3FFF,
+	EXT_COLL_RECORD_MAX = 32767,     // QuadBlock.blockID is s16
+	EXT_COLL_SEARCH_STACK = 76,      // COLL_SearchBSP_CallbackPARAM: s16 entries from scratchpad 0x70 to 0x108
 	EXT_COLL_TERRAINS = 21,
 	EXT_COLL_TEST_TRIS = 64,
 };
 
 #define EXT_COLL_EDGE_SLACK 2.5
+#define EXT_COLL_SEAM_MAX_FRACTION 0.0005
 
 typedef enum
 {
@@ -91,6 +100,7 @@ typedef enum
 	EXT_COLL_CLASS_GROUND,
 	EXT_COLL_CLASS_WALL,
 	EXT_COLL_CLASS_KILL,
+	EXT_COLL_CLASS_TRIGGER, // a turbo pad: terrain = its trigger bits (COLL_STEP_TRIGGER_*)
 	EXT_COLL_CLASS_COUNT
 } ExtCollClass;
 
@@ -103,7 +113,18 @@ typedef struct
 	u8 checkpoint;
 	u8 doubleSided;
 	u8 wallNoScrub;
+	u8 pad; // trigger: the pad's number (0..EXT_COLL_PADS_MAX-1)
+	u8 zone; // the anti-gravity zone of a ground triangle (physics.zones), 0 none
 } ExtCollTri;
+
+// The turbo pads of the track: the box of each pad's records (for the log
+// and for telling which pad gave a boost).
+typedef struct
+{
+	struct BoundingBox box;
+	int records;
+	int bits;
+} ExtCollPad;
 
 global_variable struct
 {
@@ -121,6 +142,17 @@ global_variable struct
 	int countClass[EXT_COLL_CLASS_COUNT];
 	int countTerrain[EXT_COLL_TERRAINS];
 	int killTopY;    // the highest corner of a kill record (for the frame log)
+	// the limits line: what the build used of each fixed size
+	double maxEdge;  // the longest corner edge, units
+	int shiftMin;    // the smallest / largest dividend shift of a record
+	int shiftMax;
+	int midOff2;     // twice the largest offset (per axis) of a midpoint from its corners' exact middle
+	size_t heapKept; // bytes kept after the build (records, vertex array, node array)
+	size_t heapPeak; // bytes held during the build
+	u8 *recZone; // per record (tree order): its zone, 0 none
+	int zoneRecords;
+	ExtCollPad pads[EXT_COLL_PADS_MAX];
+	int numPads; // the highest pad number + 1
 } s_extColl;
 
 // THE FRAME LOG of seat 0 on the external track (read only, for the gate of
@@ -152,9 +184,12 @@ internal void ExtColl_Free(void)
 	free(s_extColl.quads);
 	free(s_extColl.verts);
 	free(s_extColl.bsp);
+	free(s_extColl.recZone);
 	s_extColl.quads = NULL;
 	s_extColl.verts = NULL;
 	s_extColl.bsp = NULL;
+	s_extColl.recZone = NULL;
+	s_extColl.zoneRecords = 0;
 	s_extColl.ready = 0;
 	memset(&s_extColl.mesh, 0, sizeof(s_extColl.mesh));
 	s_extColl.numQuads = 0;
@@ -162,6 +197,14 @@ internal void ExtColl_Free(void)
 	s_extColl.numBsp = 0;
 	s_extColl.treeDepth = 0;
 	s_extColl.waterLeaves = 0;
+	s_extColl.maxEdge = 0.0;
+	s_extColl.shiftMin = 0;
+	s_extColl.shiftMax = 0;
+	s_extColl.midOff2 = 0;
+	s_extColl.heapKept = 0;
+	s_extColl.heapPeak = 0;
+	memset(s_extColl.pads, 0, sizeof(s_extColl.pads));
+	s_extColl.numPads = 0;
 	memset(s_extColl.countClass, 0, sizeof(s_extColl.countClass));
 	memset(s_extColl.countTerrain, 0, sizeof(s_extColl.countTerrain));
 }
@@ -229,8 +272,21 @@ internal int ExtColl_Mid(ExtCollVerts *vs, int a, int b)
 	const SVec3 pa = vs->verts[a].pos;
 	const SVec3 pb = vs->verts[b].pos;
 
+	const s32 sum[3] = {(s32)pa.x + pb.x, (s32)pa.y + pb.y, (s32)pa.z + pb.z};
+
+	// how far the rounded-down midpoint lies from the exact middle, for the
+	// limits line (twice the offset: 0 or 1 per axis)
+	for (int k = 0; k < 3; k++)
+	{
+		const s32 off2 = sum[k] - 2 * (sum[k] >> 1);
+
+		if (off2 > s_extColl.midOff2)
+		{
+			s_extColl.midOff2 = off2;
+		}
+	}
 	// (pa + pb) >> 1: symmetric in a and b, the same from both triangles.
-	return ExtColl_Vertex(vs, (s16)(((s32)pa.x + pb.x) >> 1), (s16)(((s32)pa.y + pb.y) >> 1), (s16)(((s32)pa.z + pb.z) >> 1));
+	return ExtColl_Vertex(vs, (s16)(sum[0] >> 1), (s16)(sum[1] >> 1), (s16)(sum[2] >> 1));
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +423,8 @@ typedef struct
 {
 	ExtCollKey *keys;
 	const struct QuadBlock *src; // input order
+	const u8 *srcZone;           // input order: the zone of each record
+	u8 *dstZone;                 // tree order
 	struct QuadBlock *dst;       // tree order
 	struct BSP *nodes;
 	int numNodes;
@@ -408,6 +466,7 @@ internal int ExtColl_BuildNode(ExtCollTree *tr, int first, int count, int depth,
 			const struct QuadBlock *q = &tr->src[tr->keys[first + i].quad];
 
 			tr->dst[tr->numDst] = *q;
+			tr->dstZone[tr->numDst] = tr->srcZone[tr->keys[first + i].quad];
 			tr->dst[tr->numDst].blockID = (s16)tr->numDst;
 			if (i == 0)
 			{
@@ -505,6 +564,7 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	ExtCollTree tr;
 	struct QuadBlock *src = NULL;
 	ExtCollKey *keys = NULL;
+	u8 *srcZone = NULL;
 	int numSolid = 0;
 	int nq = 0;
 
@@ -524,6 +584,11 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 		snprintf(why, (size_t)whySize, "no collision triangles");
 		return 0;
 	}
+	if (numSolid > EXT_COLL_RECORD_MAX)
+	{
+		snprintf(why, (size_t)whySize, "%d collision triangles, more than %d records (the record id is s16)", numSolid, EXT_COLL_RECORD_MAX);
+		return 0;
+	}
 
 	vs.cap = 1;
 	while (vs.cap < 4 * EXT_COLL_VERTEX_MAX)
@@ -537,7 +602,9 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	keys = (ExtCollKey *)malloc((size_t)numSolid * sizeof(ExtCollKey));
 	tr.dst = (struct QuadBlock *)calloc((size_t)numSolid, sizeof(struct QuadBlock));
 	tr.nodes = (struct BSP *)calloc((size_t)EXT_COLL_NODE_MAX, sizeof(struct BSP));
-	if (!vs.slots || !vs.verts || !src || !keys || !tr.dst || !tr.nodes)
+	srcZone = (u8 *)calloc((size_t)numSolid, 1);
+	tr.dstZone = (u8 *)calloc((size_t)numSolid, 1);
+	if (!vs.slots || !vs.verts || !src || !keys || !tr.dst || !tr.nodes || !srcZone || !tr.dstZone)
 	{
 		snprintf(why, (size_t)whySize, "out of memory");
 		goto Fail;
@@ -557,6 +624,18 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 		{
 			snprintf(why, (size_t)whySize, "triangle %d has an edge longer than %d units (the converter splits them)", i, EXT_COLL_MAX_EDGE);
 			goto Fail;
+		}
+		for (int e = 0; e < 3; e++)
+		{
+			const s16 *a = t->p[e];
+			const s16 *b = t->p[(e + 1) % 3];
+			const double dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+			const double edge = sqrt(dx * dx + dy * dy + dz * dz);
+
+			if (edge > s_extColl.maxEdge)
+			{
+				s_extColl.maxEdge = edge;
+			}
 		}
 		// REVERSED corners (a, c, b): see the head of the file
 		va = ExtColl_Vertex(&vs, t->p[0][0], t->p[0][1], t->p[0][2]);
@@ -588,11 +667,15 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 		{
 			q->quadFlags = t->wallNoScrub ? EXT_COLL_FLAGS_WALL_NOSCRUB : EXT_COLL_FLAGS_WALL_SOLID;
 		}
+		else if (t->cls == EXT_COLL_CLASS_TRIGGER)
+		{
+			q->quadFlags = EXT_COLL_FLAGS_TRIGGER;
+		}
 		else
 		{
 			q->quadFlags = EXT_COLL_FLAGS_KILL;
 		}
-		q->draw_order_low = t->doubleSided ? QUADBLOCK_DRAW_ORDER_LOW_DOUBLE_SIDED : 0;
+		q->draw_order_low = (t->doubleSided && (t->cls != EXT_COLL_CLASS_TRIGGER)) ? QUADBLOCK_DRAW_ORDER_LOW_DOUBLE_SIDED : 0;
 		q->terrain_type = t->terrain;
 		q->checkpointIndex = (t->cls == EXT_COLL_CLASS_GROUND) ? t->checkpoint : EXT_COLL_CP_NONE;
 		q->pvs = NULL;
@@ -636,7 +719,17 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 			snprintf(why, (size_t)whySize, "triangle %d: degenerate, or no collision normal fits 32 bits", i);
 			goto Fail;
 		}
+		if ((nq == 0) || (q->triNormalVecBitShift < s_extColl.shiftMin))
+		{
+			s_extColl.shiftMin = q->triNormalVecBitShift;
+		}
+		if ((nq == 0) || (q->triNormalVecBitShift > s_extColl.shiftMax))
+		{
+			s_extColl.shiftMax = q->triNormalVecBitShift;
+		}
 		keys[nq].quad = nq;
+		srcZone[nq] = (t->cls == EXT_COLL_CLASS_GROUND) ? t->zone : 0;
+		s_extColl.zoneRecords += (srcZone[nq] != 0) ? 1 : 0;
 		for (int k = 0; k < 3; k++)
 		{
 			keys[nq].c[k] = (s32)t->p[0][k] + t->p[1][k] + t->p[2][k];
@@ -646,11 +739,31 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 		{
 			s_extColl.countTerrain[t->terrain]++;
 		}
+		if ((t->cls == EXT_COLL_CLASS_TRIGGER) && (t->pad < EXT_COLL_PADS_MAX))
+		{
+			ExtCollPad *pad = &s_extColl.pads[t->pad];
+
+			if (pad->records == 0)
+			{
+				pad->box = q->bbox;
+			}
+			else
+			{
+				ExtColl_GrowBox(&pad->box, &q->bbox);
+			}
+			pad->records++;
+			pad->bits |= t->terrain;
+			if (t->pad + 1 > s_extColl.numPads)
+			{
+				s_extColl.numPads = t->pad + 1;
+			}
+		}
 		nq++;
 	}
 
 	tr.keys = keys;
 	tr.src = src;
+	tr.srcZone = srcZone;
 	// the root is always a branch
 	if (ExtColl_BuildNode(&tr, 0, nq, 0, 1) < 0)
 	{
@@ -659,6 +772,7 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	}
 
 	s_extColl.quads = tr.dst;
+	s_extColl.recZone = tr.dstZone;
 	s_extColl.verts = vs.verts;
 	s_extColl.bsp = tr.nodes;
 	s_extColl.numQuads = nq;
@@ -681,10 +795,15 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	s_extColl.mesh.ptrVertexArray = vs.verts;
 	s_extColl.mesh.bspRoot = tr.nodes;
 	s_extColl.mesh.numBspNodes = tr.numNodes;
+	s_extColl.heapKept = (size_t)numSolid * sizeof(struct QuadBlock) + (size_t)vs.max * sizeof(struct LevVertex) + (size_t)EXT_COLL_NODE_MAX * sizeof(struct BSP);
+	s_extColl.heapPeak = s_extColl.heapKept + (size_t)vs.cap * sizeof(ExtCollVSlot) + (size_t)numSolid * (sizeof(struct QuadBlock) + sizeof(ExtCollKey));
+	s_extColl.heapKept += (size_t)numSolid;
+	s_extColl.heapPeak += 2 * (size_t)numSolid;
 	s_extColl.ready = 1;
 	free(vs.slots);
 	free(src);
 	free(keys);
+	free(srcZone);
 	return 1;
 
 Fail:
@@ -692,7 +811,9 @@ Fail:
 	free(vs.verts);
 	free(src);
 	free(keys);
+	free(srcZone);
 	free(tr.dst);
+	free(tr.dstZone);
 	free(tr.nodes);
 	ExtColl_Free();
 	return 0;
@@ -726,15 +847,47 @@ internal int ExtColl_ReadExtras(const cgltf_node *node, ExtCollTri *proto, char 
 	           : (strcmp(cls, "wall") == 0)   ? EXT_COLL_CLASS_WALL
 	           : (strcmp(cls, "kill") == 0)   ? EXT_COLL_CLASS_KILL
 	           : (strcmp(cls, "none") == 0)   ? EXT_COLL_CLASS_NONE
+	           : (strcmp(cls, "trigger") == 0) ? EXT_COLL_CLASS_TRIGGER
 	                                          : 0xFF;
 	proto->doubleSided = (u8)ExtJson_Bool(&doc, ExtJson_Get(&doc, 0, "double_sided"), 0);
 	proto->wallNoScrub = (u8)(strcmp(ExtJson_String(&doc, ExtJson_Get(&doc, 0, "wall_scrub"), "none"), "solid") != 0);
+	if (proto->cls == EXT_COLL_CLASS_TRIGGER)
+	{
+		// a turbo pad: its trigger bits (1 turbo pad, 2 super pad - nothing else,
+		// the other bits steer hubs and weapons) and its number
+		const double bits = ExtJson_Number(&doc, ExtJson_Get(&doc, 0, "trigger_bits"), -1.0);
+		const double pad = ExtJson_Number(&doc, ExtJson_Get(&doc, 0, "pad"), 0.0);
+
+		if (((bits != 1.0) && (bits != 2.0)) || (pad < 0.0) || (pad >= (double)EXT_COLL_PADS_MAX) || (pad != floor(pad)))
+		{
+			snprintf(why, (size_t)whySize, "node %s: trigger bits %g / pad %g not accepted (bits 1 or 2, pad 0..%d)", ExtColl_NodeName(node), bits, pad,
+			         EXT_COLL_PADS_MAX - 1);
+			ExtJson_Free(&doc);
+			return 0;
+		}
+		ExtJson_Free(&doc);
+		proto->terrain = (u8)bits;
+		proto->pad = (u8)pad;
+		return 1;
+	}
 	if ((proto->cls == 0xFF) || (terrain < 0.0) || (terrain > 20.0) || (terrain != floor(terrain)) || ((int)terrain == TERRAIN_TRACK) ||
 	    ((int)terrain == TERRAIN_MUD))
 	{
 		snprintf(why, (size_t)whySize, "node %s: class '%s' / terrain %g not accepted", ExtColl_NodeName(node), cls, terrain);
 		ExtJson_Free(&doc);
 		return 0;
+	}
+	{
+		// the anti-gravity zone of a ground node (physics.zones ids 1..255)
+		const double zone = ExtJson_Number(&doc, ExtJson_Get(&doc, 0, "zone"), 0.0);
+
+		if ((zone < 0.0) || (zone > 255.0) || (zone != floor(zone)) || ((zone != 0.0) && (proto->cls != EXT_COLL_CLASS_GROUND)))
+		{
+			snprintf(why, (size_t)whySize, "node %s: zone %g not accepted (0..255, ground only)", ExtColl_NodeName(node), zone);
+			ExtJson_Free(&doc);
+			return 0;
+		}
+		proto->zone = (u8)zone;
 	}
 	ExtJson_Free(&doc);
 	proto->terrain = (u8)terrain;
@@ -920,7 +1073,10 @@ typedef struct
 	int edgeMisses;  // ray: no hit, but closer than EXT_COLL_EDGE_SLACK to an edge of the four high-LOD triangles:
 	                 // the game's barycentric test in fixed point (COLL_FIXED_TRIANGL_TestPoint, >> 6) leaves
 	                 // such seams on small triangles - counted and reported, not a failure
+	int edgeBelow;   // ray: more than 1 under the record's plane, but within EXT_COLL_EDGE_SLACK of an edge (the same seam,
+	                 // a neighbour's plane wins); with edgeMisses at most EXT_COLL_SEAM_MAX_FRACTION of the points (PLAN sec. 7)
 	double planeOffMax; // largest height difference of the game's stored plane from the exact surface
+	double planeOffNormalMax; // the same along the record's normal (height difference times |n.y|)
 	double normalWorst;  // largest angle of a game normal from its triangle (degrees)
 	int normalsBadEdge[4]; // the records with a normal off, by their shortest edge: < 16, < 64, < 256, >= 256 units
 	double sampleEdge[8];  // per sample: the distance to the nearest edge of the four high-LOD triangles
@@ -1068,6 +1224,13 @@ internal void ExtColl_CheckRay(ExtCollCheck *ck, const struct QuadBlock *q, cons
 	const SVec3 p2 = s_extColl.verts[q->index[2]].pos;
 	const SVec3 e[3][2] = {{p0, p1}, {p1, p2}, {p2, p0}};
 	const double d = (double)(p1.z - p2.z) * (p0.x - p2.x) + (double)(p2.x - p1.x) * (p0.z - p2.z);
+	// |n.y| of the exact unit normal: a height difference times it is the
+	// distance along the normal
+	const double ux = p1.x - p0.x, uy = p1.y - p0.y, uz = p1.z - p0.z;
+	const double vx = p2.x - p0.x, vy = p2.y - p0.y, vz = p2.z - p0.z;
+	const double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+	const double clen = sqrt(cx * cx + cy * cy + cz * cz);
+	const double nyAbs = (clen > 0.0) ? fabs(cy) / clen : 0.0;
 	int x0 = q->bbox.min.x;
 	int z0 = q->bbox.min.z;
 
@@ -1127,6 +1290,10 @@ internal void ExtColl_CheckRay(ExtCollCheck *ck, const struct QuadBlock *q, cons
 			{
 				ck->planeOffMax = fabs(y - yGame);
 			}
+			if (fabs(y - yGame) * nyAbs > ck->planeOffNormalMax)
+			{
+				ck->planeOffNormalMax = fabs(y - yGame) * nyAbs;
+			}
 			if (!ExtColl_Probe((s16)x, (s16)floor(y + 0.5), (s16)z, &hy, &hn))
 			{
 				if (ExtColl_SubEdgeDistance(q, x, z) < EXT_COLL_EDGE_SLACK)
@@ -1143,7 +1310,16 @@ internal void ExtColl_CheckRay(ExtCollCheck *ck, const struct QuadBlock *q, cons
 			// |dh| <= 1 against the game's own plane of the record; higher = another face on top
 			if (hy < yGame - 1.0)
 			{
-				ck->below++;
+				// within the slack of an edge: the seam case of the game's
+				// fixed point (a neighbour's plane), counted apart (PLAN sec. 7)
+				if (ExtColl_SubEdgeDistance(q, x, z) < EXT_COLL_EDGE_SLACK)
+				{
+					ck->edgeBelow++;
+				}
+				else
+				{
+					ck->below++;
+				}
 				ExtColl_Sample(ck, x, z, yGame, (int)(q - s_extColl.quads), 1, hy);
 			}
 			else if (hy > yGame + 1.0)
@@ -1275,8 +1451,132 @@ internal void ExtColl_CheckAll(ExtCollCheck *ck, int step)
 
 internal int ExtColl_CheckPassed(const ExtCollCheck *ck)
 {
+	// seams (misses and below hits within the slack of an edge) at most 0.05 %
+	// of the ray points together (PLAN sec. 7, A7 limit); everything else 0
 	return (ck->normalsBad == 0) && (ck->lengthBad == 0) && (ck->overflow == 0) && (ck->notReached == 0) && (ck->misses == 0) && (ck->below == 0) &&
-	       (ck->points > 0);
+	       (ck->points > 0) && ((double)(ck->edgeMisses + ck->edgeBelow) <= EXT_COLL_SEAM_MAX_FRACTION * (double)ck->points);
+}
+
+// ---------------------------------------------------------------------------
+// the turbo pads (records of class trigger), for the physics part's log
+
+int ExtColl_PadCount(void)
+{
+	return s_extColl.ready ? s_extColl.numPads : 0;
+}
+
+int ExtColl_PadBox(int pad, struct BoundingBox *box, int *records, int *bits)
+{
+	if (!s_extColl.ready || (pad < 0) || (pad >= s_extColl.numPads) || (s_extColl.pads[pad].records == 0))
+	{
+		return 0;
+	}
+	*box = s_extColl.pads[pad].box;
+	*records = s_extColl.pads[pad].records;
+	*bits = s_extColl.pads[pad].bits;
+	return 1;
+}
+
+int ExtColl_PadAt(int x, int y, int z, int margin)
+{
+	for (int p = 0; s_extColl.ready && (p < s_extColl.numPads); p++)
+	{
+		const struct BoundingBox *b = &s_extColl.pads[p].box;
+
+		if ((s_extColl.pads[p].records > 0) && (x >= b->min.x - margin) && (x <= b->max.x + margin) && (y >= b->min.y - margin) &&
+		    (y <= b->max.y + margin) && (z >= b->min.z - margin) && (z <= b->max.z + margin))
+		{
+			return p;
+		}
+	}
+	return -1;
+}
+
+// ---------------------------------------------------------------------------
+// the anti-gravity zones (records of ground nodes with "zone": n) and a ray in
+// any direction with the game's own ray test
+
+int ExtColl_RecordZone(const struct QuadBlock *q)
+{
+	if (!s_extColl.ready || (s_extColl.recZone == NULL) || (q == NULL) || (q < s_extColl.quads) || (q >= s_extColl.quads + s_extColl.numQuads))
+	{
+		return 0;
+	}
+	return s_extColl.recZone[q - s_extColl.quads];
+}
+
+int ExtColl_ZoneRecords(void)
+{
+	return s_extColl.ready ? s_extColl.zoneRecords : 0;
+}
+
+int ExtColl_ProbeSurface(const SVec3 *from, const SVec3 *dir, int len, ExtCollHit *out)
+{
+	u8 *const savedScratch = gCTRNativeScratchpadBase;
+	struct ScratchpadStruct *sps;
+	SVec3 end;
+	int hit = 0;
+
+	if (!s_extColl.ready || (from == NULL) || (dir == NULL) || (out == NULL) || (len <= 0))
+	{
+		return 0;
+	}
+	end.x = (s16)(from->x + ((dir->x * len) >> 12));
+	end.y = (s16)(from->y + ((dir->y * len) >> 12));
+	end.z = (s16)(from->z + ((dir->z * len) >> 12));
+	// an own scratchpad: the game's (and its search stack) stay untouched
+	memset(s_extCollScratch, 0, sizeof(s_extCollScratch));
+	gCTRNativeScratchpadBase = (u8 *)s_extCollScratch;
+	sps = CTR_SCRATCHPAD_PTR(struct ScratchpadStruct, 0x108);
+	sps->ptr_mesh_info = &s_extColl.mesh;
+	sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND | QUADBLOCK_FLAG_COLLISION_SURFACE;
+	sps->Union.QuadBlockColl.quadFlagsIgnored = QUADBLOCK_FLAG_NO_COLLISION_RESPONSE;
+	sps->Union.QuadBlockColl.searchFlags = COLL_SEARCH_HIGH_LOD;
+	// the game's ray runs from its second point to its first (COLL.c, ExtColl_Probe)
+	COLL_SearchBSP_CallbackQUADBLK(&end, from, sps, 0);
+	if ((sps->boolDidTouchQuadblock != 0) && (sps->hit.ptrQuadblock != NULL))
+	{
+		out->pos = sps->Union.QuadBlockColl.hitPos;
+		out->normal = sps->hit.plane.normal;
+		out->record = sps->hit.ptrQuadblock;
+		out->zone = ExtColl_RecordZone(sps->hit.ptrQuadblock);
+		out->terrain = sps->hit.ptrQuadblock->terrain_type;
+		hit = 1;
+	}
+	gCTRNativeScratchpadBase = savedScratch;
+	return hit;
+}
+
+// ---------------------------------------------------------------------------
+// the limits line: each fixed size against what the build used of it
+
+internal void ExtColl_FormatLimits(char *out, size_t size)
+{
+	int cpMax = -1;
+
+	for (int i = 0; i < s_extColl.numQuads; i++)
+	{
+		const int cp = s_extColl.quads[i].checkpointIndex;
+
+		if ((cp != EXT_COLL_CP_NONE) && (cp > cpMax))
+		{
+			cpMax = cp;
+		}
+	}
+	snprintf(out, size,
+	         "limits: records %d/%d, vertices %d/%d, tree nodes %d/%d, depth %d (search stack %d), checkpoint index %d/%d, longest edge %.1f/%d, "
+	         "dividend shift %d..%d, midpoint off its corners' middle up to %.1f per axis; heap %u bytes kept, %u at the build's peak",
+	         s_extColl.numQuads, EXT_COLL_RECORD_MAX, s_extColl.numVerts, EXT_COLL_VERTEX_MAX, s_extColl.numBsp, EXT_COLL_NODE_MAX, s_extColl.treeDepth,
+	         EXT_COLL_SEARCH_STACK, cpMax, EXT_COLL_CP_NONE - 1, s_extColl.maxEdge, EXT_COLL_MAX_EDGE, s_extColl.shiftMin, s_extColl.shiftMax,
+	         0.5 * s_extColl.midOff2, (unsigned)s_extColl.heapKept, (unsigned)s_extColl.heapPeak);
+}
+
+internal void ExtColl_LogLimits(void)
+{
+	char line[512];
+
+	ExtColl_FormatLimits(line, sizeof(line));
+	Platform_Log("[CTR ExtColl] %s\n", line);
 }
 
 // ---------------------------------------------------------------------------
@@ -1318,11 +1618,12 @@ void ExtColl_OnLevelLoaded(struct Level *lev)
 		return;
 	}
 	free(tris);
-	Platform_Log("[CTR ExtColl] built from '%s': %d triangle(s) (json %d, %s) -> %d record(s): ground %d, wall %d, kill %d; %d vertex(es), "
-	             "%d tree node(s), depth %d, %d water leaf(s)\n",
+	Platform_Log("[CTR ExtColl] built from '%s': %d triangle(s) (json %d, %s) -> %d record(s): ground %d (in zones %d), wall %d, kill %d, trigger %d "
+	             "(%d pad(s)); %d vertex(es), %d tree node(s), depth %d, %d water leaf(s)\n",
 	             path, numTris, wantTriangles, (wantTriangles == numTris) ? "same" : "DIFFERENT", s_extColl.numQuads, s_extColl.countClass[EXT_COLL_CLASS_GROUND],
-	             s_extColl.countClass[EXT_COLL_CLASS_WALL], s_extColl.countClass[EXT_COLL_CLASS_KILL], s_extColl.numVerts, s_extColl.numBsp, s_extColl.treeDepth,
-	             s_extColl.waterLeaves);
+	             s_extColl.zoneRecords, s_extColl.countClass[EXT_COLL_CLASS_WALL], s_extColl.countClass[EXT_COLL_CLASS_KILL], s_extColl.countClass[EXT_COLL_CLASS_TRIGGER],
+	             s_extColl.numPads, s_extColl.numVerts, s_extColl.numBsp, s_extColl.treeDepth, s_extColl.waterLeaves);
+	ExtColl_LogLimits();
 	{
 		char line[512];
 		size_t used = 0;
@@ -1347,10 +1648,11 @@ void ExtColl_OnLevelLoaded(struct Level *lev)
 	// scratchpad and own mesh: no game state is touched).
 	ExtColl_CheckAll(&ck, 64);
 	Platform_Log("[CTR ExtColl] check %s: %d record(s), normals off %d, length off %d, overflow %d, not in tree %d; ray %d point(s), %d miss(es), "
-	             "%d seam miss(es) within %.1f of a triangle edge, %d below the game's plane, %d under a higher face, %d near a record edge skipped; the "
-	             "game's planes lie up to %.2f from the exact surface (%d hit(s) more than 1 off it)\n",
+	             "%d seam miss(es) within %.1f of a triangle edge, %d seam below hit(s), %d below the game's plane, %d under a higher face, %d near a "
+	             "record edge skipped; the "
+	             "game's planes lie up to %.2f from the exact surface in height, %.2f along the normal (%d hit(s) more than 1 off it)\n",
 	             ExtColl_CheckPassed(&ck) ? "passed" : "FAILED", ck.records, ck.normalsBad, ck.lengthBad, ck.overflow, ck.notReached, ck.points, ck.misses,
-	             ck.edgeMisses, EXT_COLL_EDGE_SLACK, ck.below, ck.above, ck.skippedEdge, ck.planeOffMax, ck.offExact);
+	             ck.edgeMisses, EXT_COLL_EDGE_SLACK, ck.edgeBelow, ck.below, ck.above, ck.skippedEdge, ck.planeOffMax, ck.planeOffNormalMax, ck.offExact);
 	ExtColl_PrintSamples(&ck, 1);
 }
 
@@ -1567,6 +1869,36 @@ int ExtColl_Selftest(void)
 		ExtColl_TestCheck(oneTri, "index[2] == index[3] (one triangle) and blockID = record index", &checks, &failures);
 	}
 
+	// the limits line's values (A1): the longest edge of the solid triangles
+	// (the wall's slant, 783.7), a midpoint lies at most half a unit off its
+	// corners' middle, the tree fits the game's search stack, the heap numbers
+	// are filled
+	{
+		char line[512];
+		double longest = 0.0;
+
+		for (int i = 0; i < n; i++)
+		{
+			for (int e = 0; (e < 3) && (tris[i].cls != EXT_COLL_CLASS_NONE); e++)
+			{
+				const s16 *a = tris[i].p[e];
+				const s16 *b = tris[i].p[(e + 1) % 3];
+				const double len = sqrt((double)(a[0] - b[0]) * (a[0] - b[0]) + (double)(a[1] - b[1]) * (a[1] - b[1]) + (double)(a[2] - b[2]) * (a[2] - b[2]));
+
+				longest = (len > longest) ? len : longest;
+			}
+		}
+		snprintf(what, sizeof(what), "longest edge %.1f = the longest solid edge of the made-up track %.1f", s_extColl.maxEdge, longest);
+		ExtColl_TestCheck((fabs(s_extColl.maxEdge - longest) < 0.01) && (longest > 783.0) && (longest < 784.0), what, &checks, &failures);
+		ExtColl_TestCheck(s_extColl.midOff2 <= 1, "a midpoint lies at most 0.5 per axis off its corners' middle", &checks, &failures);
+		ExtColl_TestCheck((s_extColl.shiftMin >= 0) && (s_extColl.shiftMin <= s_extColl.shiftMax) && (s_extColl.shiftMax <= 24), "dividend shifts 0..24",
+		                  &checks, &failures);
+		ExtColl_TestCheck(s_extColl.treeDepth + 1 <= EXT_COLL_SEARCH_STACK, "the tree is shallower than the game's search stack", &checks, &failures);
+		ExtColl_TestCheck((s_extColl.heapKept > 0) && (s_extColl.heapPeak > s_extColl.heapKept), "heap kept and peak are counted", &checks, &failures);
+		ExtColl_FormatLimits(line, sizeof(line));
+		printf("ext selftest coll: made-up track %s\n", line);
+	}
+
 	// the thresholds fixed before (P1 order): normals within 1 degree, 0
 	// overflows, the tree reaches every record, the ray hits 100 %, |dh| <= 1
 	ExtColl_CheckAll(&ck, 32);
@@ -1621,6 +1953,27 @@ int ExtColl_Selftest(void)
 		bad.p[1][2] = bad.p[0][2];
 		ExtColl_TestCheck(!ExtColl_Build(&bad, 1, why, (int)sizeof(why)) && !s_extColl.ready, "a degenerate triangle is refused", &checks, &failures);
 	}
+	// more records than the s16 record id holds: refused before anything is built
+	{
+		const int many = EXT_COLL_RECORD_MAX + 1;
+		ExtCollTri *lots = (ExtCollTri *)malloc((size_t)many * sizeof(ExtCollTri));
+
+		if (lots != NULL)
+		{
+			for (int i = 0; i < many; i++)
+			{
+				lots[i] = tris[0];
+			}
+			why[0] = '\0';
+			ExtColl_TestCheck(!ExtColl_Build(lots, many, why, (int)sizeof(why)) && !s_extColl.ready && (strstr(why, "record id is s16") != NULL),
+			                  "more than 32767 records are refused with the reason", &checks, &failures);
+			free(lots);
+		}
+		else
+		{
+			ExtColl_TestCheck(0, "memory for the record-limit test", &checks, &failures);
+		}
+	}
 
 	// COLL_WorldMesh answers with the level's own pointer unless the external
 	// track holds the slot (never in a selftest: no --ext-track, no game tracker)
@@ -1639,9 +1992,111 @@ int ExtColl_Selftest(void)
 		                  &failures);
 	}
 
+	// a turbo pad (class trigger, pad 3): a 256-square 32 over the floor, as
+	// retail lays its pads; built from a copy of the track plus the pad
+	{
+		ExtCollTri padTris[EXT_COLL_TEST_TRIS];
+		ExtCollTri p1 = {{{-768, 32, -768}, {-768, 32, -512}, {-512, 32, -768}}, EXT_COLL_CLASS_TRIGGER, 1, EXT_COLL_CP_NONE, 1, 0, 3};
+		ExtCollTri p2 = {{{-512, 32, -768}, {-768, 32, -512}, {-512, 32, -512}}, EXT_COLL_CLASS_TRIGGER, 1, EXT_COLL_CP_NONE, 1, 0, 3};
+		int np = ExtColl_TestTrack(padTris);
+		int padRecords = 0;
+		int padOk = 1;
+		struct BoundingBox pb;
+		int pr = 0, bits = 0;
+
+		padTris[np++] = p1;
+		padTris[np++] = p2;
+		ExtColl_TestCheck(ExtColl_Build(padTris, np, why, (int)sizeof(why)), "the made-up track with a pad builds", &checks, &failures);
+		for (int i = 0; s_extColl.ready && (i < s_extColl.numQuads); i++)
+		{
+			const struct QuadBlock *q = &s_extColl.quads[i];
+
+			if ((q->quadFlags & QUADBLOCK_FLAG_TRIGGER) != 0)
+			{
+				padRecords++;
+				padOk = padOk && (q->quadFlags == EXT_COLL_FLAGS_TRIGGER) && (q->terrain_type == 1) && (q->draw_order_low == 0) &&
+				        (q->checkpointIndex == EXT_COLL_CP_NONE);
+			}
+		}
+		ExtColl_TestCheck((padRecords == 2) && padOk && (s_extColl.countClass[EXT_COLL_CLASS_TRIGGER] == 2),
+		                  "two pad records with the retail pad flags 0xA040, terrain 1 (turbo pad), one-sided, no checkpoint", &checks, &failures);
+		ExtColl_TestCheck((ExtColl_PadCount() == 4) && ExtColl_PadBox(3, &pb, &pr, &bits) && (pr == 2) && (bits == 1) && (pb.min.x == -768) &&
+		                      (pb.max.z == -512) && (pb.min.y == 32) && !ExtColl_PadBox(0, &pb, &pr, &bits),
+		                  "pad 3: its box and records; pads 0..2 have none", &checks, &failures);
+		ExtColl_TestCheck((ExtColl_PadAt(-640, 25, -640, 64) == 3) && (ExtColl_PadAt(0, 0, 0, 64) == -1) && (ExtColl_PadAt(-640, 200, -640, 64) == -1),
+		                  "the pad at a point: in its box (grown by 64) yes, elsewhere none", &checks, &failures);
+		{
+			u8 *const savedScratch = gCTRNativeScratchpadBase;
+			s16 hy = 0;
+			SVec3 hn = {0, 0, 0};
+			int hit;
+
+			memset(s_extCollScratch, 0, sizeof(s_extCollScratch));
+			gCTRNativeScratchpadBase = (u8 *)s_extCollScratch;
+			hit = ExtColl_Probe(-640, 0, -640, &hy, &hn);
+			gCTRNativeScratchpadBase = savedScratch;
+			ExtColl_TestCheck(hit && (hy == 0), "the ground ray under a pad still lands on the floor (a pad is no hit)", &checks, &failures);
+		}
+	}
+
+	// anti-gravity zones (B2): the bridge deck as zone 7; the ray in any
+	// direction (ExtColl_ProbeSurface)
+	{
+		ExtCollTri zoneTris[EXT_COLL_TEST_TRIS];
+		const int nz = ExtColl_TestTrack(zoneTris);
+		int deckZone = 1;
+		int others = 0;
+		ExtCollHit h;
+		const SVec3 down = {0, -4096, 0};
+		const SVec3 up = {0, 4096, 0};
+		const SVec3 slant = {0, -2896, 2896}; // 45 degrees down towards +z
+		SVec3 from;
+
+		for (int i = 0; i < nz; i++)
+		{
+			if (zoneTris[i].terrain == TERRAIN_WOOD)
+			{
+				zoneTris[i].zone = 7;
+			}
+		}
+		ExtColl_TestCheck(ExtColl_Build(zoneTris, nz, why, (int)sizeof(why)) && (ExtColl_ZoneRecords() == 2), "the deck's two records are in zone 7", &checks,
+		                  &failures);
+		for (int i = 0; s_extColl.ready && (i < s_extColl.numQuads); i++)
+		{
+			const struct QuadBlock *q = &s_extColl.quads[i];
+
+			if (q->terrain_type == TERRAIN_WOOD)
+			{
+				deckZone = deckZone && (ExtColl_RecordZone(q) == 7);
+			}
+			else if (ExtColl_RecordZone(q) != 0)
+			{
+				others++;
+			}
+		}
+		{
+			struct QuadBlock foreign;
+
+			memset(&foreign, 0, sizeof(foreign));
+			ExtColl_TestCheck(deckZone && (others == 0) && (ExtColl_RecordZone(NULL) == 0) && (ExtColl_RecordZone(&foreign) == 0),
+			                  "RecordZone: 7 on the deck, 0 elsewhere and for a record not of the external mesh", &checks, &failures);
+		}
+		from = (SVec3){0, 300, 0};
+		ExtColl_TestCheck(ExtColl_ProbeSurface(&from, &down, 400, &h) && (h.pos.y == 200) && (h.zone == 7) && (h.terrain == TERRAIN_WOOD) && (h.normal.y > 4000),
+		                  "probe down onto the deck: y 200, zone 7, normal up", &checks, &failures);
+		from = (SVec3){0, 100, 0};
+		ExtColl_TestCheck(!ExtColl_ProbeSurface(&from, &up, 300, &h), "probe up from under the deck: no hit (the deck faces up, the ray takes front faces)",
+		                  &checks, &failures);
+		from = (SVec3){-700, 200, -900};
+		ExtColl_TestCheck(ExtColl_ProbeSurface(&from, &slant, 400, &h) && (h.zone == 0) && (h.pos.y >= -1) && (h.pos.y <= 1) && (h.pos.z >= -702) &&
+		                      (h.pos.z <= -698),
+		                  "probe at 45 degrees onto the floor: 200 down is 200 on in z, the hit at z -700, y 0", &checks, &failures);
+	}
+
 	printf("ext selftest coll: made-up track %d record(s), %d vertex(es), %d node(s), depth %d, ray %d point(s), %d edge point(s) skipped; the game's "
-	       "planes lie up to %.2f from the exact surface, %d hit(s) more than 1 off it\n",
-	       s_extColl.numQuads, s_extColl.numVerts, s_extColl.numBsp, s_extColl.treeDepth, ck.points, ck.skippedEdge, ck.planeOffMax, ck.offExact);
+	       "planes lie up to %.2f from the exact surface in height, %.2f along the normal, %d hit(s) more than 1 off it\n",
+	       s_extColl.numQuads, s_extColl.numVerts, s_extColl.numBsp, s_extColl.treeDepth, ck.points, ck.skippedEdge, ck.planeOffMax, ck.planeOffNormalMax,
+	       ck.offExact);
 	ExtColl_Free();
 
 	// THE REAL FILE, only when asked: the environment variable
@@ -1669,6 +2124,8 @@ int ExtColl_Selftest(void)
 				       "%d water leaf(s)\n",
 				       numReal, s_extColl.numQuads, s_extColl.countClass[EXT_COLL_CLASS_GROUND], s_extColl.countClass[EXT_COLL_CLASS_WALL],
 				       s_extColl.countClass[EXT_COLL_CLASS_KILL], s_extColl.numVerts, s_extColl.numBsp, s_extColl.treeDepth, s_extColl.waterLeaves);
+				printf("ext selftest coll: real file ground records in zones %d, trigger records %d in %d pad(s)\n", s_extColl.zoneRecords,
+				       s_extColl.countClass[EXT_COLL_CLASS_TRIGGER], s_extColl.numPads);
 				printf("ext selftest coll: real file ground terrains:");
 				for (int t = 0; t < EXT_COLL_TERRAINS; t++)
 				{
@@ -1679,13 +2136,21 @@ int ExtColl_Selftest(void)
 				}
 				printf("\n");
 				printf("ext selftest coll: real file normals off %d, length off %d, overflow %d, not in tree %d; ray %d point(s), %d miss(es), %d seam miss(es) "
-				       "within %.1f of a triangle edge, %d below the game's plane, %d under a higher face, %d near a record edge skipped; planes up to %.2f "
-				       "from the exact surface, %d hit(s) more than 1 off it\n",
-				       ck.normalsBad, ck.lengthBad, ck.overflow, ck.notReached, ck.points, ck.misses, ck.edgeMisses, EXT_COLL_EDGE_SLACK, ck.below, ck.above,
-				       ck.skippedEdge, ck.planeOffMax, ck.offExact);
+				       "within %.1f of a triangle edge, %d seam below hit(s), %d below the game's plane, %d under a higher face, %d near a record edge "
+				       "skipped; planes up to %.2f "
+				       "from the exact surface in height, %.2f along the normal, %d hit(s) more than 1 off it\n",
+				       ck.normalsBad, ck.lengthBad, ck.overflow, ck.notReached, ck.points, ck.misses, ck.edgeMisses, EXT_COLL_EDGE_SLACK, ck.edgeBelow, ck.below,
+				       ck.above,
+				       ck.skippedEdge, ck.planeOffMax, ck.planeOffNormalMax, ck.offExact);
 				printf("ext selftest coll: real file worst normal %.2f deg; records with a normal off by shortest edge <16 %d, <64 %d, <256 %d, >=256 %d\n",
 				       ck.normalWorst, ck.normalsBadEdge[0], ck.normalsBadEdge[1], ck.normalsBadEdge[2], ck.normalsBadEdge[3]);
 				ExtColl_PrintSamples(&ck, 0);
+				{
+					char line[512];
+
+					ExtColl_FormatLimits(line, sizeof(line));
+					printf("ext selftest coll: real file %s\n", line);
+				}
 				snprintf(what, sizeof(what), "the real file passes the checks");
 				ExtColl_TestCheck(ExtColl_CheckPassed(&ck), what, &checks, &failures);
 				ExtColl_Free();

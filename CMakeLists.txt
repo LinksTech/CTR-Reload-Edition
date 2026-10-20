@@ -777,14 +777,14 @@ if(BUILD_TESTING)
     # The external track (--ext-track, platform/engine_exttrack.c): the JSON
     # reader and each part's selftest, without a window, game data or track
     # data. The switch's refusals before any window.
-    foreach(ext_part json coll race nav crates music)
+    foreach(ext_part json coll race nav crates music phys)
         add_test(NAME ext_selftest_${ext_part} COMMAND $<TARGET_FILE:ctr_native> --dev --ext-selftest ${ext_part})
         set_tests_properties(ext_selftest_${ext_part} PROPERTIES
             PASS_REGULAR_EXPRESSION "ext selftest ${ext_part} passed: [0-9]+ checks, 0 failures"
         )
     endforeach()
     add_test(NAME ext_selftest_unknown COMMAND $<TARGET_FILE:ctr_native> --dev --ext-selftest other)
-    set_tests_properties(ext_selftest_unknown PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-selftest expects json, coll, race, nav, crates or music, not 'other'")
+    set_tests_properties(ext_selftest_unknown PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-selftest expects json, coll, race, nav, crates, music or phys, not 'other'")
     add_test(NAME ext_track_needs_dev COMMAND $<TARGET_FILE:ctr_native> --ext-track d --engine --engine-track --level 14)
     set_tests_properties(ext_track_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-track requires --dev")
     add_test(NAME ext_track_needs_engine COMMAND $<TARGET_FILE:ctr_native> --dev --level 14 --ext-track d --dev-race-mode stop)
@@ -852,6 +852,10 @@ if(BUILD_TESTING)
     set_tests_properties(dev_kart_steer_lead_needs_steer PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-kart-steer-lead requires --dev-kart-steer")
     add_test(NAME dev_kart_steer_lead_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-kart-steer --dev-kart-steer-lead 1 --dev-race-mode stop)
     set_tests_properties(dev_kart_steer_lead_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-kart-steer(-lead)? requires --dev")
+    add_test(NAME dev_kart_steer_unstick_needs_steer COMMAND $<TARGET_FILE:ctr_native> --dev --dev-kart-steer-unstick --dev-race-mode stop)
+    set_tests_properties(dev_kart_steer_unstick_needs_steer PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-kart-steer-unstick requires --dev-kart-steer")
+    add_test(NAME dev_kart_steer_unstick_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-kart-steer --dev-kart-steer-unstick --dev-race-mode stop)
+    set_tests_properties(dev_kart_steer_unstick_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-kart-steer(-unstick)? requires --dev")
     add_test(NAME dev_cup_value COMMAND $<TARGET_FILE:ctr_native> --dev --dev-cup 4 --dev-race-mode stop)
     set_tests_properties(dev_cup_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-cup expects a cup index 0..3, not '4'")
     add_test(NAME dev_cup_not_with_level COMMAND $<TARGET_FILE:ctr_native> --dev --dev-cup 0 --level 3 --dev-race-mode stop)

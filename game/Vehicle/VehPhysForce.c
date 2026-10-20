@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_mods.h>
+#include <platform/native_extphys.h>
 
 
 void VehPhysForce_ConvertSpeedToVecOut(struct Driver *driver, Vec3 *vel)
@@ -16,6 +17,15 @@ void VehPhysForce_ConvertSpeedToVecOut(struct Driver *driver, Vec3 *vel)
 	vel->x = CTR_MipsSra(CTR_MipsMulLo(yComponent, xSine), FRACTIONAL_BITS);
 	vel->y = CTR_MipsSra(CTR_MipsMulLo(driver->speed, ySine), FRACTIONAL_BITS);
 	vel->z = CTR_MipsSra(CTR_MipsMulLo(yComponent, xCos), FRACTIONAL_BITS);
+
+	// In the external track's anti-gravity zone the heading and pitch are the
+	// ones of the surface frame (platform/native_extphys.c): the same numbers,
+	// turned from that frame into the world. Outside a zone nothing changes.
+	{
+		const s32 local[3] = {vel->x, vel->y, vel->z};
+
+		ExtPhys_ZoneLocalToWorld(driver, local, vel);
+	}
 }
 
 void VehPhysForce_ConvertSpeedToVec(struct Driver *driver)
@@ -157,10 +167,26 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 		gravityY = CTR_MipsDiv(CTR_MipsMulLo(gravityY, gravityPercent), VEH_PHYS_FORCE_LOW_GRAVITY_DIVISOR);
 	}
 
+	// The external track's own gravity share (physics.gravity_percent); without
+	// --ext-track or with the neutral 100 the value comes back untouched.
+	gravityY = ExtPhys_ScaleGravity(gravityY);
+
 	NativeMods_NoteGravity(driver->driverID, gravityPercent, lowGravity ? 41 : 100, elapsedTimeMS, (driver->actionsFlagSet & ACTION_AIRBORNE) != 0);
 
 	gravityY = CTR_MipsSra(CTR_MipsMulLo(gravityY, elapsedTimeMS), 5);
-	Vec3 localGravity = VehPhysForce_OnGravity_RotateVectorLocal(&driver->matrixMovingDir, 0, (s16)gravityY, 0);
+	Vec3 localGravity;
+	s16 zoneGravity[3];
+
+	// In the external track's anti-gravity zone the gravity points against the
+	// zone's up (the surface normal), not world -y.
+	if (ExtPhys_ZoneGravity(driver, gravityY, zoneGravity))
+	{
+		localGravity = VehPhysForce_OnGravity_RotateVectorLocal(&driver->matrixMovingDir, zoneGravity[0], zoneGravity[1], zoneGravity[2]);
+	}
+	else
+	{
+		localGravity = VehPhysForce_OnGravity_RotateVectorLocal(&driver->matrixMovingDir, 0, (s16)gravityY, 0);
+	}
 
 	if (((localGravity.z < 0) && (driver->forwardAccelImpulse > 0)) || ((localGravity.z > 0) && (driver->forwardAccelImpulse < 0)))
 	{
@@ -567,7 +593,10 @@ void VehPhysForce_OnApplyForces(struct Thread *thread, struct Driver *driver)
 
 	VehPhysForce_OnGravity(driver, &driver->velocity);
 
-	const SVec3 up = {.x = FP(0), .y = FP(1), .z = FP(0)};
+	SVec3 up = {.x = FP(0), .y = FP(1), .z = FP(0)};
+	// In the external track's anti-gravity zone a frame starts from the zone's
+	// up (ExtPhys_DriverUp leaves world up outside a zone).
+	ExtPhys_DriverUp(driver, &up);
 	driver->normalVecUP = up;
 	driver->AxisAngle1_normalVec = up;
 	driver->collisionFlags = 0;
@@ -603,13 +632,21 @@ void VehPhysForce_CollideDrivers(struct Thread *thread, struct Driver *driver)
 	{
 		if (((sdata->gGT->gameMode2 & CHEAT_TURBOPAD) == 0) && !NativeMods_RetroSuperPad(0))
 		{
-			VehFire_Increment(driver, VEH_PHYS_FORCE_TURBO_PAD_RESERVES, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD, VEH_PHYS_FORCE_TURBO_PAD_FIRE_LEVEL);
+			// The external track's own pad values (physics.turbo_pad); else the retail ones.
+			VehFire_Increment(driver, ExtPhys_PadReserves(VEH_PHYS_FORCE_TURBO_PAD_RESERVES), TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD,
+			                  ExtPhys_PadFireLevel(VEH_PHYS_FORCE_TURBO_PAD_FIRE_LEVEL));
 		}
 		else
 		{
 			VehFire_Increment(driver, NativeMods_RetroPadReserves(VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, 0), TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD,
 			                  VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
 		}
+	}
+
+	// The external track's boost log (gate A3; reads only, nothing without --ext-track).
+	if ((stepFlagSet & COLL_STEP_TRIGGER_TURBO_PAD_MASK) != 0)
+	{
+		ExtPhys_NotePadBoost(driver);
 	}
 
 	if ((stepFlagSet & COLL_STEP_FLAG_WATER_BSP) != 0)

@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_extcoll.h>
+#include <platform/native_exttrack_race.h>
 
 // From platform/native_chars.c, further down in the translation unit: the engine
 // class of a seat - the class of a bound custom character, else retailClass
@@ -156,7 +157,15 @@ void VehStuckProc_MaskGrab_FindDestPos(struct Driver *d, struct QuadBlock *quad)
 	{
 		struct ScratchpadStruct *sps = CTR_SCRATCHPAD_PTR(struct ScratchpadStruct, 0x108);
 		struct Thread *driverThread = d->instSelf->thread;
+#if defined(CTR_NATIVE)
+		// AN EXTERNAL TRACK MAY PUT BACK AT ANOTHER NODE (its data's "respawn":
+		// the finish line at the line's restart point, a node on a wall at the
+		// last upright node before it). For every other level - and for a node
+		// without that field - the index comes back unchanged.
+		struct CheckpointNode *respawn = &level->ptr_restart_points[ExtRace_RespawnNode(level, quad->checkpointIndex)];
+#else
 		struct CheckpointNode *respawn = &level->ptr_restart_points[quad->checkpointIndex];
+#endif
 		struct CheckpointNode *nextRespawn;
 
 		sps->Input1.hitRadius = driverThread->driverHitRadius;
@@ -326,6 +335,10 @@ void VehStuckProc_MaskGrab_Update(struct Thread *t, struct Driver *d)
 	VehStuckProc_MaskGrab_FindDestPos(d, d->lastValid);
 
 	VehBirth_TeleportSelf(d, 0, VEH_STUCK_RESPAWN_Y_OFFSET);
+#if defined(CTR_NATIVE)
+	// External track only (returns at once elsewhere): log and physics state of the new place.
+	ExtRace_OnRespawned(d);
+#endif
 
 	VehStuckProc_RevEngine_Init(t, d);
 
@@ -665,6 +678,9 @@ void VehStuckProc_PlantEaten_Update(struct Thread *t, struct Driver *d)
 		// respawn driver at last valid quadblock
 		VehStuckProc_MaskGrab_FindDestPos(d, d->lastValid);
 		VehBirth_TeleportSelf(d, 0, VEH_STUCK_RESPAWN_Y_OFFSET);
+#if defined(CTR_NATIVE)
+		ExtRace_OnRespawned(d);
+#endif
 
 		// enable collision, make visible
 		t->flags &= ~THREAD_FLAG_DISABLE_COLLISION;

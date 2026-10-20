@@ -940,6 +940,7 @@ void ExtTrack_OnLevelLoaded(struct Level *lev)
 	Platform_Log("[CTR ExtTrack] level %d: the external track '%s' takes the slot (load %d, data %s)\n", ExtTrack_CurrentLevel(), g_cfg_extTrackDir,
 	             s_extTrack.levelLoads, s_extTrack.jsonOk ? "ok" : "missing");
 	ExtColl_OnLevelLoaded(lev);
+	ExtPhys_OnLevelLoaded();
 	ExtRace_OnLevelLoaded(lev);
 	ExtNav_OnLevelLoaded(lev);
 	ExtMusic_OnLevelLoaded(lev);
@@ -984,6 +985,7 @@ void ExtTrack_OnLogicFrame(void)
 		return;
 	}
 	ExtColl_OnLogicFrame();
+	ExtPhys_OnLogicFrame();
 	ExtRace_OnLogicFrame();
 	ExtCrates_OnLogicFrame();
 	ExtMusic_OnLogicFrame();
@@ -1030,7 +1032,9 @@ int ExtTrack_AudioPaused(void)
 //              material): drawn as dynamic geometry, the texture coordinates
 //              moved by their animation each frame (no shader of its own).
 // PER LEVEL (each stage 8 of the slot): the materials are registered (OPAQUE,
-// MASK with the file's cutoff, BLEND as ENGINE_BLEND_ALPHA without depth write)
+// MASK with the file's cutoff, BLEND as ENGINE_BLEND_ALPHA without depth write;
+// the section's "materials" rules can change the mode, draw ONE/ONE ("add") and
+// set the depth write - see THE MATERIAL RULES)
 // and each piece becomes up to two external meshes.
 // DRAW (Engine_FrameCollect, view 0 of the one-player race of the slot):
 //   sky        cell 0x3ff, linked BEFORE Engine_SkyCollect so the cell draws it
@@ -1075,7 +1079,15 @@ typedef struct
 	ExtDrawTexture textures[EXT_TEXTURES_MAX];
 	u32 texturesMade;
 	u32 texturesMissing;
-	u32 counts[3]; // opaque, mask, blend
+	u32 counts[3]; // opaque, mask, blend (an "add" material counts as blend)
+	// The section's "materials" rules (ExtDraw_MaterialRules): per material
+	// EXT_MAT_* (EXT_MAT_KEEP without a rule) and its depth write (-1 keep).
+	u8 *ruleKind;
+	s8 *ruleDepthWrite;
+	u32 rulesApplied;  // materials of the file a rule changed
+	u32 rulesAdd;      // of those drawn additively
+	u32 rulesUnknown;  // rules naming no material of the file
+	u32 rulesRefused;  // rules that did not read
 } ExtDrawFile;
 
 // One node drawn as dynamic geometry (a uv node of the track, a sky node).
@@ -1215,8 +1227,186 @@ internal int ExtDraw_TextureSlot(ExtDrawFile *f, int image, int wrapU, int wrapV
 	return i;
 }
 
+// THE MATERIAL RULES (round of 2026-10-20): "materials" in the render section
+// (track.glb) and in the sky section (sky.glb), an object by material name:
+//   {"blend": "opaque" | "mask" | "alpha" | "add", "depth_write": true | false,
+//    "cutoff": 0..1 (mask)}
+// They carry the source's render states the glTF cannot say: "add" draws ONE/ONE
+// (ENGINE_BLEND_PSX_ADD) in the blend cell, without depth write unless the rule
+// says otherwise (a source with SRC_ALPHA/ONE comes with its texture
+// premultiplied by the converter); "alpha" is the glTF BLEND, "opaque" and
+// "mask" the glTF modes. A material without a rule, and every material when the
+// section has no "materials", keeps its glTF mode exactly as before.
+#define EXT_MAT_KEEP 0
+#define EXT_MAT_OPAQUE 1
+#define EXT_MAT_MASK 2
+#define EXT_MAT_ALPHA 3
+#define EXT_MAT_ADD 4
+
+typedef struct
+{
+	int kind;       // EXT_MAT_*
+	int depthWrite; // 1, 0, -1 keep
+	float cutoff;   // mask; < 0 keep
+} ExtMatRule;
+
+// One rule object. 1 = read (out set); 0 = not an object, an unknown blend
+// word, a depth_write that is no boolean or a cutoff outside 0..1.
+internal int ExtTrack_MaterialRule(const ExtJsonDoc *doc, int node, ExtMatRule *out)
+{
+	static const char *const words[] = {"opaque", "mask", "alpha", "add"};
+	const int blend = ExtJson_Get(doc, node, "blend");
+	const int depth = ExtJson_Get(doc, node, "depth_write");
+	const int cutoff = ExtJson_Get(doc, node, "cutoff");
+	int k;
+
+	out->kind = EXT_MAT_KEEP;
+	out->depthWrite = -1;
+	out->cutoff = -1.0f;
+	if (ExtJson_Type(doc, node) != EXT_JSON_OBJECT)
+	{
+		return 0;
+	}
+	if (blend >= 0)
+	{
+		const char *word = ExtJson_String(doc, blend, "");
+
+		for (k = 0; k < 4; k++)
+		{
+			if (strcmp(word, words[k]) == 0)
+			{
+				out->kind = EXT_MAT_OPAQUE + k;
+			}
+		}
+		if (out->kind == EXT_MAT_KEEP)
+		{
+			return 0;
+		}
+	}
+	if (depth >= 0)
+	{
+		if ((ExtJson_Type(doc, depth) != EXT_JSON_TRUE) && (ExtJson_Type(doc, depth) != EXT_JSON_FALSE))
+		{
+			return 0;
+		}
+		out->depthWrite = (ExtJson_Type(doc, depth) == EXT_JSON_TRUE) ? 1 : 0;
+	}
+	if (cutoff >= 0)
+	{
+		const double c = ExtJson_Number(doc, cutoff, -1.0);
+
+		if ((ExtJson_Type(doc, cutoff) != EXT_JSON_NUMBER) || (c < 0.0) || (c > 1.0))
+		{
+			return 0;
+		}
+		out->cutoff = (float)c;
+	}
+	return 1;
+}
+
+// The material names come from the model's parsed JSON. model->gltf is the
+// loader's EngStaticLoadGltf (engine_static_load.c), whose data member is the
+// cgltf_data - not the cgltf_data itself (the first build read it as such: no
+// name matched, and a sky file with rules crashed).
+internal const cgltf_data *ExtDraw_ModelGltf(const EngineStaticModel *model)
+{
+	const EngStaticLoadGltf *g = (model != NULL) ? (const EngStaticLoadGltf *)model->gltf : NULL;
+
+	return (g != NULL) ? g->data : NULL;
+}
+
+// The rules object `rules` of doc (-1: none) for the open model: each rule of a
+// material name the file has is applied to the copy of its material (mode,
+// cutoff) and kept per material (add, depth write). 1 = done (also without rules).
+internal int ExtDraw_ApplyMaterialRules(ExtDrawFile *f, const EngineStaticModel *model, const ExtJsonDoc *doc, int rules, const char *label)
+{
+	const cgltf_data *gdata = ExtDraw_ModelGltf(model);
+	int node;
+	int i;
+
+	f->ruleKind = (u8 *)calloc((size_t)f->materialCount, sizeof(u8));
+	f->ruleDepthWrite = (s8 *)malloc((size_t)f->materialCount * sizeof(s8));
+	if ((f->ruleKind == NULL) || (f->ruleDepthWrite == NULL))
+	{
+		Platform_Log("[CTR ExtTrack] draw: %s: out of memory (material rules)\n", label);
+		return 0;
+	}
+	memset(f->ruleDepthWrite, -1, (size_t)f->materialCount * sizeof(s8));
+	if ((doc == NULL) || (rules < 0) || (gdata == NULL) || ((gdata->materials == NULL) && (gdata->materials_count > 0)))
+	{
+		return 1;
+	}
+	if (ExtJson_Type(doc, rules) != EXT_JSON_OBJECT)
+	{
+		f->rulesRefused++;
+		Platform_Log("[CTR ExtTrack] draw: %s: \"materials\" is not an object - no rules\n", label);
+		return 1;
+	}
+	for (node = ExtJson_First(doc, rules); node >= 0; node = ExtJson_Next(doc, node))
+	{
+		const char *name = doc->nodes[node].key;
+		ExtMatRule rule;
+		int found = 0;
+
+		if (!ExtTrack_MaterialRule(doc, node, &rule))
+		{
+			f->rulesRefused++;
+			Platform_Log("[CTR ExtTrack] draw: %s: the rule of material '%s' does not read - not applied\n", label, (name != NULL) ? name : "?");
+			continue;
+		}
+		// The last material of the model is the default one (no glTF material).
+		for (i = 0; (i < f->materialCount - 1) && (i < (int)gdata->materials_count); i++)
+		{
+			EngineStaticMaterial *m = &f->materials[i];
+
+			if ((name == NULL) || (gdata->materials[i].name == NULL) || (strcmp(gdata->materials[i].name, name) != 0))
+			{
+				continue;
+			}
+			found = 1;
+			f->ruleKind[i] = (u8)rule.kind;
+			f->ruleDepthWrite[i] = (s8)rule.depthWrite;
+			if (rule.kind == EXT_MAT_OPAQUE)
+			{
+				m->alphaMode = ENGINE_STATIC_ALPHA_OPAQUE;
+			}
+			else if (rule.kind == EXT_MAT_MASK)
+			{
+				m->alphaMode = ENGINE_STATIC_ALPHA_MASK;
+			}
+			else if ((rule.kind == EXT_MAT_ALPHA) || (rule.kind == EXT_MAT_ADD))
+			{
+				// Both draw in the blend list and the blend cell.
+				m->alphaMode = ENGINE_STATIC_ALPHA_BLEND;
+			}
+			if ((rule.cutoff >= 0.0f) && (m->alphaMode == ENGINE_STATIC_ALPHA_MASK))
+			{
+				m->alphaCutoff = rule.cutoff;
+			}
+			f->rulesApplied++;
+			f->rulesAdd += (rule.kind == EXT_MAT_ADD) ? 1u : 0u;
+		}
+		if (!found)
+		{
+			f->rulesUnknown++;
+			Platform_Log("[CTR ExtTrack] draw: %s: rule for material '%s', which the file does not have\n", label, (name != NULL) ? name : "?");
+		}
+	}
+	Platform_Log("[CTR ExtTrack] draw: %s: material rules applied to %u material(s) (add %u), unknown names %u, refused %u\n", label, f->rulesApplied,
+	             f->rulesAdd, f->rulesUnknown, f->rulesRefused);
+	return 1;
+}
+
+// The rules of the section ("render" or "sky") of exttrack.json for the open model.
+internal int ExtDraw_MaterialRules(ExtDrawFile *f, const EngineStaticModel *model, int section, const char *label)
+{
+	const ExtJsonDoc *doc = ExtTrack_Json();
+
+	return ExtDraw_ApplyMaterialRules(f, model, doc, (doc != NULL) ? ExtJson_Get(doc, section, "materials") : -1, label);
+}
+
 // The materials of the open model and their textures. 1 = done.
-internal int ExtDraw_FileMaterials(ExtDrawFile *f, const EngineStaticModel *model, const char *label)
+internal int ExtDraw_FileMaterials(ExtDrawFile *f, const EngineStaticModel *model, int section, const char *label)
 {
 	int i;
 
@@ -1230,6 +1420,10 @@ internal int ExtDraw_FileMaterials(ExtDrawFile *f, const EngineStaticModel *mode
 		return 0;
 	}
 	memcpy(f->materials, model->materials, (size_t)model->materialCount * sizeof(EngineStaticMaterial));
+	if (!ExtDraw_MaterialRules(f, model, section, label))
+	{
+		return 0;
+	}
 	for (i = 0; i < model->materialCount; i++)
 	{
 		const EngineStaticMaterial *m = &f->materials[i];
@@ -1642,7 +1836,7 @@ internal void ExtDraw_ReadOnce(void)
 			haveSky = 0;
 			continue;
 		}
-		if (!ExtDraw_FileMaterials(&s_extDraw.file[f], &model, (f == 0) ? "track" : "sky"))
+		if (!ExtDraw_FileMaterials(&s_extDraw.file[f], &model, (f == 0) ? render : sky, (f == 0) ? "track" : "sky"))
 		{
 			EngineStatic_Close(&model);
 			EngineStatic_SourceFileClose(&src);
@@ -1756,7 +1950,8 @@ internal int ExtDraw_RegisterFile(ExtDrawFile *f)
 		memset(&em, 0, sizeof(em));
 		if (m->alphaMode == ENGINE_STATIC_ALPHA_BLEND)
 		{
-			em.blend = ENGINE_BLEND_ALPHA;
+			// A material rule "add" (ExtDraw_MaterialRules): ONE/ONE.
+			em.blend = ((f->ruleKind != NULL) && (f->ruleKind[i] == EXT_MAT_ADD)) ? ENGINE_BLEND_PSX_ADD : ENGINE_BLEND_ALPHA;
 			em.alphaCutoff = EXT_BLEND_CUTOFF;
 			em.flags = ENGINE_MATERIAL_NO_DEPTH_WRITE;
 		}
@@ -1764,6 +1959,15 @@ internal int ExtDraw_RegisterFile(ExtDrawFile *f)
 		{
 			em.blend = (m->alphaMode == ENGINE_STATIC_ALPHA_MASK) ? ENGINE_BLEND_MASK : ENGINE_BLEND_OPAQUE;
 			em.alphaCutoff = (m->alphaMode == ENGINE_STATIC_ALPHA_MASK) ? m->alphaCutoff : 0.0f;
+		}
+		// The rule's depth write, if it says one.
+		if ((f->ruleDepthWrite != NULL) && (f->ruleDepthWrite[i] == 1))
+		{
+			em.flags &= (u16)~ENGINE_MATERIAL_NO_DEPTH_WRITE;
+		}
+		else if ((f->ruleDepthWrite != NULL) && (f->ruleDepthWrite[i] == 0))
+		{
+			em.flags |= (u16)ENGINE_MATERIAL_NO_DEPTH_WRITE;
 		}
 		memcpy(em.tint, m->baseColor, sizeof(em.tint));
 		em.flags |= (m->doubleSided != 0) ? (u16)ENGINE_MATERIAL_DOUBLE_SIDED : (u16)0u;
@@ -2082,6 +2286,10 @@ int ExtTrack_Selftest(const char *name)
 	{
 		return ExtMusic_Selftest();
 	}
+	if (strcmp(name, "phys") == 0)
+	{
+		return ExtPhys_Selftest();
+	}
 	return -1;
 }
 
@@ -2320,6 +2528,118 @@ int ExtJson_Selftest(void)
 		ExtJson_Check((fabsf(o[0] - 2.0f) < 1e-6f) && (fabsf(o[1] + 3.0f) < 1e-6f), "uv offset without a period holds the last key", &n, &failures);
 		ExtTrack_UvOffsetAt(NULL, offset, 3, 4.0f, 1.0f, o);
 		ExtJson_Check((o[0] == 0.0f) && (o[1] == 0.0f), "uv offset without keys is zero", &n, &failures);
+	}
+	// The material rules (render.materials / sky.materials).
+	{
+		static const char rules[] = "{\"a\": {\"blend\": \"add\", \"depth_write\": false}, \"b\": {\"blend\": \"alpha\", \"depth_write\": true},"
+		                            " \"c\": {\"blend\": \"mask\", \"cutoff\": 0.25}, \"d\": {\"blend\": \"opaque\"}, \"e\": {},"
+		                            " \"f\": {\"blend\": \"glow\"}, \"g\": {\"depth_write\": 1}, \"h\": {\"cutoff\": 2}, \"i\": \"add\"}";
+		ExtJsonDoc rd;
+		ExtMatRule r;
+
+		ExtJson_Check(ExtJson_Parse(&rd, rules, strlen(rules), why, (int)sizeof(why)) == 1, "material rules parse", &n, &failures);
+		if (rd.nodes != NULL)
+		{
+			ExtJson_Check(ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "a"), &r) && (r.kind == EXT_MAT_ADD) && (r.depthWrite == 0) && (r.cutoff < 0.0f),
+			              "rule add without depth write", &n, &failures);
+			ExtJson_Check(ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "b"), &r) && (r.kind == EXT_MAT_ALPHA) && (r.depthWrite == 1), "rule alpha with depth write",
+			              &n, &failures);
+			ExtJson_Check(ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "c"), &r) && (r.kind == EXT_MAT_MASK) && (r.depthWrite == -1) && (r.cutoff == 0.25f),
+			              "rule mask with cutoff", &n, &failures);
+			ExtJson_Check(ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "d"), &r) && (r.kind == EXT_MAT_OPAQUE), "rule opaque", &n, &failures);
+			ExtJson_Check(ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "e"), &r) && (r.kind == EXT_MAT_KEEP) && (r.depthWrite == -1), "empty rule keeps", &n,
+			              &failures);
+			ExtJson_Check(!ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "f"), &r), "unknown blend word refused", &n, &failures);
+			ExtJson_Check(!ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "g"), &r), "depth_write must be a boolean", &n, &failures);
+			ExtJson_Check(!ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "h"), &r), "cutoff outside 0..1 refused", &n, &failures);
+			ExtJson_Check(!ExtTrack_MaterialRule(&rd, ExtJson_Get(&rd, 0, "i"), &r), "a rule that is no object refused", &n, &failures);
+			ExtJson_Check(!ExtTrack_MaterialRule(&rd, -1, &r) && (r.kind == EXT_MAT_KEEP), "no rule", &n, &failures);
+			ExtJson_Free(&rd);
+		}
+	}
+	// The rules applied to a model opened by the static loader - the data form of the converter: glTF
+	// materials named, the rules keyed by those names (the A4 run of 2026-10-20 crashed here on the sky file).
+	{
+		static const char glbJson[] =
+		    "{\"asset\":{\"version\":\"2.0\"},\"scenes\":[{\"nodes\":[0]}],\"scene\":0,\"nodes\":[{\"mesh\":0}],"
+		    "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"material\":0}]}],\"buffers\":[{\"byteLength\":36}],"
+		    "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36}],"
+		    "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}],"
+		    "\"materials\":[{\"name\":\"glow\"},{\"name\":\"glass\",\"alphaMode\":\"BLEND\"},{\"name\":\"rock\"},{}]}";
+		static const char rulesJson[] = "{\"render\": {\"materials\": {\"glow\": {\"blend\": \"add\", \"depth_write\": false},"
+		                                " \"glass\": {\"depth_write\": true}, \"missing\": {\"blend\": \"opaque\"}, \"bad\": {\"blend\": \"x\"}}},"
+		                                " \"sky\": {\"materials\": [1, 2]}}";
+		const float tri[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+		u32 size = 0;
+		u8 *glb = EngStaticLoadTest_Glb(glbJson, (const u8 *)tri, sizeof(tri), &size);
+		EngStaticLoadMem mem;
+		EngineStaticSource src;
+		EngineStaticModel model;
+		ExtJsonDoc rd;
+		int pass;
+
+		memset(&src, 0, sizeof(src));
+		memset(&model, 0, sizeof(model));
+		mem.data = glb;
+		mem.size = size;
+		src.read = EngStaticLoadTest_MemRead;
+		src.user = &mem;
+		src.size = size;
+		ExtJson_Check((glb != NULL) && EngineStatic_Open(&src, &model, why, (int)sizeof(why)) && (model.materialCount == 5), "rule model opens", &n, &failures);
+		ExtJson_Check(ExtJson_Parse(&rd, rulesJson, strlen(rulesJson), why, (int)sizeof(why)) == 1, "rule document parses", &n, &failures);
+		for (pass = 0; (pass < 2) && (model.materials != NULL) && (rd.nodes != NULL); pass++)
+		{
+			ExtDrawFile f;
+			const int section = ExtJson_Get(&rd, 0, pass == 0 ? "render" : "sky");
+
+			memset(&f, 0, sizeof(f));
+			f.materialCount = model.materialCount;
+			f.materials = (EngineStaticMaterial *)malloc((size_t)model.materialCount * sizeof(EngineStaticMaterial));
+			if (f.materials == NULL)
+			{
+				break;
+			}
+			memcpy(f.materials, model.materials, (size_t)model.materialCount * sizeof(EngineStaticMaterial));
+			ExtJson_Check(ExtDraw_ApplyMaterialRules(&f, &model, &rd, ExtJson_Get(&rd, section, "materials"), "selftest") == 1, "rules applied", &n,
+			              &failures);
+			if (pass == 0)
+			{
+				ExtJson_Check((f.rulesApplied == 2) && (f.rulesAdd == 1) && (f.rulesUnknown == 1) && (f.rulesRefused == 1),
+				              "rules by name: 2 applied, 1 add, 1 unknown, 1 refused", &n, &failures);
+				ExtJson_Check((f.ruleKind[0] == EXT_MAT_ADD) && (f.materials[0].alphaMode == ENGINE_STATIC_ALPHA_BLEND) && (f.ruleDepthWrite[0] == 0),
+				              "the named material becomes add without depth write", &n, &failures);
+				ExtJson_Check((f.ruleKind[1] == EXT_MAT_KEEP) && (f.materials[1].alphaMode == ENGINE_STATIC_ALPHA_BLEND) && (f.ruleDepthWrite[1] == 1),
+				              "a rule with depth_write only keeps the glTF mode", &n, &failures);
+				ExtJson_Check((f.ruleKind[2] == EXT_MAT_KEEP) && (f.ruleKind[3] == EXT_MAT_KEEP) && (f.ruleKind[4] == EXT_MAT_KEEP) &&
+				                  (f.materials[2].alphaMode == model.materials[2].alphaMode),
+				              "materials without a rule (one without a name, the default) unchanged", &n, &failures);
+			}
+			else
+			{
+				ExtJson_Check((f.rulesApplied == 0) && (f.rulesRefused == 1), "\"materials\" that is no object: no rule, no crash", &n, &failures);
+			}
+			free(f.ruleKind);
+			free(f.ruleDepthWrite);
+			free(f.materials);
+		}
+		{
+			ExtDrawFile f;
+
+			memset(&f, 0, sizeof(f));
+			f.materialCount = 1;
+			f.materials = (EngineStaticMaterial *)calloc(1, sizeof(EngineStaticMaterial));
+			ExtJson_Check((f.materials != NULL) && ExtDraw_ApplyMaterialRules(&f, NULL, &rd, 0, "selftest") && (f.rulesApplied == 0),
+			              "rules without a model: none applied", &n, &failures);
+			free(f.ruleKind);
+			free(f.ruleDepthWrite);
+			free(f.materials);
+		}
+		if (rd.nodes != NULL)
+		{
+			ExtJson_Free(&rd);
+		}
+		EngineStatic_Close(&model);
+		free(glb);
 	}
 	ExtJson_Check(ExtTrack_AudioPaused() == 0, "audio pause is 0 without the switch", &n, &failures);
 

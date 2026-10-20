@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extphys.h>
 
 enum
 {
@@ -27,8 +28,10 @@ struct Terrain *VehAfterColl_GetTerrain(u8 terrainType)
 	// if terrain is valid, max 20
 	if (terrainType < VEH_AFTER_COLL_TERRAIN_COUNT)
 	{
-		return &ter[terrainType];
+		ter = &ter[terrainType];
 	}
 
-	return ter;
+	// The external track's own terrain values (physics.terrain): a copy of the
+	// row; without --ext-track or without own values the row itself.
+	return ExtPhys_Terrain(terrainType, ter);
 }

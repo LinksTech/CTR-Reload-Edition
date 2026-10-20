@@ -206,6 +206,10 @@ internal u8 EngMat_WarmBlend(u8 blend)
 		return (u8)BM_ADD_QUATER_SOURCE;
 	case ENGINE_BLEND_MULTIPLY:
 		return (u8)BM_MULTIPLY;
+	case ENGINE_BLEND_ALPHA:
+		// The external track's BLEND materials (engine_exttrack.c): built at the
+		// load point too, not in the first race frame that draws one.
+		return (u8)BM_ALPHA;
 	default:
 		return (u8)BM_NONE;
 	}
@@ -542,6 +546,16 @@ int Engine_SelfTestMaterial(int *checks)
 		MAT_CHECK(EngMat_WarmStatesOf(&warmA, 8u, programs, blends, states, n, 12) == 12, "warm states of another program, held to the room");
 		MAT_CHECK(EngMat_WarmBlend(ENGINE_BLEND_MASK) == (u8)BM_NONE && EngMat_WarmBlend(ENGINE_BLEND_PSX_SUBTRACT) == (u8)BM_SUBTRACT,
 		          "warm blend mapping");
+		// Every blend, as Engine_RenderBlendMode (engine_render.c) maps it for the draw.
+		{
+			static const u8 drawn[ENGINE_BLEND_COUNT] = {(u8)BM_NONE, (u8)BM_NONE, (u8)BM_AVERAGE, (u8)BM_ADD, (u8)BM_SUBTRACT, (u8)BM_ADD_QUATER_SOURCE,
+			                                             (u8)BM_MULTIPLY, (u8)BM_ALPHA};
+
+			for (int k = 0; k < ENGINE_BLEND_COUNT; k++)
+			{
+				MAT_CHECK(EngMat_WarmBlend((u8)k) == drawn[k], "warm blend %d maps as the draw does", k);
+			}
+		}
 	}
 
 	return failures;

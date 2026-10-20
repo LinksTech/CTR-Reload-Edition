@@ -25,24 +25,37 @@
 // ONLY WITH THE SWITCH: the dispatcher calls these only while the external
 // track holds the loaded level.
 //
+// THE CRATE'S MIDDLE (only when the data asks for it with crates.center_y):
+// a retail item crate stands with its instance origin on the floor, and its
+// hitbox is centred 48 units above that origin (the BSP hitboxes of the 321
+// item crates of the 18 race tracks: box x/z +-76, y -28..+124, median). Data
+// that gives the middle of a hovering crate writes pos = middle - center_y and
+// center_y; the contact cube is then centred on origin + center_y, which is the
+// retail contact of a kart against such a hitbox (cube +-101 = 76 + 25 around a
+// point 25 above the kart). Without center_y the cube stays around the origin,
+// exactly as before.
+//
 // LOG (cnk\tools\poc_m5_pruef.py, gate D8): one line per crate and one summary
 // at the first build of a run, one line per contact, one line at exit.
 
 enum
 {
-	EXTCRATE_MAX = 64,              // the PoC track has 57; the race pool has 128 instances (MainInit.c:362)
+	EXTCRATE_MAX = 128,             // the race pool has 128 instances (MainInit.c:362); the larger external track has 81
 	EXTCRATE_CONTACT_RADIUS = 101,  // game/native_trackmod.c:3287
 	EXTCRATE_CONTACT_DIAMETER = EXTCRATE_CONTACT_RADIUS * 2,
 	EXTCRATE_CONTACT_Y_OFFSET = 25, // game/native_trackmod.c:3292
 	EXTCRATE_DRIVER_SLOTS = 8,
 	EXTCRATE_FULL_SCALE = 0x1000,
 	EXTCRATE_ANGLE_FULL = 4096,
+	EXTCRATE_CENTER_Y_MAX = 255,    // crates.center_y: units from the instance origin up to the crate's middle
 };
 
 struct ExtCrateDef
 {
 	s16 pos[3];
 	s16 yaw;
+	s16 dataY;  // with "capped": the middle the data asked for (world units)
+	u8 capped;  // the converter lowered the middle (written by the data, logged only)
 };
 
 struct ExtCrate
@@ -54,6 +67,7 @@ struct ExtCrate
 
 global_variable struct ExtCrate s_extCrates[EXTCRATE_MAX];
 global_variable int s_extCrateCount;  // born in this build
+global_variable int s_extCrateCenterY; // crates.center_y of the data; 0 = contact around the origin
 global_variable int s_extCrateBuilds; // builds of this run
 global_variable int s_extCrateReported;
 global_variable s64 s_extCrateHitsHuman;
@@ -67,6 +81,34 @@ internal int ExtCrates_InBox(int dx, int dy, int dz)
 	return ((u32)(dx + EXTCRATE_CONTACT_RADIUS) <= (u32)EXTCRATE_CONTACT_DIAMETER) &&
 	       ((u32)(dy + EXTCRATE_CONTACT_RADIUS) <= (u32)EXTCRATE_CONTACT_DIAMETER) &&
 	       ((u32)(dz + EXTCRATE_CONTACT_RADIUS) <= (u32)EXTCRATE_CONTACT_DIAMETER);
+}
+
+// A kart (world units of posCurr) against a crate whose middle lies centerY
+// above its instance origin: the point 25 above the kart in the cube around
+// the middle.
+internal int ExtCrates_KartTouches(int x, int y, int z, int ox, int oy, int oz, int centerY)
+{
+	return ExtCrates_InBox(x - ox, (y + EXTCRATE_CONTACT_Y_OFFSET) - (oy + centerY), z - oz);
+}
+
+// crates.center_y: missing = 0 (contact around the origin, the behaviour before
+// the field existed); an integer 0..255 is taken; anything else is refused
+// (returns -1, the caller keeps 0 and logs it).
+internal int ExtCrates_ReadCenterY(const ExtJsonDoc *doc, int section)
+{
+	const int node = ExtJson_Get(doc, section, "center_y");
+	double v;
+
+	if (node < 0)
+	{
+		return 0;
+	}
+	v = ExtJson_Number(doc, node, -1.0);
+	if ((v < 0.0) || (v > (double)EXTCRATE_CENTER_Y_MAX) || (v != (double)(int)v))
+	{
+		return -1;
+	}
+	return (int)v;
 }
 
 // The crates of the data: up to max into out, *bad = items left out (not an
@@ -102,6 +144,11 @@ internal int ExtCrates_ReadItems(const ExtJsonDoc *doc, int section, struct ExtC
 			out[n].pos[k] = (s16)((p[k] < 0.0) ? (p[k] - 0.5) : (p[k] + 0.5));
 		}
 		out[n].yaw = (s16)yaw;
+		out[n].capped = (u8)(ExtJson_Bool(doc, ExtJson_Get(doc, node, "capped"), 0) != 0);
+		{
+			const double dataY = ExtJson_Number(doc, ExtJson_Get(doc, node, "dataY"), 0.0);
+			out[n].dataY = (s16)((dataY < -32768.0) ? -32768 : ((dataY > 32767.0) ? 32767 : ((dataY < 0.0) ? (dataY - 0.5) : (dataY + 0.5))));
+		}
 		n++;
 	}
 	return n;
@@ -123,9 +170,12 @@ void ExtCrates_OnRaceStart(void)
 	int wanted;
 	int bad = 0;
 	int total = 0;
+	int capped = 0;
+	int centerY;
 	int i;
 
 	s_extCrateCount = 0;
+	s_extCrateCenterY = 0;
 	if (gGT == NULL)
 	{
 		return;
@@ -146,6 +196,13 @@ void ExtCrates_OnRaceStart(void)
 	{
 		Platform_Log("[CTR ExtCrates] %d of %d crate(s) of the data left out (unreadable, outside s16, or more than %d)\n", bad, total, EXTCRATE_MAX);
 	}
+	centerY = ExtCrates_ReadCenterY(doc, ExtTrack_Section("crates"));
+	if (centerY < 0)
+	{
+		Platform_Log("[CTR ExtCrates] crates.center_y is not an integer 0..%d - contact around the instance origin\n", EXTCRATE_CENTER_Y_MAX);
+		centerY = 0;
+	}
+	s_extCrateCenterY = centerY;
 
 	model = gGT->modelPtr[PU_RANDOM_CRATE];
 	if (model == NULL)
@@ -178,10 +235,26 @@ void ExtCrates_OnRaceStart(void)
 		c->index = i;
 		c->smashed = 0;
 		s_extCrateCount++;
-		if (s_extCrateBuilds == 1)
+		capped += defs[i].capped;
+		if ((s_extCrateBuilds == 1) && (s_extCrateCenterY == 0))
 		{
 			Platform_Log("[CTR ExtCrates] crate %d pos %d %d %d yaw %d\n", i, defs[i].pos[0], defs[i].pos[1], defs[i].pos[2], defs[i].yaw);
 		}
+		else if ((s_extCrateBuilds == 1) && defs[i].capped)
+		{
+			Platform_Log("[CTR ExtCrates] crate %d pos %d %d %d yaw %d centre %d capped (data centre %d)\n", i, defs[i].pos[0], defs[i].pos[1], defs[i].pos[2],
+			             defs[i].yaw, defs[i].pos[1] + s_extCrateCenterY, defs[i].dataY);
+		}
+		else if (s_extCrateBuilds == 1)
+		{
+			Platform_Log("[CTR ExtCrates] crate %d pos %d %d %d yaw %d centre %d\n", i, defs[i].pos[0], defs[i].pos[1], defs[i].pos[2], defs[i].yaw,
+			             defs[i].pos[1] + s_extCrateCenterY);
+		}
+	}
+	if ((s_extCrateBuilds == 1) && (s_extCrateCenterY != 0))
+	{
+		Platform_Log("[CTR ExtCrates] contact around the crate's middle, %d above the instance origin (crates.center_y); %d crate(s) capped by the data\n",
+		             s_extCrateCenterY, capped);
 	}
 
 	Platform_Log("[CTR ExtCrates] spawned %d of %d crate(s) (model 0x%02x, explosion 0x%02x %s), instance pool %d of %d taken, build %d\n", s_extCrateCount,
@@ -254,7 +327,7 @@ void ExtCrates_OnLogicFrame(void)
 			continue;
 		}
 		x = d->posCurr.x >> 8;
-		y = (d->posCurr.y >> 8) + EXTCRATE_CONTACT_Y_OFFSET;
+		y = d->posCurr.y >> 8;
 		z = d->posCurr.z >> 8;
 
 		for (i = 0; i < s_extCrateCount; i++)
@@ -265,7 +338,7 @@ void ExtCrates_OnLogicFrame(void)
 			{
 				continue;
 			}
-			if (!ExtCrates_InBox(x - c->inst->matrix.t[0], y - c->inst->matrix.t[1], z - c->inst->matrix.t[2]))
+			if (!ExtCrates_KartTouches(x, y, z, c->inst->matrix.t[0], c->inst->matrix.t[1], c->inst->matrix.t[2], s_extCrateCenterY))
 			{
 				continue;
 			}
@@ -282,6 +355,7 @@ void ExtCrates_OnRestart(void)
 {
 	memset(s_extCrates, 0, sizeof(s_extCrates));
 	s_extCrateCount = 0;
+	s_extCrateCenterY = 0;
 }
 
 // --ext-selftest crates: the contact rule and the read of the data on a made-up
@@ -297,6 +371,10 @@ int ExtCrates_Selftest(void)
 	                           "{\"index\": 4, \"pos\": [1, 2, 3], \"yaw\": 4096},"
 	                           "{\"index\": 5, \"pos\": [32767, -32768, 7]}"
 	                           "]}}";
+	static const char jsonMiddle[] = "{\"crates\": {\"center_y\": 48, \"items\": ["
+	                                 "{\"index\": 0, \"pos\": [0, 387, 0], \"yaw\": 0},"
+	                                 "{\"index\": 1, \"pos\": [0, 62, 0], \"yaw\": 0, \"capped\": true, \"dataY\": 230.4}"
+	                                 "]}, \"bad1\": {\"center_y\": 300}, \"bad2\": {\"center_y\": 4.5}, \"bad3\": {\"center_y\": -1}}";
 	ExtJsonDoc doc;
 	struct ExtCrateDef defs[EXTCRATE_MAX];
 	char why[128];
@@ -326,6 +404,17 @@ int ExtCrates_Selftest(void)
 	EXTCRATE_CHECK(!ExtCrates_InBox(0, 0, 102));
 	EXTCRATE_CHECK(!ExtCrates_InBox(-40000, 0, 0));
 
+	// The kart against the crate (origin at y 0). Without center_y the kart
+	// reaches origins from 126 below to 76 above it (as before); with the middle
+	// 48 above the origin from 124 below to 78 above - the retail hitbox.
+	EXTCRATE_CHECK(ExtCrates_KartTouches(0, -126, 0, 0, 0, 0, 0) && !ExtCrates_KartTouches(0, -127, 0, 0, 0, 0, 0));
+	EXTCRATE_CHECK(ExtCrates_KartTouches(0, 76, 0, 0, 0, 0, 0) && !ExtCrates_KartTouches(0, 77, 0, 0, 0, 0, 0));
+	EXTCRATE_CHECK(ExtCrates_KartTouches(0, -78, 0, 0, 0, 0, 48) && !ExtCrates_KartTouches(0, -79, 0, 0, 0, 0, 48));
+	EXTCRATE_CHECK(ExtCrates_KartTouches(0, 124, 0, 0, 0, 0, 48) && !ExtCrates_KartTouches(0, 125, 0, 0, 0, 0, 48));
+	EXTCRATE_CHECK(ExtCrates_KartTouches(101, 0, -101, 0, 0, 0, 48) && !ExtCrates_KartTouches(102, 0, 0, 0, 0, 0, 48));
+	// A middle 110 above the floor (the converter's cap) is reached by a kart on that floor.
+	EXTCRATE_CHECK(ExtCrates_KartTouches(0, 0, 0, 0, 110 - 48, 0, 48));
+
 	// The data: two good items, rounding to the nearest unit, four left out.
 	EXTCRATE_CHECK(ExtJson_Parse(&doc, json, sizeof(json) - 1, why, (int)sizeof(why)) == 1);
 	n = ExtCrates_ReadItems(&doc, ExtJson_Get(&doc, 0, "crates"), defs, EXTCRATE_MAX, &bad, &total);
@@ -338,10 +427,22 @@ int ExtCrates_Selftest(void)
 	// A missing section reads as no crates.
 	n = ExtCrates_ReadItems(&doc, -1, defs, EXTCRATE_MAX, &bad, &total);
 	EXTCRATE_CHECK((n == 0) && (bad == 0) && (total == 0));
+	// center_y missing = 0 (the old contact).
+	EXTCRATE_CHECK(ExtCrates_ReadCenterY(&doc, ExtJson_Get(&doc, 0, "crates")) == 0);
+	ExtJson_Free(&doc);
+
+	// center_y and the cap of the data.
+	EXTCRATE_CHECK(ExtJson_Parse(&doc, jsonMiddle, sizeof(jsonMiddle) - 1, why, (int)sizeof(why)) == 1);
+	EXTCRATE_CHECK(ExtCrates_ReadCenterY(&doc, ExtJson_Get(&doc, 0, "crates")) == 48);
+	EXTCRATE_CHECK(ExtCrates_ReadCenterY(&doc, ExtJson_Get(&doc, 0, "bad1")) == -1);
+	EXTCRATE_CHECK(ExtCrates_ReadCenterY(&doc, ExtJson_Get(&doc, 0, "bad2")) == -1);
+	EXTCRATE_CHECK(ExtCrates_ReadCenterY(&doc, ExtJson_Get(&doc, 0, "bad3")) == -1);
+	n = ExtCrates_ReadItems(&doc, ExtJson_Get(&doc, 0, "crates"), defs, EXTCRATE_MAX, &bad, &total);
+	EXTCRATE_CHECK((n == 2) && (bad == 0) && (defs[0].capped == 0) && (defs[1].capped == 1) && (defs[1].dataY == 230) && (defs[1].pos[1] == 62));
 	ExtJson_Free(&doc);
 
 	// Nothing of the running game was touched.
-	EXTCRATE_CHECK((s_extCrateCount == 0) && (s_extCrateBuilds == 0));
+	EXTCRATE_CHECK((s_extCrateCount == 0) && (s_extCrateBuilds == 0) && (s_extCrateCenterY == 0));
 
 #undef EXTCRATE_CHECK
 

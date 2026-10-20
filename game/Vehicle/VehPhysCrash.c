@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_extphys.h>
 
 enum
 {
@@ -61,6 +62,21 @@ void VehPhysCrash_ConvertVecToSpeed(struct Driver *d, Vec3 *vel)
 	d->speed = speed3D;
 	d->axisRotationY = (s16)ratan2(CTR_MipsSll(vel->y, VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT), speed2D);
 	d->axisRotationX = (s16)ratan2(vel->x, vel->z);
+
+	// In the external track's anti-gravity zone heading and pitch are taken in
+	// the surface frame (platform/native_extphys.c, the inverse of
+	// VehPhysForce_ConvertSpeedToVecOut there). Outside a zone nothing changes.
+	{
+		s32 local[3];
+
+		if (ExtPhys_ZoneWorldToLocal(d, vel, local))
+		{
+			const int localSpeed2D = VehCalc_FastSqrt(VehPhysCrash_LengthSq2(local[0], local[2]), VEH_PHYS_CRASH_FAST_SQRT_ITERATIONS);
+
+			d->axisRotationY = (s16)ratan2(CTR_MipsSll(local[1], VEH_PHYS_CRASH_VECTOR_SPEED_SHIFT), localSpeed2D);
+			d->axisRotationX = (s16)ratan2(local[0], local[2]);
+		}
+	}
 
 	int projOnMovingDirAxis =
 	    CTR_MipsSra(VehPhysCrash_Dot3(vel->x, vel->y, vel->z, d->matrixMovingDir.m[0][1], d->matrixMovingDir.m[1][1], d->matrixMovingDir.m[2][1]),

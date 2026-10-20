@@ -2,6 +2,7 @@
 #include <ctr_scratchpad.h>
 #include <platform/native_mods.h>
 #include <platform/native_extcoll.h>
+#include <platform/native_extphys.h>
 
 // ===========================================================================
 // THE CROSS-CHECK FOR THE ZERO RULE, only counted.
@@ -1305,6 +1306,21 @@ internal void COLL_FIXED_PlayerSearch_SetupSearch(struct ScratchpadStruct *sps, 
 	    .y = (s16)CTR_MipsAddLo(posY, COLL_FIXED_PLAYER_SEARCH_TOP_Y_OFFSET),
 	    .z = (s16)posZ,
 	};
+	// The external track's anti-gravity zone (platform/native_extphys.c): the
+	// same window along the zone's up instead of world +y. Outside a zone (and
+	// always without --ext-track) the probe above is untouched.
+	SVec3 zoneUp;
+	const int zoned = ExtPhys_DriverUp(d, &zoneUp);
+
+	if (zoned)
+	{
+		probeBottom.x = (s16)(posX - ((zoneUp.x * COLL_FIXED_PLAYER_SEARCH_BOTTOM_Y_OFFSET) >> 12));
+		probeBottom.y = (s16)(posY - ((zoneUp.y * COLL_FIXED_PLAYER_SEARCH_BOTTOM_Y_OFFSET) >> 12));
+		probeBottom.z = (s16)(posZ - ((zoneUp.z * COLL_FIXED_PLAYER_SEARCH_BOTTOM_Y_OFFSET) >> 12));
+		probeTop.x = (s16)(posX + ((zoneUp.x * COLL_FIXED_PLAYER_SEARCH_TOP_Y_OFFSET) >> 12));
+		probeTop.y = (s16)(posY + ((zoneUp.y * COLL_FIXED_PLAYER_SEARCH_TOP_Y_OFFSET) >> 12));
+		probeTop.z = (s16)(posZ + ((zoneUp.z * COLL_FIXED_PLAYER_SEARCH_TOP_Y_OFFSET) >> 12));
+	}
 
 	d->actionsFlagSet &= ~ACTION_ENGINE_ECHO;
 
@@ -1331,6 +1347,14 @@ internal void COLL_FIXED_PlayerSearch_SetupSearch(struct ScratchpadStruct *sps, 
 	sps->bbox.max.y = (probeTop.y < probeBottom.y) ? probeBottom.y : probeTop.y;
 	sps->bbox.min.z = probeTop.z;
 	sps->bbox.max.z = probeTop.z;
+	if (zoned)
+	{
+		// a slanted probe: its box spans both ends on every axis
+		sps->bbox.min.x = (probeBottom.x < probeTop.x) ? probeBottom.x : probeTop.x;
+		sps->bbox.max.x = (probeTop.x < probeBottom.x) ? probeBottom.x : probeTop.x;
+		sps->bbox.min.z = (probeBottom.z < probeTop.z) ? probeBottom.z : probeTop.z;
+		sps->bbox.max.z = (probeTop.z < probeBottom.z) ? probeBottom.z : probeTop.z;
+	}
 
 	sps->Union.QuadBlockColl.hitPos = probeBottom;
 }
@@ -1498,6 +1522,22 @@ void COLL_FIXED_PlayerSearch(struct Thread *t, struct Driver *d)
 		inst->compressedNormalAndDriverIndex =
 		    INST_CompressNormalVectorAndDriverIndex(sps->hit.plane.normal.x, sps->hit.plane.normal.y, sps->hit.plane.normal.z, d->driverID);
 		d->quadBlockHeight = CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.y, 8);
+		{
+			// In an anti-gravity zone the kart's height over the ground counts
+			// along the zone's up: quadBlockHeight is put so that posCurr.y -
+			// quadBlockHeight is that height, and the tests below hold as they are.
+			SVec3 zoneUp;
+
+			if (ExtPhys_DriverUp(d, &zoneUp))
+			{
+				const s32 dx = CTR_MipsSubLo(d->posCurr.x, CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.x, 8));
+				const s32 dy = CTR_MipsSubLo(d->posCurr.y, CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.y, 8));
+				const s32 dz = CTR_MipsSubLo(d->posCurr.z, CTR_MipsSll(sps->Union.QuadBlockColl.hitPos.z, 8));
+				const s32 along = (s32)(((s64)dx * zoneUp.x + (s64)dy * zoneUp.y + (s64)dz * zoneUp.z) >> 12);
+
+				d->quadBlockHeight = CTR_MipsSubLo(d->posCurr.y, along);
+			}
+		}
 		d->collisionFlags |= DRIVER_COLL_FLAG_TOUCHED_QUADBLOCK;
 
 		if ((quad->terrain_type == TERRAIN_MUD) || (quad->terrain_type == TERRAIN_WATER) || (quad->terrain_type == TERRAIN_FASTWATER))
@@ -1790,6 +1830,10 @@ UpdateGroundOffset:
 		d->distanceFromGround--;
 		d->Screen_OffsetY = (s8)CTR_MipsAddLo((u8)d->Screen_OffsetY, 3);
 	}
+
+	// The external track's anti-gravity zones: the ground of this frame decides
+	// the driver's zone (nothing without zones in the track).
+	ExtPhys_AfterGroundSearch(d);
 
 	if ((d->posCurr.y < -0x8000) && ((level->configFlags & 2) != 0))
 	{

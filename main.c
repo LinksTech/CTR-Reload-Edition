@@ -120,6 +120,7 @@
 // The external track (--ext-track, round of 2026-10-19): its parts, then the
 // switch's state, the JSON reader and the dispatcher that calls them.
 #include "platform/native_extcoll.c"
+#include "platform/native_extphys.c"
 #include "platform/native_exttrack_race.c"
 #include "platform/native_exttrack_nav.c"
 #include "platform/native_extcrates.c"
@@ -327,6 +328,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
     {"--dev-drive-log", "[n]", "log lines of the kart of seat 0: every n race frames (default 15) position, restart point, distance, lap, ground contact; every lap change; every mask grab with its reason and every landing; reads only, for measuring"},
     {"--dev-kart-steer-lead", "<1|2>", "with --dev-kart-steer: steer toward the restart point 1 or 2 (default) ahead of the kart's own; for measuring"},
+    {"--dev-kart-steer-unstick", "", "with --dev-kart-steer: aim at the first restart point 12 m ahead; a kart that moved less than 1 m in 1.5 s backs off (SQUARE, steering turned round), stuck again soon after: mask grab; every action logged; for measuring"},
     {"--dev-kart-steer", "[n]", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points; from race n of the run on (default 1) SQUARE (every other time with DOWN) after it got reserves, off the pad; for measuring"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
@@ -464,7 +466,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-static-grade", "<saturation,contrast>", "with --engine-static-lit or --engine-static-style: the colour grade of the lit model instead of the style's (each 0..3, 1 = unchanged)"},
     {"--engine-static-lit-sun", "<x,y,z,ambient,diffuse[,below]>", "with --engine-static-lit: the direction towards the sun (world axes, y up; normalised), the ambient light from above, the sun's strength and the ambient light from below (each 0..2; without below the same as above); default 0.35,0.85,0.40,0.95,0.40,0.80"},
     {"--ext-track", "<dir>", "with --level, --engine and --engine-track: the external track of <dir> (exttrack.json and the files it names) takes the slot of the level of --level - the donor's geometry, water and sky are not drawn (as --engine-hide sky,water,track) and its level instances are not made; one log line per level load"},
-    {"--dev-ext-respawn", "<frame>", "with --ext-track, measuring only: the player is put back at the respawn point at that race frame (0..1000000)"},
+    {"--dev-ext-respawn", "<list>", "with --ext-track, measuring only: the player is put back at the respawn point at each item - a race frame (0..1000000) or a node cpN (when the player's last ground names node N); up to 8 items, comma separated, one after the other"},
     {"--ext-selftest", "<json|coll|race|nav|crates|music>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates or the music, then end (ctest ext_selftest_<name>)"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
     {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
@@ -1512,6 +1514,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 	// lines.
 	{
 		int steerGiven = 0;
+		int unstickGiven = 0;
 		const char *lead = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
@@ -1524,6 +1527,17 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				lead = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
 			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer-unstick") == 0)
+			{
+				unstickGiven = 1;
+			}
+		}
+		if (unstickGiven && !steerGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --dev-kart-steer-unstick requires --dev-kart-steer\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
 		}
 		if (lead != NULL)
 		{
@@ -1575,10 +1589,11 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				respawnValue = value;
 			}
 			else if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && (strcmp(value, "json") != 0) && (strcmp(value, "coll") != 0) &&
-			         (strcmp(value, "race") != 0) && (strcmp(value, "nav") != 0) && (strcmp(value, "crates") != 0) && (strcmp(value, "music") != 0))
+			         (strcmp(value, "race") != 0) && (strcmp(value, "nav") != 0) && (strcmp(value, "crates") != 0) && (strcmp(value, "music") != 0) &&
+			         (strcmp(value, "phys") != 0))
 			{
 				fflush(stdout);
-				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates or music, not '%s'\n", value);
+				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates, music or phys, not '%s'\n", value);
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
 			}
@@ -1598,15 +1613,9 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				refusal = "switch --dev-ext-respawn requires --ext-track";
 			}
-			else if (respawnValue != NULL)
+			else if ((respawnValue != NULL) && !ExtRace_RespawnListValid(respawnValue))
 			{
-				char *end = NULL;
-				const long frame = strtol(respawnValue, &end, 10);
-
-				if ((end == respawnValue) || (*end != 0) || (frame < 0) || (frame > 1000000))
-				{
-					refusal = "switch --dev-ext-respawn expects a race frame 0..1000000";
-				}
+				refusal = "switch --dev-ext-respawn expects a race frame 0..1000000 or a node cp0..cp253 (up to 8 items, comma separated)";
 			}
 			if (refusal != NULL)
 			{
@@ -1842,8 +1851,8 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		}
 		else if ((strcmp(argv[argIndex], "--dev-ext-respawn") == 0) && ((argIndex + 1) < argc))
 		{
-			// The value was checked before any window (0..1000000).
-			g_cfg_extRespawnFrame = atoi(argv[++argIndex]);
+			// The value was checked before any window (ExtRace_RespawnListValid).
+			ExtRace_SetRespawnList(argv[++argIndex]);
 		}
 		else if ((strcmp(argv[argIndex], "--engine-static-style") == 0) && ((argIndex + 1) < argc))
 		{
@@ -5363,6 +5372,13 @@ int main(int argc, char *argv[])
 
 				g_cfg_kartSteerLead = atoi(argv[++argIndex]);
 				printf("[CTR Native] --dev-kart-steer-lead: the kart steers toward the restart point %d ahead\n", g_cfg_kartSteerLead);
+			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer-unstick") == 0)
+			{
+				extern int g_cfg_kartSteerUnstick;
+
+				g_cfg_kartSteerUnstick = 1;
+				printf("[CTR Native] --dev-kart-steer-unstick: aim 12 m ahead, back off or mask grab when stuck\n");
 			}
 			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
 			{

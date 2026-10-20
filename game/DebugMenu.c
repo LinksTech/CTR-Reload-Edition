@@ -1428,6 +1428,31 @@ internal void DebugMenu_MenuKeysTick(void)
 int g_cfg_kartSteer = 0;
 int g_cfg_kartSteerLead = 2;
 
+// --dev-kart-steer-unstick (only beside --dev-kart-steer; without it the helper
+// above is unchanged to the last pad bit). Two additions for long measuring
+// races, where a kart wedged in a wall corner stood still for the rest of the
+// run: (1) the target is the first restart point of the chain at least
+// KART_UNSTICK_LOOK units away from the kart (at most KART_UNSTICK_WALK points
+// on), not a fixed count of points; (2) when the kart moved less than
+// KART_UNSTICK_MOVE units in KART_UNSTICK_TICKS race frames (after the start
+// lights, not in a mask grab), it backs off: KART_UNSTICK_BACK frames SQUARE
+// without CROSS (the brake reverses once slow, VehPhysProc.c:892-901) with the
+// steering turned round. Stuck again within KART_UNSTICK_AGAIN frames after
+// that: the game's own respawn (VehStuckProc_MaskGrab_Init, as COLL.c:1798-1803).
+// Every action is one log line, the counts one line when the race ends.
+int g_cfg_kartSteerUnstick = 0;
+
+enum
+{
+	KART_UNSTICK_LOOK = 768,  // 12 m
+	KART_UNSTICK_WALK = 12,
+	KART_UNSTICK_MOVE = 64,   // 1 m
+	KART_UNSTICK_TICKS = 45,  // 1.5 s
+	KART_UNSTICK_BACK = 30,
+	KART_UNSTICK_AGAIN = 120,
+	KART_UNSTICK_HOLD = 90,   // no new action this long after a respawn
+};
+
 internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 {
 	local_persist struct PlatformInputPadSnapshot base[4];
@@ -1444,12 +1469,23 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 	local_persist int squareCount = 0;
 	local_persist int squareDown = 0;
 	local_persist int squareFrom = 0;
+	// --dev-kart-steer-unstick
+	local_persist int usTick = 0;
+	local_persist int usAnchorTick = 0;
+	local_persist int usAnchor[3];
+	local_persist int usBackLeft = 0;
+	local_persist int usBackEnd = -100000;
+	local_persist int usHoldUntil = 0;
+	local_persist int usBacks = 0;
+	local_persist int usRespawns = 0;
+	local_persist int usLastBack = 0;
 
 	struct PlatformInputPadSnapshot pads[4];
 	struct Driver *d;
 	struct Level *level;
 	u16 word = 0xffff;
 	int slot;
+	int steerDiff = 0;
 
 	if (!g_cfg_kartSteer)
 	{
@@ -1469,6 +1505,19 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			pending = 0;
 			squareLeft = 0;
 			Platform_InputClearInstalledPadSnapshots();
+			if (g_cfg_kartSteerUnstick)
+			{
+				Platform_Log("[CTR Debug] --dev-kart-steer-unstick: race %d: %d back-off(s), %d respawn(s) in %d frame(s)\n", race, usBacks, usRespawns,
+				             usTick);
+				usTick = 0;
+				usAnchorTick = 0;
+				usBackLeft = 0;
+				usBackEnd = -100000;
+				usHoldUntil = 0;
+				usBacks = 0;
+				usRespawns = 0;
+				usLastBack = 0;
+			}
 		}
 		return;
 	}
@@ -1495,11 +1544,32 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		int target = d->checkpoint.currentIndex;
 		int k;
 
-		for (k = 0; k < g_cfg_kartSteerLead; k++)
+		if (!g_cfg_kartSteerUnstick)
 		{
-			const int next = cn[(target < count) ? target : 0].nextIndex_forward;
+			for (k = 0; k < g_cfg_kartSteerLead; k++)
+			{
+				const int next = cn[(target < count) ? target : 0].nextIndex_forward;
 
-			target = (next < count) ? next : 0;
+				target = (next < count) ? next : 0;
+			}
+		}
+		else
+		{
+			// The first point of the chain at least KART_UNSTICK_LOOK away (3D).
+			target = (target < count) ? target : 0;
+			for (k = 0; k < KART_UNSTICK_WALK; k++)
+			{
+				const long long ex = (long long)cn[target].pos.x - (d->posCurr.x >> 8);
+				const long long ey = (long long)cn[target].pos.y - (d->posCurr.y >> 8);
+				const long long ez = (long long)cn[target].pos.z - (d->posCurr.z >> 8);
+				const int next = cn[target].nextIndex_forward;
+
+				if ((k > 0) && ((ex * ex + ey * ey + ez * ez) >= (long long)KART_UNSTICK_LOOK * KART_UNSTICK_LOOK))
+				{
+					break;
+				}
+				target = (next < count) ? next : 0;
+			}
 		}
 
 		{
@@ -1512,11 +1582,13 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 
 			// Learn which way LEFT turns: the heading's change while a
 			// steering key was held in the frame before.
-			if (((lastWord & RAW_BTN_LEFT) == 0) && (turned != 0))
+			// (Not after a back-off frame of --dev-kart-steer-unstick: reversing
+			// turns the heading the other way.)
+			if (!usLastBack && ((lastWord & RAW_BTN_LEFT) == 0) && (turned != 0))
 			{
 				votes += (turned > 0) ? 1 : -1;
 			}
-			else if (((lastWord & RAW_BTN_RIGHT) == 0) && (turned != 0))
+			else if (!usLastBack && ((lastWord & RAW_BTN_RIGHT) == 0) && (turned != 0))
 			{
 				votes += (turned > 0) ? -1 : 1;
 			}
@@ -1532,6 +1604,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 				votes = 0;
 			}
 			lastAngle = angle;
+			steerDiff = diff;
 
 			word &= (u16)~RAW_BTN_CROSS;
 			if ((diff > 0x40) || (diff < -0x40))
@@ -1572,6 +1645,63 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		{
 			Platform_Log("[CTR Debug] --dev-kart-steer: square%s %d held 8 frames: reserves %d before, %d after\n", squareDown ? " + down" : " alone",
 			             squareCount, squareFrom, (int)d->reserves);
+		}
+	}
+
+	if (g_cfg_kartSteerUnstick)
+	{
+		const int px = d->posCurr.x >> 8;
+		const int py = d->posCurr.y >> 8;
+		const int pz = d->posCurr.z >> 8;
+		const int racing = ((gGT->gameMode1 & START_OF_RACE) == 0) && (gGT->trafficLightsTimer <= 0) && (d->kartState != KS_MASK_GRABBED);
+		const long long mx = (long long)px - usAnchor[0];
+		const long long my = (long long)py - usAnchor[1];
+		const long long mz = (long long)pz - usAnchor[2];
+
+		usTick++;
+		if (!racing || (usBackLeft > 0) || ((mx * mx + my * my + mz * mz) > (long long)KART_UNSTICK_MOVE * KART_UNSTICK_MOVE))
+		{
+			usAnchor[0] = px;
+			usAnchor[1] = py;
+			usAnchor[2] = pz;
+			usAnchorTick = usTick;
+		}
+		else if ((usTick - usAnchorTick >= KART_UNSTICK_TICKS) && (usTick >= usHoldUntil))
+		{
+			if ((usTick - usBackEnd <= KART_UNSTICK_AGAIN) && (d->lastValid != NULL) && (d->instSelf != NULL) && (d->instSelf->thread != NULL))
+			{
+				// The game's mask grab, as COLL.c:1798-1803 starts it (a request flag
+				// set here would be cleared by VehPhysForce.c:578 before it is read).
+				VehStuckProc_MaskGrab_Init(d->instSelf->thread, d);
+				usRespawns++;
+				usHoldUntil = usTick + KART_UNSTICK_HOLD;
+				usBackEnd = -100000;
+				Platform_Log("[CTR Debug] --dev-kart-steer-unstick: stuck at %d %d %d frame %d -> respawn %d\n", px, py, pz, usTick, usRespawns);
+			}
+			else
+			{
+				usBackLeft = KART_UNSTICK_BACK;
+				usBacks++;
+				Platform_Log("[CTR Debug] --dev-kart-steer-unstick: stuck at %d %d %d frame %d -> back off %d\n", px, py, pz, usTick, usBacks);
+			}
+			usAnchorTick = usTick;
+		}
+
+		usLastBack = (usBackLeft > 0);
+		if (usBackLeft > 0)
+		{
+			// Backwards: no gas, the brake reverses; the steering is turned round.
+			word |= (u16)(RAW_BTN_CROSS | RAW_BTN_LEFT | RAW_BTN_RIGHT | RAW_BTN_DOWN);
+			word &= (u16)~RAW_BTN_SQUARE;
+			if ((steerDiff > 0x40) || (steerDiff < -0x40))
+			{
+				word &= (u16)~((((steerDiff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_RIGHT : RAW_BTN_LEFT);
+			}
+			usBackLeft--;
+			if (usBackLeft == 0)
+			{
+				usBackEnd = usTick;
+			}
 		}
 	}
 

@@ -1,4 +1,5 @@
 #include <platform/native_exttrack_race.h>
+#include <platform/native_extcoll.h>
 #include <platform/engine.h>
 
 // THE EXTERNAL TRACK'S RACE LOGIC - see include/platform/native_exttrack_race.h.
@@ -25,13 +26,33 @@
 // (VehStuckProc.c:202), so it looks along the driving line. Quadblocks and nav
 // frames name only line/restart nodes (restart_nodes).
 //
-// MEASURING (logs only, plus the one trigger of --dev-ext-respawn):
+// TWO OPTIONAL PARTS, each only when the data has it (without them: exactly
+// the behaviour before they existed):
+//   - "respawn" in a checkpoint: the node a kart is put back at when its last
+//     ground named this node (default: the node itself). The table stays the
+//     lap's distance anchors; only the respawn point moves. The converter uses
+//     it for the finish line (node 0 -> the restart point the source gives the
+//     line) and for nodes on surfaces a kart cannot be set upright on (back to
+//     the last upright node before them, never forward: no short cut). Read by
+//     game/Vehicle/VehStuckProc.c through ExtRace_RespawnNode.
+//   - "kill_y" in the section: a kart of a human player below this height is
+//     grabbed by the mask (for a track without a kill floor under it; the
+//     game's own fall limit lies 64 under the lowest collision record,
+//     COLL.c:1563, which can be far below the lowest road).
+//
+// MEASURING (logs only, plus the triggers of --dev-ext-respawn):
 //   [CTR ExtTrack] race: ...                  the section taken (or refused, and why)
 //   [CTR ExtTrack] race start: ...            laps, nodes, lap units
 //   [CTR ExtTrack] spawn seat S slot I ...    D4: where the kart stands against the data
 //   [CTR ExtTrack] lap driver D: A -> B ...   D6: every lap change of every driver
-//   [CTR ExtTrack] respawn asked ...          D7: --dev-ext-respawn reached its frame
+//   [CTR ExtTrack] respawn asked ...          D7: an item of --dev-ext-respawn was reached
 //   [CTR ExtTrack] respawn seat 0 ...         D7: where the kart landed against the node
+//   [CTR ExtTrack] respawn seat S ... (bot)   a CPU driver left a mask grab
+//   [CTR ExtTrack] respawn seat S placed ...  B5: where the teleport put the kart (before its fall)
+//   [CTR ExtTrack] respawn seat 0 ground ...  B5: frames until the kart has ground again, its up
+//                                             against the surface normal there
+//   [CTR ExtTrack] respawn seat 0 stable ...  B5: 90 frames after that without a new mask grab
+//   [CTR ExtTrack] kill height: ...           kill_y grabbed a kart
 //   [CTR ExtTrack] results screen ...         D6: the arcade results screen is up (+ snapshot)
 //
 // WITHOUT --ext-track nothing here is reached (the dispatcher returns first).
@@ -52,6 +73,11 @@ enum
 	EXTRACE_QUARTER_TURN = 1024,
 	EXTRACE_CONFIG_UNDERWATER = 2, // Level.configFlags & 2, COLL.c:1793
 	EXTRACE_RESPAWN_TRIES = 300,   // frames the trigger waits for a kart that can be grabbed
+	EXTRACE_RESPAWN_ITEMS = 8,     // --dev-ext-respawn: items of the list
+	EXTRACE_RESPAWN_FRAME_MAX = 1000000,
+	EXTRACE_DRIVERS = 8,
+	EXTRACE_GROUND_WAIT = 300,     // B5: frames the ground watch waits after a respawn
+	EXTRACE_STABLE_FRAMES = 90,    // B5: frames without a new mask grab after the ground contact
 	EXTRACE_KIND_LINE = 0,
 	EXTRACE_KIND_RESTART = 1,
 	EXTRACE_KIND_DIR = 2,
@@ -67,7 +93,20 @@ typedef struct
 	u8 carries[EXTRACE_NODES_MAX];  // 1 = listed in restart_nodes
 	SVec3 spawnPos[EXTRACE_SPAWNS];
 	s16 spawnYaw[EXTRACE_SPAWNS];
+	u8 respawn[EXTRACE_NODES_MAX];  // respawn node of each node (itself unless the data says otherwise)
+	int respawnMoved;               // nodes whose respawn node is another one
+	int hasKillY;
+	int killY;                      // world units
 } ExtRaceData;
+
+// --dev-ext-respawn <item>[,<item>...]: a race frame (0..1000000) or a node
+// "cpN" (when the last ground of seat 0 names node N).
+typedef struct
+{
+	int count;
+	int isNode[EXTRACE_RESPAWN_ITEMS];
+	int value[EXTRACE_RESPAWN_ITEMS];
+} ExtRaceRespawnList;
 
 global_variable ExtRaceData s_extRace;
 global_variable int s_extRaceReady;     // 1 = the table of s_extRace is in the level
@@ -75,10 +114,17 @@ global_variable u32 s_extRaceConfigBefore;
 global_variable int s_extRaceFrame;     // logic frames of the race (no pause, no loading) since the level load
 global_variable int s_extRaceStarted;
 global_variable int s_extRaceLap[8];
-global_variable int s_extRaceGrabbed;
-global_variable int s_extRaceGrabCp;
-global_variable int s_extRaceRespawnState; // 0 waiting, 1 asked, 2 done or given up
+global_variable int s_extRaceGrabbed[EXTRACE_DRIVERS];
+global_variable int s_extRaceGrabCp[EXTRACE_DRIVERS];
+global_variable int s_extRaceRespawnState; // 0 waiting, 1 asked, 2 done or given up (per item)
 global_variable int s_extRaceRespawnTries;
+global_variable int s_extRaceRespawnItem;  // the item of the list now waited for
+global_variable ExtRaceRespawnList s_extRaceRespawnList;
+global_variable int s_extRaceRespawnListSet;
+global_variable int s_extRaceKilled;
+global_variable int s_extRaceWatchPhase;  // seat 0 after a respawn: 0 nothing, 1 waits for ground, 2 counts stable frames
+global_variable int s_extRaceWatchFrames;
+global_variable int s_extRaceWatchCp;
 global_variable int s_extRaceEndLogged;
 global_variable int s_extRaceResultsLogged;
 
@@ -215,6 +261,16 @@ internal int ExtRace_ParseSection(const ExtJsonDoc *doc, int race, ExtRaceData *
 		{
 			EXTRACE_FAIL("checkpoint %d: want_yaw must be -1..4095", i);
 		}
+		{
+			const int rnode = ExtJson_Get(doc, c, "respawn");
+			int target = i;
+
+			if ((rnode >= 0) && (!ExtRace_Int(doc, rnode, &target) || (target < 0) || (target >= n)))
+			{
+				EXTRACE_FAIL("checkpoint %d: respawn must be a node 0..%d", i, n - 1);
+			}
+			out->respawn[i] = (u8)target;
+		}
 		cn->distToFinish = (u16)dist8;
 		cn->nextIndex_forward = (u8)next;
 		cn->nextIndex_left = (u8)left;
@@ -267,7 +323,141 @@ internal int ExtRace_ParseSection(const ExtJsonDoc *doc, int race, ExtRaceData *
 	{
 		EXTRACE_FAIL("restart_nodes must hold node 0");
 	}
+
+	// A respawn node is a line/restart node with a heading, and it keeps its own
+	// respawn (no chains: one step, then the game's own walk).
+	for (i = 0; i < n; i++)
+	{
+		const int t = out->respawn[i];
+
+		if (t == i)
+		{
+			continue;
+		}
+		if ((out->kind[t] == EXTRACE_KIND_DIR) || (out->wantYaw[t] < 0) || (out->respawn[t] != t))
+		{
+			EXTRACE_FAIL("checkpoint %d: respawn node %d is a dir node or moves on itself", i, t);
+		}
+		out->respawnMoved++;
+	}
+
+	k = ExtJson_Get(doc, race, "kill_y");
+	if (k >= 0)
+	{
+		if (!ExtRace_Int(doc, k, &out->killY) || (out->killY < -EXTRACE_COORD_LIMIT) || (out->killY > EXTRACE_COORD_LIMIT))
+		{
+			EXTRACE_FAIL("kill_y must be a whole number within +-%d", EXTRACE_COORD_LIMIT);
+		}
+		out->hasKillY = 1;
+	}
 	return 1;
+}
+
+// --dev-ext-respawn: "900", "cp14", "900,cp30,cp31" - up to 8 items. 1 = read
+// (into out when given); 0 = not a list of that form.
+internal int ExtRace_ParseRespawnList(const char *text, ExtRaceRespawnList *out)
+{
+	ExtRaceRespawnList list;
+	const char *p = text;
+
+	memset(&list, 0, sizeof(list));
+	if ((p == NULL) || (*p == '\0'))
+	{
+		return 0;
+	}
+	while (1)
+	{
+		int isNode = 0;
+		long v = 0;
+		int digits = 0;
+
+		if (list.count >= EXTRACE_RESPAWN_ITEMS)
+		{
+			return 0;
+		}
+		if ((p[0] == 'c') && (p[1] == 'p'))
+		{
+			isNode = 1;
+			p += 2;
+		}
+		while ((*p >= '0') && (*p <= '9'))
+		{
+			v = v * 10 + (*p - '0');
+			p++;
+			if (++digits > 7)
+			{
+				return 0;
+			}
+		}
+		if ((digits == 0) || (isNode && (v >= EXTRACE_NODES_MAX)) || (!isNode && (v > EXTRACE_RESPAWN_FRAME_MAX)))
+		{
+			return 0;
+		}
+		list.isNode[list.count] = isNode;
+		list.value[list.count] = (int)v;
+		list.count++;
+		if (*p == '\0')
+		{
+			break;
+		}
+		if (*p != ',')
+		{
+			return 0;
+		}
+		p++;
+	}
+	if (out != NULL)
+	{
+		*out = list;
+	}
+	return 1;
+}
+
+// main.c, the check of --dev-ext-respawn before any window: 1 = a valid list.
+int ExtRace_RespawnListValid(const char *text)
+{
+	return ExtRace_ParseRespawnList(text, NULL);
+}
+
+// main.c, --dev-ext-respawn (the value was checked before any window).
+void ExtRace_SetRespawnList(const char *text)
+{
+	s_extRaceRespawnListSet = ExtRace_ParseRespawnList(text, &s_extRaceRespawnList);
+}
+
+// game/Vehicle/VehStuckProc.c, right after the respawn teleport (VehBirth_TeleportSelf)
+// of a human kart: one log line; the place where the physics part's state is set for
+// the new position (anti-gravity zones, B5). Outside the external track: nothing.
+void ExtRace_OnRespawned(struct Driver *d)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	int seat;
+
+	if (!s_extRaceReady || (d == NULL) || (gGT == NULL) || (gGT->level1 == NULL) || (gGT->level1->ptr_restart_points != s_extRace.nodes))
+	{
+		return;
+	}
+	for (seat = 0; seat < EXTRACE_DRIVERS; seat++)
+	{
+		if (gGT->drivers[seat] == d)
+		{
+			break;
+		}
+	}
+	Platform_Log("[CTR ExtTrack] respawn seat %d placed frame %d pos %d %d %d normal %d %d %d cp %d\n", seat, s_extRaceFrame, d->posCurr.x >> 8,
+	             d->posCurr.y >> 8, d->posCurr.z >> 8, d->AxisAngle3_normalVec.x, d->AxisAngle3_normalVec.y, d->AxisAngle3_normalVec.z,
+	             (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1);
+}
+
+// game/Vehicle/VehStuckProc.c: the node a kart is put back at for the node its
+// last ground names. Outside the external track's table: the index unchanged.
+int ExtRace_RespawnNode(const struct Level *lev, int index)
+{
+	if (!s_extRaceReady || (lev == NULL) || (lev->ptr_restart_points != s_extRace.nodes) || (index < 0) || (index >= s_extRace.nodeCount))
+	{
+		return index;
+	}
+	return s_extRace.respawn[index];
 }
 
 // The data into a level (pure: the selftest gives it a level of its own).
@@ -310,10 +500,22 @@ void ExtRace_OnLevelLoaded(struct Level *lev)
 	s_extRaceReady = 0;
 	s_extRaceFrame = 0;
 	s_extRaceStarted = 0;
-	s_extRaceGrabbed = 0;
-	s_extRaceGrabCp = -1;
+	memset(s_extRaceGrabbed, 0, sizeof(s_extRaceGrabbed));
+	memset(s_extRaceGrabCp, 0xff, sizeof(s_extRaceGrabCp));
 	s_extRaceRespawnState = 0;
 	s_extRaceRespawnTries = 0;
+	s_extRaceRespawnItem = 0;
+	s_extRaceKilled = 0;
+	s_extRaceWatchPhase = 0;
+	s_extRaceWatchFrames = 0;
+	s_extRaceWatchCp = -1;
+	if (!s_extRaceRespawnListSet && (g_cfg_extRespawnFrame >= 0))
+	{
+		s_extRaceRespawnList.count = 1;
+		s_extRaceRespawnList.isNode[0] = 0;
+		s_extRaceRespawnList.value[0] = g_cfg_extRespawnFrame;
+		s_extRaceRespawnListSet = 1;
+	}
 	s_extRaceEndLogged = 0;
 	s_extRaceResultsLogged = 0;
 
@@ -341,6 +543,16 @@ void ExtRace_OnLevelLoaded(struct Level *lev)
 		Platform_Log("[CTR ExtTrack] race: %d checkpoints (%d carry quadblocks), lap %d units, %d start spots, configFlags 0x%x -> 0x%x\n",
 		             s_extRace.nodeCount, carried, s_extRace.trackUnits, EXTRACE_SPAWNS, (unsigned)s_extRaceConfigBefore,
 		             (unsigned)lev->configFlags);
+		if (s_extRace.respawnMoved != 0)
+		{
+			Platform_Log("[CTR ExtTrack] race: %d node(s) put a kart back at another node (respawn), node 0 -> %d\n", s_extRace.respawnMoved,
+			             (int)s_extRace.respawn[0]);
+		}
+		if (s_extRace.hasKillY)
+		{
+			Platform_Log("[CTR ExtTrack] race: kill height y %d (the game's own fall limit y %d)\n", s_extRace.killY,
+			             ((COLL_WorldMesh(lev) != NULL) && (COLL_WorldMesh(lev)->bspRoot != NULL)) ? COLL_WorldMesh(lev)->bspRoot->box.min.y - 0x40 : 0);
+		}
 	}
 }
 
@@ -381,8 +593,37 @@ internal void ExtRace_LogStart(struct GameTracker *gGT)
 internal void ExtRace_RespawnTrigger(struct GameTracker *gGT)
 {
 	struct Driver *d = gGT->drivers[0];
+	const ExtRaceRespawnList *list = &s_extRaceRespawnList;
+	int item, isNode, value;
+	char wanted[24];
 
-	if ((g_cfg_extRespawnFrame < 0) || (s_extRaceRespawnState != 0) || (s_extRaceFrame < g_cfg_extRespawnFrame) || (d == NULL))
+	if (s_extRaceRespawnState == 2)
+	{
+		// The item is done: the next one waits.
+		s_extRaceRespawnItem++;
+		s_extRaceRespawnState = 0;
+		s_extRaceRespawnTries = 0;
+	}
+	item = s_extRaceRespawnItem;
+	if (!s_extRaceRespawnListSet || (item >= list->count) || (s_extRaceRespawnState != 0) || (d == NULL))
+	{
+		return;
+	}
+	isNode = list->isNode[item];
+	value = list->value[item];
+	if (isNode)
+	{
+		snprintf(wanted, sizeof(wanted), "cp%d", value);
+	}
+	else
+	{
+		snprintf(wanted, sizeof(wanted), "%d", value);
+	}
+	if (!isNode && (s_extRaceFrame < value))
+	{
+		return;
+	}
+	if (isNode && ((d->lastValid == NULL) || ((int)d->lastValid->checkpointIndex != value) || (d->kartState == KS_MASK_GRABBED)))
 	{
 		return;
 	}
@@ -392,61 +633,181 @@ internal void ExtRace_RespawnTrigger(struct GameTracker *gGT)
 		if (++s_extRaceRespawnTries > EXTRACE_RESPAWN_TRIES)
 		{
 			s_extRaceRespawnState = 2;
-			Platform_LogWarn("[CTR ExtTrack] respawn asked at frame %d: given up after %d frames (state %d, lastValid %s)\n", g_cfg_extRespawnFrame,
-			                 EXTRACE_RESPAWN_TRIES, (int)d->kartState, (d->lastValid != NULL) ? "set" : "none");
+			Platform_LogWarn("[CTR ExtTrack] respawn asked at %s: given up after %d frames (state %d, lastValid %s)\n", wanted, EXTRACE_RESPAWN_TRIES,
+			                 (int)d->kartState, (d->lastValid != NULL) ? "set" : "none");
 		}
 		return;
 	}
-	Platform_Log("[CTR ExtTrack] respawn asked frame %d (wanted %d): seat 0 cp %d pos %d %d %d lap %d\n", s_extRaceFrame, g_cfg_extRespawnFrame,
+	Platform_Log("[CTR ExtTrack] respawn asked frame %d (wanted %s): seat 0 cp %d pos %d %d %d lap %d\n", s_extRaceFrame, wanted,
 	             (int)d->lastValid->checkpointIndex, d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8, (int)d->lapIndex);
 	s_extRaceRespawnState = 1;
 	VehStuckProc_MaskGrab_Init(d->instSelf->thread, d);
 }
 
-// Seat 0 leaves a mask grab (any, forced or not): where it stands against the node.
-internal void ExtRace_WatchRespawn(struct GameTracker *gGT)
+// kill_y: a human kart below it is grabbed, under the game's own conditions
+// for a mask grab (COLL.c:1799-1800). CPU drivers keep the nav's recovery.
+internal void ExtRace_KillHeight(struct GameTracker *gGT)
 {
-	const struct Driver *d = gGT->drivers[0];
-	const int grabbed = (d != NULL) && (d->kartState == KS_MASK_GRABBED);
+	int i;
 
-	if (d == NULL)
+	if (!s_extRace.hasKillY)
 	{
 		return;
 	}
-	if (grabbed && !s_extRaceGrabbed)
+	for (i = 0; i < EXTRACE_DRIVERS; i++)
 	{
-		s_extRaceGrabCp = (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1;
+		struct Driver *d = gGT->drivers[i];
+
+		if ((d == NULL) || ((d->actionsFlagSet & ACTION_BOT) != 0) || (d->kartState == KS_MASK_GRABBED) || (d->lastValid == NULL) ||
+		    (d->instSelf == NULL) || (d->instSelf->thread == NULL) || ((sdata->HudAndDebugFlags & 0x1000) != 0) ||
+		    ((d->stepFlagSet & COLL_STEP_TRIGGER_SUPPRESS_MASK_GRAB) != 0) || ((d->posCurr.y >> 8) >= s_extRace.killY))
+		{
+			continue;
+		}
+		s_extRaceKilled++;
+		Platform_Log("[CTR ExtTrack] kill height: seat %d frame %d y %d below %d - mask grab (cp %d)\n", i, s_extRaceFrame, d->posCurr.y >> 8,
+		             s_extRace.killY, (int)d->lastValid->checkpointIndex);
+		VehStuckProc_MaskGrab_Init(d->instSelf->thread, d);
 	}
-	if (!grabbed && s_extRaceGrabbed)
+}
+
+// A driver leaves a mask grab (any, forced or not). Seat 0: where it stands
+// against the node it was put back at (the respawn node of the node its last
+// ground named); CPU drivers: one line with the place.
+internal void ExtRace_WatchRespawn(struct GameTracker *gGT)
+{
+	int seat;
+
+	for (seat = 0; seat < EXTRACE_DRIVERS; seat++)
 	{
-		const int x = d->posCurr.x >> 8;
-		const int y = d->posCurr.y >> 8;
-		const int z = d->posCurr.z >> 8;
-		const int yaw = d->rotCurr.y & (EXTRACE_ANGLE_FULL - 1);
-		const int cp = s_extRaceGrabCp;
+		const struct Driver *d = gGT->drivers[seat];
+		const int grabbed = (d != NULL) && (d->kartState == KS_MASK_GRABBED);
+		const int bot = (d != NULL) && ((d->actionsFlagSet & ACTION_BOT) != 0);
 
-		if ((cp >= 0) && (cp < s_extRace.nodeCount))
+		if (d == NULL)
 		{
-			const struct CheckpointNode *cn = &s_extRace.nodes[cp];
-			const int dx = x - cn->pos.x;
-			const int dz = z - cn->pos.z;
-			const int dxz = (int)SquareRoot0(dx * dx + dz * dz);
+			s_extRaceGrabbed[seat] = 0;
+			continue;
+		}
+		if (grabbed && !s_extRaceGrabbed[seat])
+		{
+			if (bot)
+			{
+				s_extRaceGrabCp[seat] = (int)d->botData.ai_quadblock_checkpointIndex;
+			}
+			else
+			{
+				s_extRaceGrabCp[seat] = (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1;
+			}
+		}
+		if (!grabbed && s_extRaceGrabbed[seat])
+		{
+			const int x = d->posCurr.x >> 8;
+			const int y = d->posCurr.y >> 8;
+			const int z = d->posCurr.z >> 8;
+			const int yaw = d->rotCurr.y & (EXTRACE_ANGLE_FULL - 1);
+			const int cp = s_extRaceGrabCp[seat];
 
-			Platform_Log("[CTR ExtTrack] respawn seat 0 frame %d cp %d pos %d %d %d yaw %d | node %d pos %d %d %d want_yaw %d | dxz %d dy %d err %d.%d deg%s\n",
-			             s_extRaceFrame, cp, x, y, z, yaw, cp, cn->pos.x, cn->pos.y, cn->pos.z, s_extRace.wantYaw[cp], dxz, y - cn->pos.y,
-			             ExtRace_AngleDiffTenths(yaw, s_extRace.wantYaw[cp]) / 10, ExtRace_AngleDiffTenths(yaw, s_extRace.wantYaw[cp]) % 10,
-			             (s_extRace.wantYaw[cp] < 0) ? " (no heading at this node)" : "");
+			if (bot)
+			{
+				Platform_Log("[CTR ExtTrack] respawn seat %d frame %d cp %d pos %d %d %d (bot)\n", seat, s_extRaceFrame, cp, x, y, z);
+			}
+			else if ((seat == 0) && (cp >= 0) && (cp < s_extRace.nodeCount))
+			{
+				const int t = s_extRace.respawn[cp];
+				const struct CheckpointNode *cn = &s_extRace.nodes[t];
+				const int dx = x - cn->pos.x;
+				const int dz = z - cn->pos.z;
+				const int dxz = (int)SquareRoot0(dx * dx + dz * dz);
+
+				Platform_Log("[CTR ExtTrack] respawn seat 0 frame %d cp %d pos %d %d %d yaw %d | node %d pos %d %d %d want_yaw %d | dxz %d dy %d err %d.%d deg%s\n",
+				             s_extRaceFrame, cp, x, y, z, yaw, t, cn->pos.x, cn->pos.y, cn->pos.z, s_extRace.wantYaw[t], dxz, y - cn->pos.y,
+				             ExtRace_AngleDiffTenths(yaw, s_extRace.wantYaw[t]) / 10, ExtRace_AngleDiffTenths(yaw, s_extRace.wantYaw[t]) % 10,
+				             (s_extRace.wantYaw[t] < 0) ? " (no heading at this node)" : "");
+			}
+			else
+			{
+				Platform_Log("[CTR ExtTrack] respawn seat %d frame %d cp %d (no node) pos %d %d %d yaw %d\n", seat, s_extRaceFrame, cp, x, y, z, yaw);
+			}
+			if ((seat == 0) && (s_extRaceRespawnState == 1))
+			{
+				s_extRaceRespawnState = 2;
+			}
+			if (seat == 0)
+			{
+				s_extRaceWatchPhase = 1;
+				s_extRaceWatchFrames = 0;
+				s_extRaceWatchCp = cp;
+			}
 		}
-		else
-		{
-			Platform_Log("[CTR ExtTrack] respawn seat 0 frame %d cp %d (no node) pos %d %d %d yaw %d\n", s_extRaceFrame, cp, x, y, z, yaw);
-		}
-		if (s_extRaceRespawnState == 1)
-		{
-			s_extRaceRespawnState = 2;
-		}
+		s_extRaceGrabbed[seat] = grabbed;
 	}
-	s_extRaceGrabbed = grabbed;
+}
+
+// Angle between two 4096-scaled vectors, in tenths of a degree (float only here: a log value).
+internal int ExtRace_VecAngleTenths(int ax, int ay, int az, int bx, int by, int bz)
+{
+	const double la = sqrt((double)ax * ax + (double)ay * ay + (double)az * az);
+	const double lb = sqrt((double)bx * bx + (double)by * by + (double)bz * bz);
+	double c;
+
+	if ((la <= 0.0) || (lb <= 0.0))
+	{
+		return -1;
+	}
+	c = ((double)ax * bx + (double)ay * by + (double)az * bz) / (la * lb);
+	c = (c > 1.0) ? 1.0 : ((c < -1.0) ? -1.0 : c);
+	return (int)(acos(c) * 1800.0 / 3.14159265358979323846 + 0.5);
+}
+
+// B5: seat 0 after a respawn - frames until ground, its up (matrixFacingDir column 1, the kart's
+// drawn up) against the surface normal it stands on (AxisAngle1, set by the ground hits), then 90
+// frames without a new mask grab. Logs only.
+internal void ExtRace_WatchAfterRespawn(struct GameTracker *gGT)
+{
+	const struct Driver *d = gGT->drivers[0];
+
+	if ((s_extRaceWatchPhase == 0) || (d == NULL))
+	{
+		return;
+	}
+	s_extRaceWatchFrames++;
+	if (d->kartState == KS_MASK_GRABBED)
+	{
+		Platform_Log("[CTR ExtTrack] respawn seat 0 NOT stable: a new mask grab %d frame(s) after the respawn at cp %d\n", s_extRaceWatchFrames,
+		             s_extRaceWatchCp);
+		s_extRaceWatchPhase = 0;
+		return;
+	}
+	if (s_extRaceWatchPhase == 1)
+	{
+		if ((d->collisionFlags & DRIVER_COLL_FLAG_GROUNDED) != 0)
+		{
+			const int upTenths = ExtRace_VecAngleTenths(d->matrixFacingDir.m[0][1], d->matrixFacingDir.m[1][1], d->matrixFacingDir.m[2][1],
+			                                            d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z);
+			const int worldTenths = ExtRace_VecAngleTenths(d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z, 0, 4096, 0);
+
+			Platform_Log("[CTR ExtTrack] respawn seat 0 ground after %d frame(s): kart up to surface normal %d.%d deg, surface normal to world up %d.%d deg, "
+			             "pos %d %d %d cp %d\n",
+			             s_extRaceWatchFrames, upTenths / 10, upTenths % 10, worldTenths / 10, worldTenths % 10, d->posCurr.x >> 8, d->posCurr.y >> 8,
+			             d->posCurr.z >> 8, (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1);
+			s_extRaceWatchPhase = 2;
+			s_extRaceWatchFrames = 0;
+		}
+		else if (s_extRaceWatchFrames > EXTRACE_GROUND_WAIT)
+		{
+			Platform_Log("[CTR ExtTrack] respawn seat 0 NO ground within %d frames after the respawn at cp %d (pos %d %d %d)\n", EXTRACE_GROUND_WAIT,
+			             s_extRaceWatchCp, d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8);
+			s_extRaceWatchPhase = 0;
+		}
+		return;
+	}
+	if (s_extRaceWatchFrames >= EXTRACE_STABLE_FRAMES)
+	{
+		Platform_Log("[CTR ExtTrack] respawn seat 0 stable %d frames after the ground contact (no mask grab), cp %d\n", EXTRACE_STABLE_FRAMES,
+		             (d->lastValid != NULL) ? (int)d->lastValid->checkpointIndex : -1);
+		s_extRaceWatchPhase = 0;
+	}
 }
 
 internal void ExtRace_WatchEnd(struct GameTracker *gGT)
@@ -509,6 +870,8 @@ void ExtRace_OnLogicFrame(void)
 		}
 	}
 	ExtRace_RespawnTrigger(gGT);
+	ExtRace_KillHeight(gGT);
+	ExtRace_WatchAfterRespawn(gGT);
 	ExtRace_WatchRespawn(gGT);
 	ExtRace_WatchEnd(gGT);
 }
@@ -608,6 +971,67 @@ int ExtRace_Selftest(void)
 	              "level: DriverSpawn rot.y = yaw - 1024 (mod 4096), VehBirth.c:153 adds it back", &n, &failures);
 	ExtRace_Check((ExtRace_AngleDiffTenths(10, 4090) == 14) && (ExtRace_AngleDiffTenths(0, 2048) == 1800) && (ExtRace_AngleDiffTenths(1024, 1024) == 0),
 	              "heading difference", &n, &failures);
+	ExtRace_Check((ExtRace_VecAngleTenths(0, 4096, 0, 0, 4096, 0) == 0) && (ExtRace_VecAngleTenths(0, 4096, 0, 4096, 0, 0) == 900) &&
+	                  (ExtRace_VecAngleTenths(0, 4096, 0, 0, -4096, 0) == 1800) && (ExtRace_VecAngleTenths(0, 0, 0, 1, 0, 0) == -1) &&
+	                  (ExtRace_VecAngleTenths(0, 4096, 0, 0, 2896, 2896) == 450),
+	              "vector angle (B5 up against the surface normal)", &n, &failures);
+	ExtRace_Check((rd.respawn[0] == 0) && (rd.respawn[2] == 2) && (rd.respawnMoved == 0) && !rd.hasKillY,
+	              "without respawn/kill_y: every node puts back at itself, no kill height", &n, &failures);
+
+	// respawn and kill_y
+	strcpy(bad, text);
+	{
+		char *p = strstr(bad, "\"kind\":\"line\"");
+		memmove(p + 12, p, strlen(p) + 1);
+		memcpy(p, "\"respawn\":2,", 12);
+	}
+	ExtRace_TestText(text, sizeof(text), "kill_y", "-1200");
+	{
+		char both[4096];
+		char *p;
+
+		strcpy(both, text);
+		p = strstr(both, "\"kind\":\"line\"");
+		memmove(p + 12, p, strlen(p) + 1);
+		memcpy(p, "\"respawn\":2,", 12);
+		ExtRace_Check(ExtRace_TestParse(both, &rd, why, (int)sizeof(why)) && (rd.respawn[0] == 2) && (rd.respawn[2] == 2) && (rd.respawnMoved == 1) &&
+		                  rd.hasKillY && (rd.killY == -1200),
+		              "node 0 puts back at node 2, kill height read", &n, &failures);
+	}
+	ExtRace_Check(ExtRace_TestParse(bad, &rd, why, (int)sizeof(why)) && (rd.respawn[0] == 2) && !rd.hasKillY, "respawn without kill_y", &n, &failures);
+	{
+		char *p = strstr(bad, "\"respawn\":2,");
+		p[10] = '1'; // node 1 is a dir node
+	}
+	ExtRace_TestRefused(bad, "dir node", &n, &failures);
+	{
+		char *p = strstr(bad, "\"respawn\":1,");
+		p[10] = '7';
+	}
+	ExtRace_TestRefused(bad, "respawn must be a node", &n, &failures);
+	ExtRace_TestText(bad, sizeof(bad), "kill_y", "-1.5");
+	ExtRace_TestRefused(bad, "kill_y", &n, &failures);
+	{
+		static struct Level other;
+		ExtRace_Check(ExtRace_RespawnNode(&other, 3) == 3, "respawn node outside the external table: unchanged", &n, &failures);
+	}
+
+	// --dev-ext-respawn lists
+	{
+		ExtRaceRespawnList list;
+
+		ExtRace_Check(ExtRace_ParseRespawnList("900", &list) && (list.count == 1) && !list.isNode[0] && (list.value[0] == 900), "list: one frame", &n,
+		              &failures);
+		ExtRace_Check(ExtRace_ParseRespawnList("900,cp30,cp253,1000000", &list) && (list.count == 4) && list.isNode[1] && (list.value[1] == 30) &&
+		                  (list.value[2] == 253) && !list.isNode[3],
+		              "list: frames and nodes", &n, &failures);
+		ExtRace_Check(!ExtRace_ParseRespawnList("", NULL) && !ExtRace_ParseRespawnList("cp254", NULL) && !ExtRace_ParseRespawnList("1000001", NULL) &&
+		                  !ExtRace_ParseRespawnList("900,", NULL) && !ExtRace_ParseRespawnList("9x", NULL) && !ExtRace_ParseRespawnList("cp", NULL) &&
+		                  !ExtRace_ParseRespawnList("-5", NULL) && !ExtRace_ParseRespawnList("1,2,3,4,5,6,7,8,9", NULL),
+		              "list: refusals", &n, &failures);
+	}
+	ExtRace_TestText(text, sizeof(text), NULL, NULL);
+	ExtRace_Check(ExtRace_TestParse(text, &rd, why, (int)sizeof(why)), "the valid section again", &n, &failures);
 
 	// refusals (each must name its reason)
 	strcpy(bad, text);
