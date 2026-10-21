@@ -5,6 +5,8 @@
 #include <platform/native_exttrack_nav.h>
 #include <platform/native_extportal.h>
 
+#include <math.h>
+
 // From game/native_trackmod.c, which comes after this file in game_unity.h.
 // The answer is the bits the MaskGrab recovery should leave in place;
 // outside a track with its own code it is zero.
@@ -716,6 +718,52 @@ static int BOTS_ExtFixupFor(const struct Driver *d)
 static int BOTS_ExtAirPitch(const struct Driver *d)
 {
 	return BOTS_ExtFixupFor(d) && (ExtPortal_Count() > 0);
+}
+
+// The same tracks (fixround 2, B3c): a CPU kart outside a zone frame never
+// ends a tick behind the ground. Along the up of the nearest nav frame (world
+// up outside zones) the nearest ground record within BOTS_EXT_KEEP_REACH: if the
+// kart lies behind its face (night run V1: landings that went 0.1 .. 4 units
+// through a slope in the tick of the landing, a chord under a rise), it is put
+// EXT_PHYS_BOT_LIFT in front of it along the face's normal - as the ground
+// rule of the rails sets it over the road. Nothing else of the tick changes.
+enum
+{
+	BOTS_EXT_KEEP_REACH = 128,
+};
+
+static void BOTS_ExtKeepOverGround(struct Driver *d)
+{
+	double pos[3], u[3], ul, dd;
+	short up[3];
+	ExtCollLineHit hit;
+
+	pos[0] = d->posCurr.x / 256.0;
+	pos[1] = d->posCurr.y / 256.0;
+	pos[2] = d->posCurr.z / 256.0;
+	(void)ExtNav_UpAt(pos, up, NULL, NULL);
+	u[0] = up[0];
+	u[1] = up[1];
+	u[2] = up[2];
+	ul = sqrt((u[0] * u[0]) + (u[1] * u[1]) + (u[2] * u[2]));
+	if (ul < 1.0)
+	{
+		u[0] = 0.0;
+		u[1] = 1.0;
+		u[2] = 0.0;
+	}
+	if (!ExtColl_LineQuery(pos, u, -(double)BOTS_EXT_KEEP_REACH, (double)BOTS_EXT_KEEP_REACH, EXT_COLL_LINE_GROUND, 1, &hit))
+	{
+		return;
+	}
+	dd = ((pos[0] - hit.pos[0]) * hit.normal[0]) + ((pos[1] - hit.pos[1]) * hit.normal[1]) + ((pos[2] - hit.pos[2]) * hit.normal[2]);
+	if (dd >= 0.0)
+	{
+		return;
+	}
+	d->posCurr.x += (int)floor(((EXT_PHYS_BOT_LIFT - dd) * hit.normal[0] * 256.0) + 0.5);
+	d->posCurr.y += (int)floor(((EXT_PHYS_BOT_LIFT - dd) * hit.normal[1] * 256.0) + 0.5);
+	d->posCurr.z += (int)floor(((EXT_PHYS_BOT_LIFT - dd) * hit.normal[2] * 256.0) + 0.5);
 }
 
 void BOTS_MaskGrab(struct Thread *botThread)
@@ -2910,6 +2958,11 @@ UpdateTireColorTimer:
 		{
 			ExtPhys_BotGround(botDriver, NULL, &upv);
 		}
+	}
+
+	if (BOTS_ExtAirPitch(botDriver) && (ExtNav_FrameZone(navFrameCurr) == 0))
+	{
+		BOTS_ExtKeepOverGround(botDriver);
 	}
 
 	botInstance->matrix.t[0] = CTR_MipsSra(botDriver->posCurr.x, FRACTIONAL_BITS_8);
