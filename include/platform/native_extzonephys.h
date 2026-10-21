@@ -101,7 +101,17 @@ void ExtZp_Kart_136110(ExtZpCtx *c, uint32_t body, uint32_t impulse);
 void ExtZp_Kart_13dd40(ExtZpCtx *c, uint32_t body, uint32_t v);
 void ExtZp_Kart_190350(ExtZpCtx *c, uint32_t body, uint32_t v);
 
-// The other parts declare their functions in their own headers
-// (include/platform/native_extzonephys_<part>.h, included here when merged).
+// The other parts declare their functions in their own headers.
+#include <platform/native_extzonephys_a.h>
+#include <platform/native_extzonephys_b1.h>
+#include <platform/native_extzonephys_b2.h>
+#include <platform/native_extzonephys_c.h>
+#include <platform/native_extzonephys_d.h>
+#include <platform/native_extzonephys_e.h>
+#include <platform/native_extzonephys_f.h>
+#include <platform/native_extzonephys_g.h>
+#include <platform/native_extzonephys_h.h>
+#include <platform/native_extzonephys_i.h>
+#include <platform/native_extzonephys_j.h>
 
 #endif

@@ -266,3 +266,14 @@ void ExtZp_Cross(Ps2F out[4], const Ps2F a[4], const Ps2F b[4])
 
 // ------------------------------------------------------------------ the memory form, by part
 #include "native_extzonephys_k0.c"
+#include "native_extzonephys_a.c" // the kart glue and the physics world step (incl. the run-time substep)
+#include "native_extzonephys_b1.c" // the rigid body system: integration, state, forces, controllers
+#include "native_extzonephys_b2.c" // the rigid body helpers: vectors, matrices, the direct integration
+#include "native_extzonephys_c.c" // the kart update frame, state changes, small helpers
+#include "native_extzonephys_d.c" // the zone test, splines, boost
+#include "native_extzonephys_e.c" // the math library (acosf, cosf, sinf)
+#include "native_extzonephys_f.c" // ground probe, node tracking, alignment, climb cap
+#include "native_extzonephys_g.c" // state 2/3: driving, steering, grip
+#include "native_extzonephys_h.c" // downforce, drive, jump
+#include "native_extzonephys_i.c" // state 4: air, states 5/6: sliding
+#include "native_extzonephys_j.c" // the contact callback
