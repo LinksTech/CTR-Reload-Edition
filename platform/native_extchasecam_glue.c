@@ -22,6 +22,9 @@
 // object, its parameter block, the camera manager, the field of view).
 // What the camera hands back: C+0x2C8 eye, C+0x2BC view direction, C+0x2D4 up
 // (all metres / unit, z up), C+0x144 horizontal field of view (degrees).
+// While the zone port drives seat 0 (ExtZp_PortKartState active) the kart comes from the port instead (its body's
+// axes and velocity, state, maglev byte, ground contact, speed, air time), so the camera sees what the source's
+// snapshot would copy.
 // Its two collision questions (0x11B270: the ground ray along the camera's up,
 // the wall sweep of radius 0.135 m) are answered with Reload's exact line query
 // (the sweep's radius is not modelled: noted in the step log as a line).
@@ -52,7 +55,7 @@ global_variable struct
 	double airTime;
 	int teleport;
 	int reportOn;
-	u32 steps, sphereQueries, sphereHits, otherQueries;
+	u32 steps, sphereQueries, sphereHits, otherQueries, portFrames;
 	// the answer writes of the current query (step log)
 	unsigned char ans[256];
 	uint32_t ansLen, ansWrites;
@@ -60,8 +63,9 @@ global_variable struct
 
 internal void ExtChaseGlue_Report(void)
 {
-	Platform_Log("[CTR ExtChaseGlue] at exit: %u step(s), sphere/ray questions %u (hits %u), other questions %u\n", s_camGlue.steps,
-	             s_camGlue.sphereQueries, s_camGlue.sphereHits, s_camGlue.otherQueries);
+	Platform_Log("[CTR ExtChaseGlue] at exit: %u step(s) (%u with the kart from the zone port), sphere/ray questions %u (hits %u), "
+	             "other questions %u\n",
+	             s_camGlue.steps, s_camGlue.portFrames, s_camGlue.sphereQueries, s_camGlue.sphereHits, s_camGlue.otherQueries);
 }
 
 internal void ExtChaseGlue_WriteF(uint32_t addr, double v)
@@ -397,21 +401,45 @@ int ExtChaseGlue_Step(const void *level, const ExtChaseGlueIn *in, ExtChaseGlueO
 		speed = sqrt(vs[0] * vs[0] + vs[1] * vs[1]);
 	}
 	s_camGlue.airTime = in->ground ? 0.0 : s_camGlue.airTime + (double)in->dtMs * 0.001;
+	{
+		int ground = in->ground, air = in->ground ? 0 : 1, maglev = in->maglev, slide = in->slide;
+		double airTime = air ? s_camGlue.airTime : 0.0;
+		ExtZpKartView kv;
 
-	// the kart record, the state block, the clock
-	ExtChaseGlue_WriteVec(s_camGlue.kc + 0x5Cu, p);
-	ExtChaseGlue_WriteF(s_camGlue.kc + 0x68u, q[0]);
-	ExtChaseGlue_WriteF(s_camGlue.kc + 0x6Cu, q[1]);
-	ExtChaseGlue_WriteF(s_camGlue.kc + 0x70u, q[2]);
-	ExtChaseGlue_WriteF(s_camGlue.kc + 0x74u, q[3]);
-	ExtChaseGlue_WriteVec(s_camGlue.kc + 0x78u, vs);
-	ZmW8(m, s_camGlue.s + 0x28u, in->ground ? 1 : 0);
-	ZmW8(m, s_camGlue.s + 0x30u, in->maglev ? 1 : 0);
-	ZmW8(m, s_camGlue.s + 0x34u, in->freeze ? 1 : 0);
-	ExtChaseGlue_WriteF(s_camGlue.s + 0x3Cu, speed);
-	ZmW8(m, s_camGlue.s + 0x40u, in->ground ? 0 : 1);
-	ExtChaseGlue_WriteF(s_camGlue.s + 0x44u, in->ground ? 0.0 : s_camGlue.airTime);
-	ZmW8(m, s_camGlue.s + 0x48u, in->slide ? 1 : 0);
+		// while the zone port drives seat 0 (--dev-ext-zone-port), the kart as the port has it: its body's axes, velocity,
+		// state, maglev byte, speed and air time (the fields the source's snapshot copies for the camera)
+		if (ExtZp_PortKartState(&kv) && kv.active)
+		{
+			ExtZp_PointToSource(kv.posReload, p);
+			memcpy(sr, kv.right, sizeof(sr));
+			memcpy(sf, kv.forward, sizeof(sf));
+			memcpy(su, kv.up, sizeof(su));
+			ExtChaseGlue_Quat(sr, sf, su, q);
+			memcpy(vs, kv.vel, sizeof(vs));
+			speed = kv.speed;
+			ground = kv.ground ? 1 : 0;
+			maglev = kv.maglev ? 1 : 0;
+			air = (kv.state == 4) ? 1 : 0;
+			airTime = air ? kv.airTime : 0.0;
+			slide = ((kv.state == 5) || (kv.state == 6)) ? 1 : 0;
+			s_camGlue.portFrames++;
+		}
+
+		// the kart record, the state block, the clock
+		ExtChaseGlue_WriteVec(s_camGlue.kc + 0x5Cu, p);
+		ExtChaseGlue_WriteF(s_camGlue.kc + 0x68u, q[0]);
+		ExtChaseGlue_WriteF(s_camGlue.kc + 0x6Cu, q[1]);
+		ExtChaseGlue_WriteF(s_camGlue.kc + 0x70u, q[2]);
+		ExtChaseGlue_WriteF(s_camGlue.kc + 0x74u, q[3]);
+		ExtChaseGlue_WriteVec(s_camGlue.kc + 0x78u, vs);
+		ZmW8(m, s_camGlue.s + 0x28u, ground ? 1 : 0);
+		ZmW8(m, s_camGlue.s + 0x30u, maglev ? 1 : 0);
+		ZmW8(m, s_camGlue.s + 0x34u, in->freeze ? 1 : 0);
+		ExtChaseGlue_WriteF(s_camGlue.s + 0x3Cu, speed);
+		ZmW8(m, s_camGlue.s + 0x40u, air ? 1 : 0);
+		ExtChaseGlue_WriteF(s_camGlue.s + 0x44u, airTime);
+		ZmW8(m, s_camGlue.s + 0x48u, slide ? 1 : 0);
+	}
 	s_camGlue.timeMs += (uint32_t)in->dtMs;
 	ZmW32(m, s_camGlue.clock + 0x8u, (uint32_t)in->dtMs);
 	ZmW32(m, s_camGlue.clock + 0xCu, s_camGlue.timeMs);
