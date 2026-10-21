@@ -4947,6 +4947,16 @@ static int Cmd_Info(int argc, char *argv[], int full)
 	if (error != NULL)
 	{
 		fprintf(stderr, "rldpack: %s\n", error);
+		// 4.4: the version the file names.
+		if ((reader.refusal == RLD_REFUSAL_NEWER) && (reader.minVersion > Rld_ReaderVersion()))
+		{
+			char need[16];
+			char own[16];
+
+			Rld_VersionText(reader.minVersion, need, sizeof(need));
+			Rld_VersionText(Rld_ReaderVersion(), own, sizeof(own));
+			fprintf(stderr, "         needs Reload %s - this rldpack reads for CTR Reload %s\n", need, own);
+		}
 		if ((reader.refusal == RLD_REFUSAL_NEWER) || (reader.refusal == RLD_REFUSAL_OLDER))
 		{
 			fprintf(stderr, "         container format %u.%u, this rldpack reads %u.x", reader.major, reader.minor, reader.format->major);
@@ -4987,6 +4997,16 @@ static int Cmd_Info(int argc, char *argv[], int full)
 	printf("  track_version %u\n", meta.trackVersion);
 	printf("  modes         %s\n", Rld_ModesText(meta.modes));
 	printf("  meta_version  %u%s\n", meta.metaVersion, (meta.metaVersion == 0) ? "   DRAFT" : ((meta.metaVersion == 1) ? "   frozen" : ""));
+	// 4.4: only for a file that names a version or is an engine track - a
+	// classic file prints exactly as before.
+	if ((reader.minVersion != 0u) || (reader.kind == RLD_KIND_ENGINE))
+	{
+		char need[16];
+
+		Rld_VersionText(reader.minVersion, need, sizeof(need));
+		printf("  kind          %s\n", (reader.kind == RLD_KIND_ENGINE) ? "engine track (format 4.4, no LEV/VRM)" : "classic");
+		printf("  needs         CTR Reload %s or newer\n", (reader.minVersion != 0u) ? need : "(any)");
+	}
 
 	// The chunks, and for each one this reader does not read, why: a
 	// blocked name from an earlier version or a type from tomorrow.
@@ -5098,6 +5118,30 @@ static int Cmd_Info(int argc, char *argv[], int full)
 			}
 		}
 
+		// 4.4: a file chunk must also show its head, its name and its file's start.
+		if (Rld_IsBlobType(entry))
+		{
+			char blobName[RLD_BLOB_NAME_MAX + 1];
+			const u8 *blobData;
+			size_t blobSize;
+			const char *why = Rld_BlobView(data, size, blobName, &blobData, &blobSize);
+
+			if (why == NULL)
+			{
+				why = Rld_BlobCheckContent(entry, blobData, blobSize);
+			}
+			if (why != NULL)
+			{
+				printf("  FAILED %.4s   %s\n", (const char *)entry, why);
+				failed = 1;
+				free(data);
+				continue;
+			}
+			printf("  ok     %.4s   %llu bytes, file %s (%llu bytes)\n", (const char *)entry, (unsigned long long)size, blobName, (unsigned long long)blobSize);
+			free(data);
+			continue;
+		}
+
 		printf("  ok     %.4s   %llu bytes\n", (const char *)entry, (unsigned long long)size);
 
 		// The declared modes against the track - only a warning, as with
@@ -5114,6 +5158,25 @@ static int Cmd_Info(int argc, char *argv[], int full)
 			Rld_ModesDeclaredWarn(NULL, meta.modes, &spawn, &levModes, &ids);
 		}
 		free(data);
+	}
+
+	// 4.4: an engine track's sections must join into one description.
+	if (reader.kind == RLD_KIND_ENGINE)
+	{
+		char *joined = NULL;
+		size_t joinedSize = 0;
+		const char *why = Rld_JoinSections(&reader, &joined, &joinedSize);
+
+		if (why != NULL)
+		{
+			printf("  FAILED sections   %s\n", why);
+			failed = 1;
+		}
+		else
+		{
+			printf("  ok     sections   joined into one track description, %llu bytes\n", (unsigned long long)joinedSize);
+		}
+		free(joined);
 	}
 
 	// There is only ONE statement: does every chunk read match its hash in the
@@ -5663,6 +5726,391 @@ static int Rld_SelftestMake(void)
 	}
 
 	return failed;
+}
+
+//========================================================================================
+// SELFTEST-ENGINE - the reader rules of format 4.4 (the engine track), on
+// made-up bytes only: a chunk the reader does not know is skipped, a minimum
+// version above this reader is refused with the version named, the kind is
+// told by the chunks, the section chunks join (and refuse what they must),
+// and a classic track reads exactly as before. The golden hashes of the
+// classic packer stay in `selftest` (Cmd_Selftest), unchanged.
+//========================================================================================
+
+static int s_rldEngineChecks = 0;
+static int s_rldEngineFailures = 0;
+
+static void RldEngine_Check(int ok, const char *what)
+{
+	s_rldEngineChecks++;
+	if (ok)
+	{
+		printf("  ok   %s\n", what);
+	}
+	else
+	{
+		printf("  FAIL %s\n", what);
+		s_rldEngineFailures++;
+	}
+}
+
+// One chunk of a made-up container; bytes are copied.
+static void RldEngine_Add(struct RldContainer *c, const char *type, const void *bytes, size_t size)
+{
+	struct RldChunk *chunk = &c->chunks[c->chunkCount++];
+
+	memset(chunk, 0, sizeof(*chunk));
+	memcpy(chunk->type, type, 4);
+	chunk->stored = (u8 *)malloc(size ? size : 1u);
+	if (size > 0u)
+	{
+		memcpy(chunk->stored, bytes, size);
+	}
+	chunk->sizeStored = size;
+	chunk->sizeRaw = size;
+	Sha256(chunk->stored, size, chunk->hash);
+}
+
+static void RldEngine_AddSection(struct RldContainer *c, const char *type, const char *json)
+{
+	const size_t length = strlen(json);
+	u8 *bytes = (u8 *)calloc(1, RLD_SECTION_HEAD + length);
+
+	Rld_WriteLE32(&bytes[0], RLD_ENGINE_LAYOUT);
+	memcpy(&bytes[RLD_SECTION_HEAD], json, length);
+	RldEngine_Add(c, type, bytes, RLD_SECTION_HEAD + length);
+	free(bytes);
+}
+
+static void RldEngine_AddBlob(struct RldContainer *c, const char *type, const char *name, const char *start)
+{
+	const size_t nameLength = strlen(name);
+	const size_t dataLength = 16u;
+	u8 *bytes = (u8 *)calloc(1, RLD_BLOB_HEAD + nameLength + dataLength);
+
+	Rld_WriteLE32(&bytes[0], RLD_ENGINE_LAYOUT);
+	Rld_WriteLE32(&bytes[4], (u32)nameLength);
+	memcpy(&bytes[RLD_BLOB_HEAD], name, nameLength);
+	// A GLB 2 head or a RIFF WAVE head, then made-up bytes.
+	memcpy(&bytes[RLD_BLOB_HEAD + nameLength], start, 4);
+	if (memcmp(start, "glTF", 4) == 0)
+	{
+		Rld_WriteLE32(&bytes[RLD_BLOB_HEAD + nameLength + 4], 2u);
+	}
+	else
+	{
+		memcpy(&bytes[RLD_BLOB_HEAD + nameLength + 8], "WAVE", 4);
+	}
+	RldEngine_Add(c, type, bytes, RLD_BLOB_HEAD + nameLength + dataLength);
+	free(bytes);
+}
+
+static void RldEngine_AddMeta(struct RldContainer *c)
+{
+	u8 meta[0x38 + 8];
+
+	memset(meta, 0, sizeof(meta));
+	Rld_WriteLE32(&meta[0x00], 1u);
+	Rld_WriteLE32(&meta[0x24], 1u);
+	Rld_WriteLE32(&meta[0x28], RLD_MODE_RACE);
+	Rld_WriteLE32(&meta[0x34], 2u);
+	Rld_WriteLE32(&meta[0x38], 0u);
+	Rld_WriteLE32(&meta[0x3c], 0u);
+	RldEngine_Add(c, "META", meta, sizeof(meta));
+}
+
+static void RldEngine_Free(struct RldContainer *c)
+{
+	int i;
+
+	for (i = 0; i < c->chunkCount; i++)
+	{
+		free(c->chunks[i].stored);
+	}
+	c->chunkCount = 0;
+}
+
+// The full engine chunk set; sections as given (NULL = left out).
+static void RldEngine_Base(struct RldContainer *c, const char *phys, const char *zone)
+{
+	memset(c, 0, sizeof(*c));
+	RldEngine_AddMeta(c);
+	RldEngine_AddSection(c, "TDSC", "{\"format\":\"test\",\"version\":1}");
+	RldEngine_AddSection(c, "GDEF", "{\"render\":{\"glb\":\"track.glb\"}}");
+	RldEngine_AddBlob(c, "GEOM", "track.glb", "glTF");
+	RldEngine_AddSection(c, "COLS", "{\"collision\":{\"glb\":\"collision.glb\"}}");
+	RldEngine_AddBlob(c, "COLG", "collision.glb", "glTF");
+	RldEngine_AddSection(c, "PATH", "{\"race\":{\"laps\":3},\"nav\":{}}");
+	if (phys != NULL)
+	{
+		RldEngine_AddSection(c, "PHYS", phys);
+	}
+	if (zone != NULL)
+	{
+		RldEngine_AddSection(c, "ZONE", zone);
+	}
+	RldEngine_AddBlob(c, "STRM", "music.wav", "RIFF");
+}
+
+// The classic chunk set with made-up LEVD/VRMD bytes (the envelope does not
+// look into them).
+static void RldEngine_Classic(struct RldContainer *c)
+{
+	static const u8 lev[64] = {1, 2, 3};
+	static const u8 vrm[32] = {4, 5, 6};
+
+	memset(c, 0, sizeof(*c));
+	RldEngine_AddMeta(c);
+	RldEngine_Add(c, "LEVD", lev, sizeof(lev));
+	RldEngine_Add(c, "VRMD", vrm, sizeof(vrm));
+}
+
+// Writes the container with this header (minor, flags, word 0x14) to TEMP and
+// opens it as a track. Returns Rld_Open's text (NULL = accepted); the reader
+// stays open when accepted.
+static const char *RldEngine_Open(struct RldContainer *c, u32 minor, u32 flags, u32 word14, struct RldReader *reader, char *path, size_t pathSize)
+{
+	const char *folder = getenv("TEMP");
+	size_t size = 0;
+	u8 *bytes;
+	FILE *file;
+
+	if ((folder == NULL) || (folder[0] == '\0'))
+	{
+		folder = getenv("TMP");
+	}
+	snprintf(path, pathSize, "%s%srldpack-engine-test.rldtrack", (folder != NULL) ? folder : ".", (folder != NULL) ? "/" : "/");
+	bytes = Rld_WriteEnvelope(&s_rldTrackFormat, flags, c, &size);
+	if (bytes == NULL)
+	{
+		memset(reader, 0, sizeof(*reader));
+		return "out of memory";
+	}
+	Rld_WriteLE16(&bytes[0x0a], minor);
+	Rld_WriteLE32(&bytes[0x14], word14);
+	file = fopen(path, "wb");
+	if (file != NULL)
+	{
+		fwrite(bytes, 1, size, file);
+		fclose(file);
+	}
+	free(bytes);
+	return Rld_Open(reader, path);
+}
+
+static int RldEngine_SameText(const char *a, const char *b)
+{
+	return (a != NULL) && (b != NULL) && (strcmp(a, b) == 0);
+}
+
+static int Cmd_SelftestEngine(void)
+{
+	struct RldContainer c;
+	struct RldReader reader;
+	char path[1024];
+	const char *error;
+	char *joined = NULL;
+	size_t joinedSize = 0;
+	char text[16];
+	const u32 own = Rld_ReaderVersion();
+
+	printf("rldpack self-test of format %u.%u (the engine track)\n", (unsigned)RLD_VERSION_MAJOR, (unsigned)RLD_VERSION_MINOR_ENGINE);
+
+	// Versions.
+	RldEngine_Check(Rld_PackVersion("0.7.5 Beta") == 0x000705u, "version \"0.7.5 Beta\" packs to 0x000705");
+	RldEngine_Check(Rld_PackVersion("1.12") == 0x010c00u, "version \"1.12\" packs to 0x010c00");
+	Rld_VersionText(0x630000u, text, sizeof(text));
+	RldEngine_Check(strcmp(text, "99.0") == 0, "version text of 0x630000 is \"99.0\"");
+	Rld_VersionText(0x000705u, text, sizeof(text));
+	RldEngine_Check(strcmp(text, "0.7.5") == 0, "version text of 0x000705 is \"0.7.5\"");
+	RldEngine_Check(own == Rld_PackVersion(CTR_NATIVE_VERSION), "this reader's version comes from CTR_NATIVE_VERSION");
+
+	// 1. A classic track with an unknown chunk: accepted, classic, the chunk skipped.
+	RldEngine_Classic(&c);
+	RldEngine_Add(&c, "ZUNK", "an unknown chunk", 16);
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR, 0u, 0u, &reader, path, sizeof(path));
+	RldEngine_Check(error == NULL, "classic + unknown chunk ZUNK: accepted");
+	if (error == NULL)
+	{
+		int index = -1;
+		size_t size = 0;
+		const char *why = NULL;
+		u8 *data;
+
+		RldEngine_Check(reader.kind == RLD_KIND_CLASSIC, "classic + unknown chunk: kind classic");
+		Rld_FindEntry(&reader, "ZUNK", &index);
+		RldEngine_Check((index >= 0) && (Rld_ChunkLimit(&reader.directory[index * RLD_DIR_ENTRY_SIZE]) == 0u), "ZUNK has no limit - unknown");
+		data = (index >= 0) ? Rld_ReadChunk(&reader, index, &size, &why) : NULL;
+		RldEngine_Check((data == NULL) && RldEngine_SameText(why, "not a chunk type of this format - skipped, not read"), "ZUNK is skipped, not read");
+		free(data);
+		Rld_Close(&reader);
+	}
+	RldEngine_Free(&c);
+
+	// 2. A classic track without bits and a non-zero word 0x14: DAMAGED as in 4.2.
+	RldEngine_Classic(&c);
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR, 0u, 0x000100u, &reader, path, sizeof(path));
+	RldEngine_Check(RldEngine_SameText(error, "a reserved header field is not zero") && (reader.refusal == RLD_REFUSAL_DAMAGED),
+	                "classic, no bits, word 0x14 set: DAMAGED as before");
+	RldEngine_Check(reader.minVersion == 0u, "  without the bit word 0x14 is not a version");
+	RldEngine_Free(&c);
+
+	// 3. A classic track with a minimum version that this reader meets: accepted, classic.
+	RldEngine_Classic(&c);
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD, own, &reader, path, sizeof(path));
+	RldEngine_Check((error == NULL) && (reader.kind == RLD_KIND_CLASSIC) && (reader.minVersion == own), "classic with the minimum version of this reader: accepted");
+	Rld_Close(&reader);
+	RldEngine_Free(&c);
+
+	// 4. Minimum version too high: NEEDS NEWER, the version kept for the text.
+	RldEngine_Classic(&c);
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD, 0x630000u, &reader, path, sizeof(path));
+	RldEngine_Check((error != NULL) && (reader.refusal == RLD_REFUSAL_NEWER) && (reader.minVersion == 0x630000u),
+	                "minimum version 99.0: NEEDS NEWER, version 99.0 kept");
+	RldEngine_Free(&c);
+
+	// 5. The same with a reader set to 0.8.0: 0.8.1 refused, 0.8.0 accepted.
+	s_rldReaderVersionForTest = 0x000800u;
+	RldEngine_Classic(&c);
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD, 0x000801u, &reader, path, sizeof(path));
+	RldEngine_Check((error != NULL) && (reader.refusal == RLD_REFUSAL_NEWER), "reader 0.8.0, file needs 0.8.1: NEEDS NEWER");
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD, 0x000800u, &reader, path, sizeof(path));
+	RldEngine_Check(error == NULL, "reader 0.8.0, file needs 0.8.0: accepted");
+	Rld_Close(&reader);
+	// The version comes before the unknown bits: a newer file names its version.
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD | 0x4u, 0x000900u, &reader, path, sizeof(path));
+	RldEngine_Check((error != NULL) && (reader.minVersion == 0x000900u) && (reader.unknownFlags == 0u), "needs 0.9.0 and an unknown bit: refused for the version");
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD | 0x4u, 0x000800u, &reader, path, sizeof(path));
+	RldEngine_Check((error != NULL) && (reader.refusal == RLD_REFUSAL_NEWER) && (reader.unknownFlags == 0x4u), "version met, unknown bit 0x4: NEEDS NEWER for the bit");
+	s_rldReaderVersionForTest = 0u;
+	RldEngine_Free(&c);
+
+	// 6. The engine track: accepted, kind engine; the join and the file view.
+	RldEngine_Base(&c, "{\"physics\":{\"version\":1,\"gravity_volumes\":[]}}", "{\"physics\":{\"zones\":[{\"id\":1}],\"maglev_low_speed\":4}}");
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD | RLD_FEATURE_ENGINE_TRACK, own, &reader, path, sizeof(path));
+	RldEngine_Check((error == NULL) && (reader.kind == RLD_KIND_ENGINE), "engine track: accepted, kind engine");
+	if (error == NULL)
+	{
+		static const char want[] = "{\"format\":\"test\",\"version\":1,\"render\":{\"glb\":\"track.glb\"},\"collision\":{\"glb\":\"collision.glb\"},"
+		                           "\"race\":{\"laps\":3},\"nav\":{},\"physics\":{\"version\":1,\"gravity_volumes\":[],\"zones\":[{\"id\":1}],"
+		                           "\"maglev_low_speed\":4}}";
+		int index = -1;
+		size_t size = 0;
+		const char *why = NULL;
+		u8 *data;
+		char name[RLD_BLOB_NAME_MAX + 1];
+		const u8 *file;
+		size_t fileSize = 0;
+
+		error = Rld_JoinSections(&reader, &joined, &joinedSize);
+		RldEngine_Check((error == NULL) && (joined != NULL) && (strcmp(joined, want) == 0) && (joinedSize == strlen(want)),
+		                "sections joined in directory order, PHYS and ZONE one level deep into physics");
+		if ((error != NULL) || (joined == NULL) || (strcmp(joined, want) != 0))
+		{
+			printf("       got  %s\n       want %s\n", (joined != NULL) ? joined : (error != NULL ? error : "?"), want);
+		}
+		free(joined);
+		joined = NULL;
+		Rld_FindEntry(&reader, "GEOM", &index);
+		data = (index >= 0) ? Rld_ReadChunk(&reader, index, &size, &why) : NULL;
+		RldEngine_Check((data != NULL) && (Rld_BlobView(data, size, name, &file, &fileSize) == NULL) && (strcmp(name, "track.glb") == 0) &&
+		                    (fileSize == 16u) && (Rld_BlobCheckContent((const u8 *)"GEOM", file, fileSize) == NULL),
+		                "GEOM: file chunk track.glb, 16 bytes, a GLB 2");
+		free(data);
+		Rld_Close(&reader);
+	}
+	// Without the engine bit: as in 4.2, LEVD is missing.
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD, own, &reader, path, sizeof(path));
+	RldEngine_Check(RldEngine_SameText(error, "LEVD is missing - required chunk"), "engine chunks without the engine bit: LEVD is missing, as before");
+	RldEngine_Free(&c);
+
+	// 7. Engine track without GEOM: its own text.
+	RldEngine_Base(&c, NULL, NULL);
+	free(c.chunks[3].stored);
+	c.chunks[3] = c.chunks[c.chunkCount - 1];
+	c.chunkCount--;
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD | RLD_FEATURE_ENGINE_TRACK, own, &reader, path, sizeof(path));
+	RldEngine_Check(RldEngine_SameText(error, "GEOM is missing - required chunk of an engine track"), "engine track without GEOM: refused, GEOM named");
+	RldEngine_Free(&c);
+
+	// 8. Engine bit with LEVD in the file: classic, so VRMD is required.
+	RldEngine_Base(&c, NULL, NULL);
+	RldEngine_Add(&c, "LEVD", "lev", 3);
+	error = RldEngine_Open(&c, RLD_VERSION_MINOR_ENGINE, RLD_FEATURE_MIN_RELOAD | RLD_FEATURE_ENGINE_TRACK, own, &reader, path, sizeof(path));
+	RldEngine_Check(RldEngine_SameText(error, "VRMD is missing - required chunk"), "engine bit with LEVD: classic by its chunks, VRMD missing");
+	RldEngine_Free(&c);
+
+	// 9. The join rule's refusals, on texts.
+	{
+		const char *t[3];
+		size_t s[3];
+
+		t[0] = "{\"physics\":{\"a\":1}}";
+		t[1] = "{\"physics\":{\"a\":2}}";
+		s[0] = strlen(t[0]);
+		s[1] = strlen(t[1]);
+		error = Rld_JoinSectionTexts(t, s, 2, &joined, &joinedSize);
+		RldEngine_Check(RldEngine_SameText(error, "a key appears twice in a section that section chunks share"), "join: second-level key twice refused");
+		free(joined);
+		t[1] = "{\"physics\":[1]}";
+		s[1] = strlen(t[1]);
+		error = Rld_JoinSectionTexts(t, s, 2, &joined, &joinedSize);
+		RldEngine_Check(RldEngine_SameText(error, "a section that two section chunks share is not an object in both"), "join: shared key not an object refused");
+		free(joined);
+		t[0] = "{\"race\":1,\"race\":2}";
+		s[0] = strlen(t[0]);
+		error = Rld_JoinSectionTexts(t, s, 1, &joined, &joinedSize);
+		RldEngine_Check(RldEngine_SameText(error, "a section appears twice in one section chunk"), "join: key twice in one chunk refused");
+		free(joined);
+		t[0] = "[1,2]";
+		s[0] = strlen(t[0]);
+		error = Rld_JoinSectionTexts(t, s, 1, &joined, &joinedSize);
+		RldEngine_Check(RldEngine_SameText(error, "a section chunk does not hold one JSON object"), "join: not an object refused");
+		free(joined);
+		t[0] = " { \"a\" : { \"b\" : [ 1 , \"x\\\"}\" ] } , \"c\" : null } ";
+		s[0] = strlen(t[0]);
+		t[1] = "{}";
+		s[1] = 2;
+		t[2] = "{\"d\":true}";
+		s[2] = strlen(t[2]);
+		error = Rld_JoinSectionTexts(t, s, 3, &joined, &joinedSize);
+		RldEngine_Check((error == NULL) && (strcmp(joined, "{\"a\":{ \"b\" : [ 1 , \"x\\\"}\" ] },\"c\":null,\"d\":true}") == 0),
+		                "join: white space, an escaped quote and an empty chunk");
+		if ((error == NULL) && (joined != NULL))
+		{
+			printf("       joined %s\n", joined);
+		}
+		free(joined);
+		joined = NULL;
+	}
+
+	// 10. The file view's refusals.
+	{
+		u8 blob[RLD_BLOB_HEAD + 8];
+		char name[RLD_BLOB_NAME_MAX + 1];
+		const u8 *file;
+		size_t fileSize;
+
+		memset(blob, 0, sizeof(blob));
+		Rld_WriteLE32(&blob[0], RLD_ENGINE_LAYOUT);
+		Rld_WriteLE32(&blob[4], 4u);
+		memcpy(&blob[RLD_BLOB_HEAD], "../x", 4);
+		RldEngine_Check(Rld_BlobView(blob, sizeof(blob), name, &file, &fileSize) != NULL, "file view: name \"../x\" refused");
+		memcpy(&blob[RLD_BLOB_HEAD], ".abc", 4);
+		RldEngine_Check(Rld_BlobView(blob, sizeof(blob), name, &file, &fileSize) != NULL, "file view: name starting with a dot refused");
+		memcpy(&blob[RLD_BLOB_HEAD], "a.gl", 4);
+		RldEngine_Check((Rld_BlobView(blob, sizeof(blob), name, &file, &fileSize) == NULL) && (fileSize == 4u), "file view: name \"a.gl\" accepted, 4 bytes of file");
+		Rld_WriteLE32(&blob[4], 64u);
+		RldEngine_Check(Rld_BlobView(blob, sizeof(blob), name, &file, &fileSize) != NULL, "file view: name longer than the chunk refused");
+		Rld_WriteLE32(&blob[4], 4u);
+		Rld_WriteLE32(&blob[0], 2u);
+		RldEngine_Check(Rld_BlobView(blob, sizeof(blob), name, &file, &fileSize) != NULL, "file view: unknown layout refused");
+		RldEngine_Check(Rld_BlobCheckContent((const u8 *)"STRM", (const u8 *)"glTF____________", 16) != NULL, "STRM must hold a RIFF WAVE");
+	}
+
+	remove(path);
+	printf("rldpack engine self-test: %d checks, %d failures\n", s_rldEngineChecks, s_rldEngineFailures);
+	return (s_rldEngineFailures == 0) ? 0 : 1;
 }
 
 static int Cmd_Selftest(void)
@@ -6796,6 +7244,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "selftest") == 0)
 	{
 		return Cmd_Selftest();
+	}
+	if (strcmp(argv[1], "selftest-engine") == 0)
+	{
+		return Cmd_SelftestEngine();
 	}
 	if (strcmp(argv[1], "selftest-hires") == 0)
 	{

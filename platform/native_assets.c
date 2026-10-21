@@ -8,6 +8,7 @@
 #include <rldtrack.inc>
 
 #include <platform/native_disc_image.h>
+#include <SDL3/SDL.h>
 #include <platform/native_path.h>
 
 #if defined(_WIN32)
@@ -1093,6 +1094,12 @@ internal int NativeTrack_MissingLevTables(struct NativeTrackEntry *entry, const 
 	return found;
 }
 
+// A chunk type byte for a log line: itself when printable, '?' otherwise.
+internal char NativeTrack_Printable(u8 c)
+{
+	return ((c >= 0x20u) && (c < 0x7fu)) ? (char)c : '?';
+}
+
 // Reads everything that belongs in the list, and does not touch LEVD and VRMD.
 internal void NativeTrack_ReadForList(struct NativeTrackEntry *entry)
 {
@@ -1114,6 +1121,13 @@ internal void NativeTrack_ReadForList(struct NativeTrackEntry *entry)
 	entry->formatMajor = reader.major;
 	entry->formatMinor = reader.minor;
 	entry->unknownFlags = reader.unknownFlags;
+	entry->minVersion = reader.minVersion;
+	entry->kind = reader.kind;
+	entry->versionText[0] = '\0';
+	if ((reader.minVersion != 0u) && (reader.minVersion > Rld_ReaderVersion()))
+	{
+		Rld_VersionText(reader.minVersion, entry->versionText, sizeof(entry->versionText));
+	}
 	if (error != NULL)
 	{
 		entry->problem = error;
@@ -1121,6 +1135,23 @@ internal void NativeTrack_ReadForList(struct NativeTrackEntry *entry)
 		                 : (reader.refusal == RLD_REFUSAL_OLDER) ? NATIVE_TRACK_REFUSAL_OLDER
 		                                                         : NATIVE_TRACK_REFUSAL_DAMAGED;
 		return;
+	}
+
+	// 4.4: what this build skips, named once per file - a chunk of a newer
+	// format, or SIGN and MMAP of an older one. Nothing reads them.
+	{
+		int i;
+
+		for (i = 0; i < reader.chunkCount; i++)
+		{
+			const u8 *type = &reader.directory[i * RLD_DIR_ENTRY_SIZE];
+
+			if (s_rldTrackFormat.chunkLimit(type) == 0u)
+			{
+				Platform_Log("[CTR Tracks] %s: chunk %c%c%c%c is not known to this build - skipped\n", entry->file, NativeTrack_Printable(type[0]),
+				             NativeTrack_Printable(type[1]), NativeTrack_Printable(type[2]), NativeTrack_Printable(type[3]));
+			}
+		}
 	}
 
 	// The version stamp: the SHA-256 of the LEVD, straight from the directory.
@@ -1176,6 +1207,16 @@ internal void NativeTrack_ReadForList(struct NativeTrackEntry *entry)
 	// memory correctly only shows up at load time - for that the
 	// list would have to read LEVD, and the list rule forbids that.
 	Rld_Close(&reader);
+
+	// 4.4: an engine track is listed with its name, gray: the menu cannot
+	// start it yet (it has no LEV for the donor slot); --ext-track <file>
+	// does. Provisional - maintainer decides how the menu starts it.
+	if (reader.kind == RLD_KIND_ENGINE)
+	{
+		entry->problem = "an engine track - not startable from the menu yet, it runs through --ext-track <file>";
+		entry->refusal = NATIVE_TRACK_REFUSAL_ENGINE;
+		return;
+	}
 
 	entry->ok = 1;
 	entry->refusal = NATIVE_TRACK_REFUSAL_NONE;
@@ -1244,7 +1285,16 @@ const char *NativeTrack_WhyNotOffered(int index, int mode, struct NativeTrackRef
 		switch (entry->refusal)
 		{
 		case NATIVE_TRACK_REFUSAL_NEWER:
+			// 4.4: when the file names the version it needs, the lines say which.
+			if (entry->versionText[0] != '\0')
+			{
+				NativeTrack_RefusalLines(text, "NEEDS NEWER", "NEEDS", "CTR RELOAD", entry->versionText, "OR NEWER");
+				break;
+			}
 			NativeTrack_RefusalLines(text, "NEEDS NEWER", "NEEDS A", "NEWER", "VERSION OF", "CTR RELOAD");
+			break;
+		case NATIVE_TRACK_REFUSAL_ENGINE:
+			NativeTrack_RefusalLines(text, "ENGINE TRACK", "ENGINE TRACK", "NOT FROM", "THE MENU YET", NULL);
 			break;
 		case NATIVE_TRACK_REFUSAL_OLDER:
 			// Players pack with Reload Studio, not with rldpack. "IN
@@ -1489,6 +1539,12 @@ internal void NativeTrack_AddFile(const char *dirPath, const char *fileName)
 	else
 	{
 		Platform_Log("[CTR Tracks] %s: REJECTED - %s\n", entry->file, (entry->problem != NULL) ? entry->problem : "unknown");
+
+		// 4.4: the version the file names, in the words of the lines.
+		if (entry->versionText[0] != '\0')
+		{
+			Platform_Log("[CTR Tracks]   needs Reload %s - this build is CTR Reload %s\n", entry->versionText, CTR_NATIVE_VERSION);
+		}
 
 		// Both numbers if the version was the reason.
 		if ((entry->refusal == NATIVE_TRACK_REFUSAL_NEWER) || (entry->refusal == NATIVE_TRACK_REFUSAL_OLDER))
@@ -4018,4 +4074,337 @@ const u8 *NativeTrack_SubfileData(int subfileIndex, u32 *sizeOut)
 	}
 
 	return NULL;
+}
+
+//----------------------------------------------------------------------------------------
+// THE ENGINE TRACK (format 4.4) - provisional, maintainer decides.
+//
+// See include/platform/native_assets.h. The container is taken apart into a
+// folder because every part of the external track reads files by name from
+// its folder (the JSON, the GLB loaders, the music stream); a folder written
+// from a container is byte for byte the folder the container was packed from,
+// except exttrack.json, which is the joined description (the same values, the
+// sections in container order). Reading straight from the container instead
+// would change every one of those loaders - a later step.
+
+#define NATIVE_ENGINE_CACHE_DIR "cache/exttrack"
+#define NATIVE_ENGINE_JSON_NAME "exttrack.json"
+
+int NativeTrack_IsContainerPath(const char *path)
+{
+	return (path != NULL) && NativeTrack_HasExtension(path);
+}
+
+internal void NativeEngineTrack_Why(char *why, int whySize, const char *text)
+{
+	if ((why != NULL) && (whySize > 0))
+	{
+		snprintf(why, (size_t)whySize, "%s", (text != NULL) ? text : "refused");
+	}
+}
+
+// The file name part of a path.
+internal const char *NativeEngineTrack_FileName(const char *path)
+{
+	const char *name = path + strlen(path);
+
+	while ((name > path) && (name[-1] != '/') && (name[-1] != '\\'))
+	{
+		name--;
+	}
+	return name;
+}
+
+// Opens and checks; on success the reader stays open (caller closes) and
+// *joined holds the description (caller frees).
+internal int NativeEngineTrack_Open(const char *path, struct RldReader *reader, char **joined, size_t *joinedSize, char *why, int whySize)
+{
+	const char *error;
+	int i;
+
+	*joined = NULL;
+	*joinedSize = 0;
+	error = Rld_Open(reader, path);
+	if (error != NULL)
+	{
+		if ((reader->refusal == RLD_REFUSAL_NEWER) && (reader->minVersion > Rld_ReaderVersion()))
+		{
+			char version[16];
+
+			Rld_VersionText(reader->minVersion, version, sizeof(version));
+			if ((why != NULL) && (whySize > 0))
+			{
+				snprintf(why, (size_t)whySize, "needs Reload %s - this build is CTR Reload %s", version, CTR_NATIVE_VERSION);
+			}
+			return 0;
+		}
+		NativeEngineTrack_Why(why, whySize, error);
+		return 0;
+	}
+	if (reader->kind != RLD_KIND_ENGINE)
+	{
+		Rld_Close(reader);
+		NativeEngineTrack_Why(why, whySize, "a classic track (LEV and VRM) - it plays from the tracks folder, not through --ext-track");
+		return 0;
+	}
+
+	// Every file chunk: hash, head, name, content start. Names must differ
+	// from each other and from the description's own name.
+	{
+		char names[4][RLD_BLOB_NAME_MAX + 1];
+		int nameCount = 0;
+
+		for (i = 0; i < reader->chunkCount; i++)
+		{
+			const u8 *entry = &reader->directory[i * RLD_DIR_ENTRY_SIZE];
+			char name[RLD_BLOB_NAME_MAX + 1];
+			const u8 *file;
+			size_t fileSize;
+			size_t size = 0;
+			u8 *bytes;
+			int j;
+
+			if (!Rld_IsBlobType(entry))
+			{
+				continue;
+			}
+			bytes = Rld_ReadChunk(reader, i, &size, &error);
+			if (bytes == NULL)
+			{
+				Rld_Close(reader);
+				NativeEngineTrack_Why(why, whySize, error);
+				return 0;
+			}
+			error = Rld_BlobView(bytes, size, name, &file, &fileSize);
+			if (error == NULL)
+			{
+				error = Rld_BlobCheckContent(entry, file, fileSize);
+			}
+			if ((error == NULL) && (strcmp(name, NATIVE_ENGINE_JSON_NAME) == 0))
+			{
+				error = "a file chunk is named like the track description";
+			}
+			for (j = 0; (error == NULL) && (j < nameCount); j++)
+			{
+				if (strcmp(names[j], name) == 0)
+				{
+					error = "two file chunks carry the same file name";
+				}
+			}
+			free(bytes);
+			if (error != NULL)
+			{
+				Rld_Close(reader);
+				NativeEngineTrack_Why(why, whySize, error);
+				return 0;
+			}
+			// At most four file types, each once (Rld_OpenAs refuses a type twice).
+			if (nameCount < 4)
+			{
+				memcpy(names[nameCount], name, sizeof(name));
+				nameCount++;
+			}
+		}
+	}
+
+	error = Rld_JoinSections(reader, joined, joinedSize);
+	if (error != NULL)
+	{
+		Rld_Close(reader);
+		NativeEngineTrack_Why(why, whySize, error);
+		return 0;
+	}
+	return 1;
+}
+
+int NativeTrack_CheckEngineTrack(const char *path, char *why, int whySize)
+{
+	struct RldReader reader;
+	char *joined = NULL;
+	size_t joinedSize = 0;
+
+	NativeEngineTrack_Why(why, whySize, "");
+	if ((path == NULL) || !NativeEngineTrack_Open(path, &reader, &joined, &joinedSize, why, whySize))
+	{
+		return 0;
+	}
+	free(joined);
+	Rld_Close(&reader);
+	return 1;
+}
+
+// Writes bytes to dir/name (through name.part, then renamed over an old one)
+// and reads them back against their SHA-256.
+internal const char *NativeEngineTrack_WriteFile(const char *dir, const char *name, const u8 *bytes, size_t size)
+{
+	char path[NATIVE_ASSETS_PATH_MAX];
+	char part[NATIVE_ASSETS_PATH_MAX + 8];
+	u8 want[32];
+	u8 got[32];
+	u8 *back;
+	FILE *file;
+	size_t read;
+
+	if (!NativePath_Join(path, sizeof(path), NativeStr8_FromCString(dir), NativeStr8_FromCString(name)) ||
+	    (snprintf(part, sizeof(part), "%s.part", path) >= (int)sizeof(part)))
+	{
+		return "the path of a file in the cache folder is too long";
+	}
+	file = fopen(part, "wb");
+	if (file == NULL)
+	{
+		return "a file in the cache folder cannot be written";
+	}
+	if ((size > 0u) && (fwrite(bytes, 1, size, file) != size))
+	{
+		fclose(file);
+		SDL_RemovePath(part);
+		return "a file in the cache folder cannot be written in full";
+	}
+	if (fclose(file) != 0)
+	{
+		SDL_RemovePath(part);
+		return "a file in the cache folder cannot be closed";
+	}
+	SDL_RemovePath(path);
+	if (!SDL_RenamePath(part, path))
+	{
+		SDL_RemovePath(part);
+		return "a file in the cache folder cannot be renamed into place";
+	}
+
+	// Read back: what the external track will read must be what the container holds.
+	Sha256(bytes, size, want);
+	back = (u8 *)malloc(size ? size : 1u);
+	file = fopen(path, "rb");
+	read = ((back != NULL) && (file != NULL)) ? fread(back, 1, size, file) : 0u;
+	if ((file != NULL) && (read == size) && (fgetc(file) != EOF))
+	{
+		read = size + 1u;
+	}
+	if (file != NULL)
+	{
+		fclose(file);
+	}
+	if ((back == NULL) || (read != size))
+	{
+		free(back);
+		return "a file in the cache folder does not read back with its size";
+	}
+	Sha256(back, size, got);
+	free(back);
+	if (memcmp(want, got, 32) != 0)
+	{
+		return "a file in the cache folder does not read back with its SHA-256";
+	}
+	return NULL;
+}
+
+int NativeTrack_ExtractEngineTrack(const char *path, char *dirOut, int dirSize, char *why, int whySize)
+{
+	struct RldReader reader;
+	char *joined = NULL;
+	size_t joinedSize = 0;
+	char base[NATIVE_ASSETS_PATH_MAX];
+	char folder[160];
+	char dir[NATIVE_ASSETS_PATH_MAX];
+	u8 dirHash[32];
+	const char *name;
+	const char *error = NULL;
+	size_t nameLength;
+	int files = 0;
+	int i;
+
+	if ((dirOut != NULL) && (dirSize > 0))
+	{
+		dirOut[0] = '\0';
+	}
+	NativeEngineTrack_Why(why, whySize, "");
+	if ((path == NULL) || (dirOut == NULL) || (dirSize <= 0) || !NativeEngineTrack_Open(path, &reader, &joined, &joinedSize, why, whySize))
+	{
+		return 0;
+	}
+
+	// The folder: one per container version - the SHA-256 of the directory
+	// covers the hash of every chunk. The file name keeps only A-Z a-z 0-9 . _ -
+	name = NativeEngineTrack_FileName(path);
+	Sha256(reader.directory, (size_t)reader.chunkCount * RLD_DIR_ENTRY_SIZE, dirHash);
+	nameLength = strlen(name) - strlen(NATIVE_TRACK_EXTENSION);
+	if (nameLength > 96u)
+	{
+		nameLength = 96u;
+	}
+	snprintf(folder, sizeof(folder), "%.*s-", (int)nameLength, name);
+	for (i = 0; folder[i] != '\0'; i++)
+	{
+		const char c = folder[i];
+
+		if (!(((c >= 'A') && (c <= 'Z')) || ((c >= 'a') && (c <= 'z')) || ((c >= '0') && (c <= '9')) || (c == '.') || (c == '_') || (c == '-')))
+		{
+			folder[i] = '_';
+		}
+	}
+	for (i = 0; i < 8; i++)
+	{
+		snprintf(&folder[strlen(folder)], sizeof(folder) - strlen(folder), "%02x", dirHash[i]);
+	}
+	if (!NativePath_Join(base, sizeof(base), NativeStr8_FromCString(s_nativeAssetsBaseDir), NATIVE_STR8_LIT(NATIVE_ENGINE_CACHE_DIR)) ||
+	    !NativePath_Join(dir, sizeof(dir), NativeStr8_FromCString(base), NativeStr8_FromCString(folder)) || ((int)strlen(dir) >= dirSize))
+	{
+		error = "the path of the cache folder is too long";
+	}
+	if ((error == NULL) && !SDL_CreateDirectory(dir))
+	{
+		error = "the cache folder cannot be made";
+	}
+
+	// Written anew at every start, every file, whatever is there.
+	for (i = 0; (error == NULL) && (i < reader.chunkCount); i++)
+	{
+		const u8 *entry = &reader.directory[i * RLD_DIR_ENTRY_SIZE];
+		char blobName[RLD_BLOB_NAME_MAX + 1];
+		const u8 *file;
+		size_t fileSize;
+		size_t size = 0;
+		u8 *bytes;
+
+		if (!Rld_IsBlobType(entry))
+		{
+			continue;
+		}
+		bytes = Rld_ReadChunk(&reader, i, &size, &error);
+		if (bytes == NULL)
+		{
+			break;
+		}
+		error = Rld_BlobView(bytes, size, blobName, &file, &fileSize);
+		if (error == NULL)
+		{
+			error = NativeEngineTrack_WriteFile(dir, blobName, file, fileSize);
+		}
+		if (error == NULL)
+		{
+			Platform_Log("[CTR Tracks] engine track %s: %c%c%c%c -> %s, %u bytes\n", name, (char)entry[0], (char)entry[1], (char)entry[2],
+			             (char)entry[3], blobName, (unsigned)fileSize);
+			files++;
+		}
+		free(bytes);
+	}
+	if (error == NULL)
+	{
+		error = NativeEngineTrack_WriteFile(dir, NATIVE_ENGINE_JSON_NAME, (const u8 *)joined, joinedSize);
+	}
+	free(joined);
+	Rld_Close(&reader);
+
+	if (error != NULL)
+	{
+		Platform_Log("[CTR Tracks] engine track %s: not taken apart - %s\n", name, error);
+		NativeEngineTrack_Why(why, whySize, error);
+		return 0;
+	}
+	snprintf(dirOut, (size_t)dirSize, "%s", dir);
+	Platform_Log("[CTR Tracks] engine track %s: format %u.%u, %d files and %s (%u bytes) written to %s\n", name, reader.major, reader.minor, files,
+	             NATIVE_ENGINE_JSON_NAME, (unsigned)joinedSize, dir);
+	return 1;
 }

@@ -183,6 +183,13 @@ static const struct RldFormat s_rldCharFormat = {
     s_rldCharRequired,                                                // required
     s_rldCharMissing,                                                 // missingText
     RldChar_ChunkLimit,                                               // chunkLimit
+    0,                                                                // minVersionFlag (none)
+    0,                                                                // altFlag (none)
+    0,                                                                // altExcludedCount
+    NULL,                                                             // altExcluded
+    0,                                                                // altRequiredCount
+    NULL,                                                             // altRequired
+    NULL,                                                             // altMissingText
 };
 
 //========================================================================================

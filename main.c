@@ -1592,6 +1592,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 	// before any window.
 	{
 		int extGiven = 0;
+		const char *extValue = NULL;
 		int levelGiven = 0;
 		int trackGiven = 0;
 		const char *respawnValue = NULL;
@@ -1608,6 +1609,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			if (strcmp(argv[argIndex], "--ext-track") == 0)
 			{
 				extGiven = 1;
+				extValue = value;
 			}
 			else if (strcmp(argv[argIndex], "--level") == 0)
 			{
@@ -1703,6 +1705,23 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				fflush(stdout);
 				fprintf(stderr, "%s\n", refusal);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+		}
+
+		// --ext-track <file.rldtrack> (format 4.4, the engine track): the container
+		// is checked here, before any window - header, kind, every chunk's hash,
+		// the joined description. It is taken apart later, once the base folder
+		// is known (NativeArgs_ReadDisplayFlags). A folder argument as before.
+		if (extGiven && NativeTrack_IsContainerPath(extValue))
+		{
+			char why[256];
+
+			if (!NativeTrack_CheckEngineTrack(extValue, why, (int)sizeof(why)))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --ext-track: container '%s' refused - %s\n", extValue, why);
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
 			}
@@ -1920,7 +1939,27 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			// The length and --level were checked before any window. The slot is
 			// the level of --level; the donor's geometry, water and sky are not
 			// drawn (the bits of --engine-hide, kept by a later --engine-hide).
-			snprintf(g_cfg_extTrackDir, sizeof(g_cfg_extTrackDir), "%s", argv[++argIndex]);
+			const char *extArg = argv[++argIndex];
+
+			// 4.4: a container (checked before any window) is taken apart into
+			// its cache folder, and the external track reads that folder.
+			if (NativeTrack_IsContainerPath(extArg))
+			{
+				char why[256];
+
+				if (!NativeTrack_ExtractEngineTrack(extArg, g_cfg_extTrackDir, (int)sizeof(g_cfg_extTrackDir), why, (int)sizeof(why)))
+				{
+					g_cfg_extTrackDir[0] = '\0';
+					printf("[CTR Native] external track container '%s' not taken apart - %s; the run goes on without it\n", extArg, why);
+					Platform_Log("[CTR Native] external track container '%s' not taken apart - %s; the run goes on without it\n", extArg, why);
+					continue;
+				}
+				printf("[CTR Native] external track container '%s' taken apart into '%s'\n", extArg, g_cfg_extTrackDir);
+			}
+			else
+			{
+				snprintf(g_cfg_extTrackDir, sizeof(g_cfg_extTrackDir), "%s", extArg);
+			}
 			for (int levelIndex = 1; (levelIndex + 1) < argc; levelIndex++)
 			{
 				if (strcmp(argv[levelIndex], "--level") == 0)
@@ -3615,6 +3654,22 @@ int main(int argc, char *argv[])
 				{
 					snprintf(g_cfg_extTrackDir, sizeof(g_cfg_extTrackDir), "%s", argv[dirIndex + 1]);
 				}
+			}
+			// 4.4: a container is taken apart first - into cache/exttrack/ below
+			// the working folder, as the base folder is not set up here - so that
+			// a part's selftest runs on the same files a race would read.
+			if (NativeTrack_IsContainerPath(g_cfg_extTrackDir))
+			{
+				char container[sizeof(g_cfg_extTrackDir)];
+				char why[256];
+
+				snprintf(container, sizeof(container), "%s", g_cfg_extTrackDir);
+				if (!NativeTrack_ExtractEngineTrack(container, g_cfg_extTrackDir, (int)sizeof(g_cfg_extTrackDir), why, (int)sizeof(why)))
+				{
+					printf("ext selftest: container '%s' not taken apart - %s\n", container, why);
+					return 1;
+				}
+				printf("ext selftest: container '%s' taken apart into '%s'\n", container, g_cfg_extTrackDir);
 			}
 			result = ExtTrack_Selftest(argv[argIndex + 1]);
 

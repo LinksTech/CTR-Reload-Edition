@@ -4,7 +4,7 @@ CTR Reload Edition has two container types. Both share one envelope:
 
 | Extension | Content | Written by | Read by |
 |---|---|---|---|
-| `.rldtrack` | a custom track, format 4.2 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
+| `.rldtrack` | a custom track, format 4.2 (frozen); since 4.4 also an engine track without LEV and VRM (provisional, section 2a) | `rldpack build`, `rldpack make`; engine tracks: a development packer outside this tree | the game, `rldpack info`, `rldpack verify` |
 | `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` (also through Reload Studio's Character page) | the game (`characters` folder), `rldpack info`, `rldpack verify` |
 
 The game reads every `.rldchar` of its `characters` folder at start; see
@@ -73,7 +73,10 @@ META inside a `.rldchar` are unknown chunks and are skipped.
 
 - A set bit means: without this feature the content is wrong.
 - A reader refuses every bit it does not know (NEEDS NEWER).
-- No bit is assigned in either format; the packers write 0.
+- `.rldchar`: no bit is assigned; the packer writes 0.
+- `.rldtrack` since 4.4 (provisional): 0x1 MIN_RELOAD (header word 0x14 is the lowest CTR Reload version that reads
+  the file) and 0x2 ENGINE_TRACK (LEVD and VRMD may be missing), both set in an engine track only (section 2a). A
+  classic track carries no bit; `rldpack` writes 0 for it.
 
 ### Compression
 
@@ -94,8 +97,9 @@ DAMAGED = `RLD_REFUSAL_DAMAGED`. The texts are fixed.
 | 5 | the 8 magic bytes match the type | DAMAGED | `no RLDTRACK magic - the extension says nothing, the magic does` (`RLDCHAR` for a character) |
 | 6 | major > the type's major | NEEDS NEWER | `needs a newer version of CTR Reload - the container format is newer than this build` |
 | 7 | major < the type's major | OLD FORMAT | `old format - pack it again with Reload Studio` |
+| 8a | only with the type's minimum-version bit (`.rldtrack` 0x1, 4.4): word 0x14 > this reader's version | NEEDS NEWER | `needs a newer version of CTR Reload - the container names the lowest version that reads it` |
 | 8 | no flag bit outside the known bits | NEEDS NEWER | `needs a newer version of CTR Reload - the container needs a feature this build does not know` |
-| 9 | reserved word 0x14 is 0 | DAMAGED | `a reserved header field is not zero` |
+| 9 | without the minimum-version bit: reserved word 0x14 is 0 | DAMAGED | `a reserved header field is not zero` |
 | 10 | file_size equals the real size | DAMAGED | `file_size does not match the real size - truncated download` |
 | 11 | chunk_count inside the type's range | DAMAGED | `chunk_count is outside 3..64` (`2..64` for a character) |
 | 12 | dir_offset >= 40, dir_offset <= file size, chunk_count x 64 bytes fit behind it | DAMAGED | `the directory does not lie inside the file` |
@@ -106,7 +110,7 @@ DAMAGED = `RLD_REFUSAL_DAMAGED`. The texts are fixed.
 | 17 | known type: size_raw <= the type's limit | DAMAGED | `a chunk is larger than the format allows for its type` |
 | 18 | every entry: no chunk type twice | DAMAGED | `a chunk type appears twice` |
 | 19 | every entry: no two non-empty chunks overlap | DAMAGED | `two chunks overlap` |
-| 20 | every required chunk is present | DAMAGED | `<TYPE> is missing - required chunk` |
+| 20 | every required chunk is present; `.rldtrack` 4.4: with bit 0x2 and neither LEVD nor VRMD, the engine set (section 2a) | DAMAGED | `<TYPE> is missing - required chunk` (`... - required chunk of an engine track`) |
 
 - Steps 14 to 19 run per directory entry, in directory order. Steps 18 and 19
   compare the entry with each earlier entry in turn: 18, then 19, for the first
@@ -346,6 +350,45 @@ payload from payloadOffset.
 |---|---|---|
 | SNDB | the track loads without its own sound | `Rld_CheckSndbBanks` refuses: the track is refused (DAMAGED) |
 | PARM | the defaults apply | invalid single key: its default applies |
+
+## 2a. `.rldtrack` 4.4 - the engine track (provisional, maintainer decides)
+
+A track the engine draws from its own data, without LEV and VRM. Major 4, minor 4, header flags 0x3, header word
+0x14 = the lowest CTR Reload version, packed `(major << 16) | (minor << 8) | patch`. The kind is told by the chunks:
+with bit 0x2 and neither LEVD nor VRMD the file is an engine track, otherwise classic (and needs LEVD and VRMD as
+always). An older reader (4.0 to 4.3) refuses an engine track with NEEDS NEWER at step 8, before it misses LEVD. A
+classic track is written exactly as before.
+
+| Chunk | Required | Limit | Content |
+|---|---|---|---|
+| META | yes | 64 KiB | unchanged; primBytes = memTotal = 0 |
+| TDSC | yes | 1 MiB | section chunk: format, version, units, counts, camera, music and every section no other chunk takes |
+| GDEF | yes | 16 MiB | section chunk: render, sky, uv_anims, node_anims |
+| GEOM | yes | 64 MiB | file chunk: the hi-res geometry, a GLB with its textures |
+| COLS | yes | 1 MiB | section chunk: collision |
+| COLG | yes | 16 MiB | file chunk: the collision GLB, surface kinds in the node extras |
+| PATH | yes | 8 MiB | section chunk: race (start grid, checkpoints, respawn), nav (driving lines) |
+| SKYB | no | 16 MiB | file chunk: the sky GLB |
+| PLAC | no | 1 MiB | section chunk: crates |
+| PHYS | no | 1 MiB | section chunk: physics values (`physics` without the zone members) |
+| ZONE | no | 1 MiB | section chunk: anti-gravity zones and splines (the zone members of `physics`) |
+| OBST | no | 1 MiB | section chunk: moving obstacles |
+| PORT | no | 1 MiB | section chunk: portals |
+| MINI | no | 1 MiB | section chunk: the mini map |
+| STRM | no | 64 MiB | file chunk: the music, WAV PCM16 (provisional); SNDB stays as it is |
+
+- File chunk (`Rld_BlobView`): u32 layout 1, u32 nameLength 1..64, u32 0, u32 0, the file name (`A-Z a-z 0-9 . _ -`,
+  not starting with a dot), then the file unchanged. GEOM, COLG, SKYB start with a glTF 2 binary header, STRM with
+  RIFF ... WAVE.
+- Section chunk: u32 layout 1, u32 0, one JSON object whose members are sections of the track description.
+- The join (`Rld_JoinSections`): the section chunks in directory order become one object; a key in one chunk only is
+  copied; a key in several chunks must be an object in each and is joined one level deep; a key twice in one chunk,
+  a second-level key twice, or a shared key that is not an object everywhere is DAMAGED. At most 32 MiB.
+- The game lists an engine track in gray (ENGINE TRACK, not startable from the menu yet). `--dev ... --ext-track
+  <file.rldtrack>` checks it before any window, takes it apart into `<base>/cache/exttrack/<name>-<16 hex>/` (one
+  folder per container version, every file written anew and read back against its hash) and runs the external
+  track from there. A classic track through `--ext-track` is refused.
+- The game names every chunk it skips once per file in its log (`chunk XXXX is not known to this build - skipped`).
 
 ## 3. `.rldchar` 1.0 (draft)
 
@@ -2473,7 +2516,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |
-| a required chunk becoming optional | not possible within one major, in either format: an older reader refuses a file without one of its required chunks as DAMAGED (`Rld_OpenAs`) |
+| a required chunk becoming optional | not possible within one major by itself: an older reader refuses a file without one of its required chunks as DAMAGED (`Rld_OpenAs`). Possible with a required-feature bit, because an older reader checks the bits (step 8) before the required chunks (step 20): that is how `.rldtrack` 4.4 lets an engine track leave out LEVD and VRMD |
 | header or directory | never: one envelope for every container type |
 
 For `.rldchar`, a delta-coded model and a texture table INSIDE CMDL (texture
@@ -2498,6 +2541,8 @@ Chunk names:
 | CHRG | `.rldchar` | optional, version 1 frozen (the hi-res driver): written by `rldpack hires-add`, drawn by the engine; unknown to the envelope |
 | CNET, CTXT | `.rldchar` | optional, PREVIEW (the native model and its textures): written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests), read by the game only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`); unknown to the envelope |
 | CTEX, CWHL | `.rldchar` | reserved, not assigned (the textures of the native model are CTXT, its wheels a part of CNET) |
+| TDSC, GDEF, COLS, PATH, PLAC, PHYS, ZONE, OBST, PORT, MINI | `.rldtrack` 4.4 | section chunks of an engine track (provisional) |
+| GEOM, COLG, SKYB, STRM | `.rldtrack` 4.4 | file chunks of an engine track (provisional) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
 | MMAP | blocked | menu map, taken out with 4.1; skipped in older files |
 | THMB | blocked | preview image, dropped |

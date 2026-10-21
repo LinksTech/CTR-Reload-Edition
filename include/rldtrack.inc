@@ -287,8 +287,88 @@ static void Sha256(const void *bytes, size_t size, u8 out[32])
 #define RLD_CHUNK_MAX      64
 #define RLD_META_VERSION   1
 
-// The required features this build knows: none.
-#define RLD_HEADER_FLAGS_KNOWN 0u
+// 4.4, since 2026-10-21: THE ENGINE TRACK (docs/CONTAINER_FORMAT.md, section
+// "Engine tracks"). Provisional - maintainer decides: the minor, the two bit
+// values and every chunk name below.
+//
+// A track that the engine draws from its own data - hi-res geometry as GLB,
+// collision as GLB, its description as JSON sections - and that has no LEV
+// and no VRM. The major stays 4: a classic track keeps its bytes (the packer
+// still writes RLD_VERSION_MINOR into it, the golden hashes stay), and an
+// older reader refuses an engine track through the feature bits it does not
+// know (NEEDS NEWER), before it ever looks at word 0x14 or misses LEVD.
+//
+//   RLD_FEATURE_MIN_RELOAD    header word 0x14 (reserved and 0 before) is the
+//                             lowest CTR Reload version that reads the file,
+//                             packed (major << 16) | (minor << 8) | patch. A
+//                             reader older than that says "needs Reload x.y".
+//   RLD_FEATURE_ENGINE_TRACK  LEVD and VRMD may be missing; when both are,
+//                             the engine chunk set is required instead
+//                             (s_rldTrackEngineRequired).
+//
+// A classic track never carries a bit, so for it every check, text and order
+// of the reader is the one of 4.2.
+#define RLD_VERSION_MINOR_ENGINE 4
+#define RLD_FEATURE_MIN_RELOAD   0x1u
+#define RLD_FEATURE_ENGINE_TRACK 0x2u
+
+// The required features this build knows.
+#define RLD_HEADER_FLAGS_KNOWN (RLD_FEATURE_MIN_RELOAD | RLD_FEATURE_ENGINE_TRACK)
+
+// THE VERSION OF THIS READER, for RLD_FEATURE_MIN_RELOAD: the game's version
+// string (CTR_NATIVE_VERSION from CMakeLists.txt, both sides have it), read as
+// "major.minor.patch" with anything after the numbers ignored ("0.7.5 Beta").
+// Packed like header word 0x14. A self-test may put its own number in
+// s_rldReaderVersionForTest (0 = the build's own).
+static u32 s_rldReaderVersionForTest = 0;
+
+static u32 Rld_PackVersion(const char *text)
+{
+	u32 part[3] = {0, 0, 0};
+	int i = 0;
+
+	while ((text != NULL) && (*text != '\0') && (i < 3))
+	{
+		if ((*text >= '0') && (*text <= '9'))
+		{
+			part[i] = (part[i] * 10u) + (u32)(*text - '0');
+			if (part[i] > 255u)
+			{
+				part[i] = 255u;
+			}
+		}
+		else if (*text == '.')
+		{
+			i++;
+		}
+		else
+		{
+			break;
+		}
+		text++;
+	}
+
+	return (part[0] << 16) | (part[1] << 8) | part[2];
+}
+
+static u32 Rld_ReaderVersion(void)
+{
+	return (s_rldReaderVersionForTest != 0u) ? s_rldReaderVersionForTest : Rld_PackVersion(CTR_NATIVE_VERSION);
+}
+
+// "x.y" or "x.y.z" (patch only when not 0) of a packed version, for the
+// "needs Reload x.y" lines.
+static void Rld_VersionText(u32 packed, char *out, size_t size)
+{
+	if ((packed & 0xffu) != 0u)
+	{
+		snprintf(out, size, "%u.%u.%u", (unsigned)(packed >> 16), (unsigned)((packed >> 8) & 0xffu), (unsigned)(packed & 0xffu));
+	}
+	else
+	{
+		snprintf(out, size, "%u.%u", (unsigned)(packed >> 16), (unsigned)((packed >> 8) & 0xffu));
+	}
+}
 
 // Why Rld_Open refused. The text comes back as the return value; this kind tells the
 // game which keyword the list shows, and the
@@ -336,6 +416,71 @@ enum RldRefusal
 // stranger deciding with a field in the file how much memory gets allocated.
 #define RLD_LIMIT_PARM (4u * 1024u)
 
+// THE ENGINE TRACK'S CHUNKS (4.4). Provisional - maintainer decides: the
+// names, the split of the description over the section chunks (that split is
+// the packer's alone; the reader joins whatever section chunks it finds) and
+// the limits.
+//
+// Blob chunks: one file, unchanged, behind a 16-byte head (Rld_BlobView).
+//   GEOM  the hi-res geometry: GLB with its textures and animations
+//   COLG  the collision: GLB, surface kinds in the node extras
+//   SKYB  the sky box: GLB
+//   STRM  the track's music: WAV, PCM16 - provisional, music size is open;
+//         beside SNDB, which stays what it was
+// Section chunks: one JSON object behind an 8-byte head; its members are
+// sections of the track description (Rld_JoinSections).
+//   TDSC  description: format, version, units, counts, camera, music ...
+//   GDEF  geometry rules: render, sky, uv and node animations
+//   COLS  collision section
+//   PATH  driving line, checkpoints, respawn, start grid (race, nav)
+//   PLAC  placements: crates
+//   PHYS  physics values
+//   ZONE  zones: anti-gravity volumes and splines (the zone part of physics)
+//   OBST  obstacles (moving, e.g. a train)
+//   PORT  portals
+//   MINI  the mini map
+// The limit of a GLB is the one of CHRG (64 MiB, include/rldhires.inc); the
+// joined description may not be larger than the engine's JSON text (32 MiB).
+#define RLD_LIMIT_GEOM (64u * 1024u * 1024u)
+#define RLD_LIMIT_COLG (16u * 1024u * 1024u)
+#define RLD_LIMIT_SKYB (16u * 1024u * 1024u)
+#define RLD_LIMIT_STRM (64u * 1024u * 1024u)
+#define RLD_LIMIT_GDEF (16u * 1024u * 1024u)
+#define RLD_LIMIT_PATH (8u * 1024u * 1024u)
+#define RLD_LIMIT_SECTION (1u * 1024u * 1024u)
+#define RLD_ENGINE_TEXT_MAX (32u * 1024u * 1024u)
+#define RLD_BLOB_HEAD 16u
+#define RLD_BLOB_NAME_MAX 64u
+#define RLD_SECTION_HEAD 8u
+#define RLD_ENGINE_LAYOUT 1u
+
+static const char *const s_rldBlobTypes[4] = {"GEOM", "COLG", "SKYB", "STRM"};
+static const char *const s_rldSectionTypes[10] = {"TDSC", "GDEF", "COLS", "PATH", "PLAC", "PHYS", "ZONE", "OBST", "PORT", "MINI"};
+
+static int Rld_TypeIn(const u8 *type, const char *const *list, int count)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (memcmp(type, list[i], 4) == 0)
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int Rld_IsBlobType(const u8 *type)
+{
+	return Rld_TypeIn(type, s_rldBlobTypes, 4);
+}
+
+static int Rld_IsSectionType(const u8 *type)
+{
+	return Rld_TypeIn(type, s_rldSectionTypes, 10);
+}
+
 // BLOCKED NAMES. Never assign again, not even for something else:
 //   SIGN  signature until 2026-09-19 - in old containers, skipped
 //   MMAP  menu map until 4.0         - in old containers, skipped
@@ -367,6 +512,35 @@ static u64 Rld_ChunkLimit(const u8 *type)
 	{
 		return RLD_LIMIT_PARM;
 	}
+	// 4.4, the engine track
+	if (memcmp(type, "GEOM", 4) == 0)
+	{
+		return RLD_LIMIT_GEOM;
+	}
+	if (memcmp(type, "COLG", 4) == 0)
+	{
+		return RLD_LIMIT_COLG;
+	}
+	if (memcmp(type, "SKYB", 4) == 0)
+	{
+		return RLD_LIMIT_SKYB;
+	}
+	if (memcmp(type, "STRM", 4) == 0)
+	{
+		return RLD_LIMIT_STRM;
+	}
+	if (memcmp(type, "GDEF", 4) == 0)
+	{
+		return RLD_LIMIT_GDEF;
+	}
+	if (memcmp(type, "PATH", 4) == 0)
+	{
+		return RLD_LIMIT_PATH;
+	}
+	if (Rld_IsSectionType(type))
+	{
+		return RLD_LIMIT_SECTION;
+	}
 	return 0;
 }
 
@@ -388,12 +562,39 @@ struct RldFormat
 	const char *const *required;         // 4-character chunk types that must be present
 	const char *const *missingText;      // refusal text per required type
 	u64 (*chunkLimit)(const u8 *type);   // size limit of a known type, 0 = unknown type = skipped
+
+	// 4.4. A type without them leaves them 0 and reads exactly as before.
+	u32 minVersionFlag;                  // feature bit: header word 0x14 is the lowest reader version, 0 = none
+	u32 altFlag;                         // feature bit that allows the second chunk set, 0 = none
+	int altExcludedCount;                // the second set applies when the bit is set and none of these is present
+	const char *const *altExcluded;
+	int altRequiredCount;                // the second set: required chunks and their refusal texts
+	const char *const *altRequired;
+	const char *const *altMissingText;
 };
 
 // The required chunks of a track: META, LEVD and VRMD. SNDB and PARM are optional.
 static const char *const s_rldTrackRequired[3] = {"META", "LEVD", "VRMD"};
 static const char *const s_rldTrackMissing[3] = {"META is missing - required chunk", "LEVD is missing - required chunk",
                                                  "VRMD is missing - required chunk"};
+
+// THE ENGINE TRACK (4.4): with RLD_FEATURE_ENGINE_TRACK and neither LEVD nor
+// VRMD in the file, these are required instead. Provisional - maintainer decides.
+static const char *const s_rldTrackEngineExcluded[2] = {"LEVD", "VRMD"};
+static const char *const s_rldTrackEngineRequired[7] = {"META", "TDSC", "GDEF", "GEOM", "COLS", "COLG", "PATH"};
+static const char *const s_rldTrackEngineMissing[7] = {
+    "META is missing - required chunk",
+    "TDSC is missing - required chunk of an engine track",
+    "GDEF is missing - required chunk of an engine track",
+    "GEOM is missing - required chunk of an engine track",
+    "COLS is missing - required chunk of an engine track",
+    "COLG is missing - required chunk of an engine track",
+    "PATH is missing - required chunk of an engine track",
+};
+
+// What a track is, by the chunks it carries (RldReader.kind).
+#define RLD_KIND_CLASSIC 0 // LEVD and VRMD: the donor slot, as always
+#define RLD_KIND_ENGINE  1 // no LEVD, no VRMD, the engine chunk set: drawn by the engine
 
 // .rldtrack, exactly the values and texts the reader and the packer had before
 // they were shared with other container types. Frozen since 4.1: nothing here
@@ -413,6 +614,13 @@ static const struct RldFormat s_rldTrackFormat = {
     s_rldTrackRequired,                                                // required
     s_rldTrackMissing,                                                 // missingText
     Rld_ChunkLimit,                                                    // chunkLimit
+    RLD_FEATURE_MIN_RELOAD,                                            // minVersionFlag
+    RLD_FEATURE_ENGINE_TRACK,                                          // altFlag
+    2,                                                                 // altExcludedCount
+    s_rldTrackEngineExcluded,                                          // altExcluded
+    7,                                                                 // altRequiredCount
+    s_rldTrackEngineRequired,                                          // altRequired
+    s_rldTrackEngineMissing,                                           // altMissingText
 };
 
 // WHICH MODES THE TRACK OFFERS.
@@ -759,6 +967,13 @@ struct RldReader
 	u32 unknownFlags;
 	enum RldRefusal refusal;
 
+	// 4.4: header word 0x14 when the type's minVersionFlag is set (0 otherwise),
+	// also when that was the reason to refuse; and which chunk set the file
+	// passed with (RLD_KIND_CLASSIC = the type's own required set,
+	// RLD_KIND_ENGINE = the second set).
+	u32 minVersion;
+	int kind;
+
 	// The type it was opened as (Rld_OpenAs), set before any check. Memory
 	// only, nothing in the file; Rld_ReadChunk takes the limits from it.
 	const struct RldFormat *format;
@@ -872,12 +1087,27 @@ static const char *Rld_OpenAs(struct RldReader *reader, const char *path, const 
 	// had the salt; the word is reserved and stays 0.
 	flags = Rld_ReadLE32(&header[0x0c]);
 	pad = Rld_ReadLE32(&header[0x14]);
+
+	// 4.4: with the minimum-version bit the word at 0x14 is the lowest reader
+	// version. It comes first, so that a future file that also needs bits this
+	// build does not know still names the version it needs ("needs Reload
+	// x.y"). Without the bit nothing here runs: a file without bits reads
+	// exactly as in 4.2.
+	if ((format->minVersionFlag != 0u) && ((flags & format->minVersionFlag) != 0u))
+	{
+		reader->minVersion = pad;
+		if (pad > Rld_ReaderVersion())
+		{
+			return Rld_Refuse(reader, RLD_REFUSAL_NEWER, "needs a newer version of CTR Reload - the container names the lowest version that reads it");
+		}
+	}
+
 	reader->unknownFlags = flags & ~format->flagsKnown;
 	if (reader->unknownFlags != 0)
 	{
 		return Rld_Refuse(reader, RLD_REFUSAL_NEWER, "needs a newer version of CTR Reload - the container needs a feature this build does not know");
 	}
-	if (pad != 0)
+	if ((pad != 0) && ((format->minVersionFlag == 0u) || ((flags & format->minVersionFlag) == 0u)))
 	{
 		return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, "a reserved header field is not zero");
 	}
@@ -961,23 +1191,58 @@ static const char *Rld_OpenAs(struct RldReader *reader, const char *path, const 
 		}
 	}
 
-	// The required chunks, already here: until 4.0 a line without LEVD looked
-	// healthy in the list and only failed when it was picked.
-	for (j = 0; j < format->requiredCount; j++)
+	// 4.4: WHICH SET. The second one (a track: the engine track) only with its
+	// feature bit and only when none of its excluded chunks (LEVD, VRMD) is
+	// there - the kind is told by the chunks, the bit only keeps older readers
+	// from calling the file damaged. A file with LEVD or VRMD is classic and
+	// needs both, as always.
 	{
-		int found = 0;
+		int requiredCount = format->requiredCount;
+		const char *const *required = format->required;
+		const char *const *missingText = format->missingText;
 
-		for (i = 0; i < reader->chunkCount; i++)
+		reader->kind = RLD_KIND_CLASSIC;
+		if ((format->altFlag != 0u) && ((flags & format->altFlag) != 0u))
 		{
-			if (memcmp(&reader->directory[i * RLD_DIR_ENTRY_SIZE], format->required[j], 4) == 0)
+			int excluded = 0;
+
+			for (j = 0; j < format->altExcludedCount; j++)
 			{
-				found = 1;
+				for (i = 0; i < reader->chunkCount; i++)
+				{
+					if (memcmp(&reader->directory[i * RLD_DIR_ENTRY_SIZE], format->altExcluded[j], 4) == 0)
+					{
+						excluded = 1;
+					}
+				}
+			}
+			if (!excluded)
+			{
+				reader->kind = RLD_KIND_ENGINE;
+				requiredCount = format->altRequiredCount;
+				required = format->altRequired;
+				missingText = format->altMissingText;
 			}
 		}
 
-		if (!found)
+		// The required chunks, already here: until 4.0 a line without LEVD looked
+		// healthy in the list and only failed when it was picked.
+		for (j = 0; j < requiredCount; j++)
 		{
-			return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, format->missingText[j]);
+			int found = 0;
+
+			for (i = 0; i < reader->chunkCount; i++)
+			{
+				if (memcmp(&reader->directory[i * RLD_DIR_ENTRY_SIZE], required[j], 4) == 0)
+				{
+					found = 1;
+				}
+			}
+
+			if (!found)
+			{
+				return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, missingText[j]);
+			}
 		}
 	}
 
@@ -1083,6 +1348,494 @@ static u8 *Rld_ReadChunk(struct RldReader *reader, int index, size_t *sizeOut, c
 
 	*sizeOut = (size_t)raw;
 	return bytes;
+}
+
+//========================================================================================
+// THE ENGINE TRACK'S CHUNKS (4.4) - provisional, maintainer decides
+//========================================================================================
+//
+// What both sides need to take an engine track apart: the view of a file
+// chunk and the join of the section chunks into the track description (the
+// text the engine reads as exttrack.json). The game writes the result into a
+// folder and hands that to the external track (NativeTrack_ExtractEngineTrack);
+// rldpack verify does the same in memory.
+
+// A FILE CHUNK (GEOM, COLG, SKYB, STRM): u32 layout (1), u32 nameLength
+// (1..64), u32 0, u32 0, the name, then the file unchanged. The name is the
+// file name the description gives it; only [A-Za-z0-9._-], never starting
+// with '.', so that it can never leave the folder it is written to.
+static const char *Rld_BlobView(const u8 *bytes, size_t size, char name[RLD_BLOB_NAME_MAX + 1], const u8 **fileOut, size_t *fileSize)
+{
+	u32 nameLength;
+	u32 i;
+
+	name[0] = '\0';
+	*fileOut = NULL;
+	*fileSize = 0;
+	if (size < RLD_BLOB_HEAD)
+	{
+		return "a file chunk is shorter than its head";
+	}
+	if (Rld_ReadLE32(&bytes[0x00]) != RLD_ENGINE_LAYOUT)
+	{
+		return "a file chunk has a layout this build does not know";
+	}
+	if ((Rld_ReadLE32(&bytes[0x08]) != 0u) || (Rld_ReadLE32(&bytes[0x0c]) != 0u))
+	{
+		return "a reserved field of a file chunk is not zero";
+	}
+	nameLength = Rld_ReadLE32(&bytes[0x04]);
+	if ((nameLength == 0u) || (nameLength > RLD_BLOB_NAME_MAX) || ((size_t)nameLength > (size - RLD_BLOB_HEAD)))
+	{
+		return "the file name of a file chunk is empty, longer than 64 bytes or outside the chunk";
+	}
+	for (i = 0; i < nameLength; i++)
+	{
+		const u8 c = bytes[RLD_BLOB_HEAD + i];
+		const int allowed = ((c >= 'A') && (c <= 'Z')) || ((c >= 'a') && (c <= 'z')) || ((c >= '0') && (c <= '9')) || (c == '.') || (c == '_') || (c == '-');
+
+		if (!allowed || ((i == 0u) && (c == '.')))
+		{
+			return "the file name of a file chunk has a character outside A-Z a-z 0-9 . _ - or starts with a dot";
+		}
+		name[i] = (char)c;
+	}
+	name[nameLength] = '\0';
+	*fileOut = &bytes[RLD_BLOB_HEAD + nameLength];
+	*fileSize = size - RLD_BLOB_HEAD - nameLength;
+	return NULL;
+}
+
+// What the file of a file chunk must start with: a GLB 2 for GEOM, COLG and
+// SKYB, a RIFF WAVE for STRM. Only the start - the engine's loaders check the rest.
+static const char *Rld_BlobCheckContent(const u8 *type, const u8 *file, size_t size)
+{
+	if (memcmp(type, "STRM", 4) == 0)
+	{
+		if ((size < 12u) || (memcmp(file, "RIFF", 4) != 0) || (memcmp(&file[8], "WAVE", 4) != 0))
+		{
+			return "the music chunk does not hold a RIFF WAVE file";
+		}
+		return NULL;
+	}
+	if ((size < 12u) || (memcmp(file, "glTF", 4) != 0) || (Rld_ReadLE32(&file[4]) != 2u))
+	{
+		return "a geometry chunk does not hold a GLB file of glTF 2";
+	}
+	return NULL;
+}
+
+// A SECTION CHUNK (TDSC ... MINI): u32 layout (1), u32 0, then one JSON object
+// (UTF-8, RFC 8259) whose members are sections of the track description.
+//
+// THE JOIN RULE. The section chunks, in directory order, become one object:
+//   - a member whose key is in one chunk only is copied as it is;
+//   - a key in more than one chunk must be an object in each, and those
+//     objects are joined one level deep (their members in directory order) -
+//     that is how PHYS and ZONE share "physics";
+//   - a key twice inside one chunk, a key on the second level twice, or a
+//     shared key that is not an object everywhere: DAMAGED.
+// Keys are compared as written (the bytes between the quotes). The scanner
+// below only finds the spans; the engine's strict JSON reader checks the
+// joined text when it loads it. An unknown section chunk is skipped like any
+// unknown chunk, and its sections are then missing.
+#define RLD_JSON_DEPTH_MAX   64
+#define RLD_JSON_MEMBERS_MAX 512
+
+struct RldJsonMember
+{
+	const char *key; // with its quotes
+	size_t keyLength;
+	const char *value;
+	size_t valueLength;
+	int owner; // the section chunk it came from
+};
+
+static const char *Rld_JsonSpace(const char *p, const char *end)
+{
+	while ((p < end) && ((*p == ' ') || (*p == '\t') || (*p == '\n') || (*p == '\r')))
+	{
+		p++;
+	}
+	return p;
+}
+
+// Past the string that starts at p (a quote), NULL when it does not end.
+static const char *Rld_JsonString(const char *p, const char *end)
+{
+	p++;
+	while (p < end)
+	{
+		if (*p == '\\')
+		{
+			p += 2;
+			continue;
+		}
+		if (*p == '"')
+		{
+			return p + 1;
+		}
+		if ((unsigned char)*p < 0x20u)
+		{
+			return NULL;
+		}
+		p++;
+	}
+	return NULL;
+}
+
+// Past the value that starts at p, NULL when it is none.
+static const char *Rld_JsonValue(const char *p, const char *end, int depth)
+{
+	if (p >= end)
+	{
+		return NULL;
+	}
+	if (*p == '"')
+	{
+		return Rld_JsonString(p, end);
+	}
+	if ((*p == '{') || (*p == '['))
+	{
+		const int object = (*p == '{');
+		const char close = object ? '}' : ']';
+
+		if (depth >= RLD_JSON_DEPTH_MAX)
+		{
+			return NULL;
+		}
+		p = Rld_JsonSpace(p + 1, end);
+		if ((p < end) && (*p == close))
+		{
+			return p + 1;
+		}
+		for (;;)
+		{
+			if (object)
+			{
+				if ((p >= end) || (*p != '"') || ((p = Rld_JsonString(p, end)) == NULL))
+				{
+					return NULL;
+				}
+				p = Rld_JsonSpace(p, end);
+				if ((p >= end) || (*p != ':'))
+				{
+					return NULL;
+				}
+				p = Rld_JsonSpace(p + 1, end);
+			}
+			if ((p = Rld_JsonValue(p, end, depth + 1)) == NULL)
+			{
+				return NULL;
+			}
+			p = Rld_JsonSpace(p, end);
+			if (p >= end)
+			{
+				return NULL;
+			}
+			if (*p == ',')
+			{
+				p = Rld_JsonSpace(p + 1, end);
+				continue;
+			}
+			return (*p == close) ? (p + 1) : NULL;
+		}
+	}
+	{
+		const char *start = p;
+
+		while ((p < end) && (((*p >= '0') && (*p <= '9')) || (*p == '-') || (*p == '+') || (*p == '.') || ((*p >= 'a') && (*p <= 'z')) ||
+		                     ((*p >= 'A') && (*p <= 'Z'))))
+		{
+			p++;
+		}
+		return (p > start) ? p : NULL;
+	}
+}
+
+// The members of the object that is exactly text[0..size) (white space around
+// it allowed). Returns their number, -1 when it is not one object, -2 when it
+// has more than max members.
+static int Rld_JsonMembers(const char *text, size_t size, int owner, struct RldJsonMember *out, int max)
+{
+	const char *end = text + size;
+	const char *p = Rld_JsonSpace(text, end);
+	int n = 0;
+
+	if ((p >= end) || (*p != '{'))
+	{
+		return -1;
+	}
+	p = Rld_JsonSpace(p + 1, end);
+	if ((p < end) && (*p == '}'))
+	{
+		return (Rld_JsonSpace(p + 1, end) == end) ? 0 : -1;
+	}
+	for (;;)
+	{
+		const char *key = p;
+		const char *value;
+
+		if ((p >= end) || (*p != '"') || ((p = Rld_JsonString(p, end)) == NULL))
+		{
+			return -1;
+		}
+		if (n >= max)
+		{
+			return -2;
+		}
+		out[n].key = key;
+		out[n].keyLength = (size_t)(p - key);
+		out[n].owner = owner;
+		p = Rld_JsonSpace(p, end);
+		if ((p >= end) || (*p != ':'))
+		{
+			return -1;
+		}
+		value = Rld_JsonSpace(p + 1, end);
+		if ((p = Rld_JsonValue(value, end, 1)) == NULL)
+		{
+			return -1;
+		}
+		out[n].value = value;
+		out[n].valueLength = (size_t)(p - value);
+		n++;
+		p = Rld_JsonSpace(p, end);
+		if (p >= end)
+		{
+			return -1;
+		}
+		if (*p == ',')
+		{
+			p = Rld_JsonSpace(p + 1, end);
+			continue;
+		}
+		if (*p != '}')
+		{
+			return -1;
+		}
+		return (Rld_JsonSpace(p + 1, end) == end) ? n : -1;
+	}
+}
+
+static int Rld_JsonSameKey(const struct RldJsonMember *a, const struct RldJsonMember *b)
+{
+	return (a->keyLength == b->keyLength) && (memcmp(a->key, b->key, a->keyLength) == 0);
+}
+
+static void Rld_JsonPut(char *out, size_t *used, const char *bytes, size_t size)
+{
+	memcpy(&out[*used], bytes, size);
+	*used += size;
+}
+
+// The join rule above over count texts. *out is malloc'ed and NUL-terminated
+// (caller frees), *outSize without the NUL. NULL or the refusal text.
+static const char *Rld_JoinSectionTexts(const char *const *texts, const size_t *sizes, int count, char **out, size_t *outSize)
+{
+	struct RldJsonMember *top = NULL;
+	struct RldJsonMember *sub = NULL;
+	u8 *done = NULL;
+	char *text = NULL;
+	const char *error = NULL;
+	size_t room = 16;
+	size_t used = 0;
+	int topCount = 0;
+	int first = 1;
+	int c;
+	int i;
+
+	*out = NULL;
+	*outSize = 0;
+	for (c = 0; c < count; c++)
+	{
+		room += sizes[c] + 2u;
+	}
+	top = (struct RldJsonMember *)malloc(sizeof(*top) * (size_t)RLD_JSON_MEMBERS_MAX);
+	sub = (struct RldJsonMember *)malloc(sizeof(*sub) * (size_t)RLD_JSON_MEMBERS_MAX);
+	done = (u8 *)calloc(RLD_JSON_MEMBERS_MAX, 1);
+	text = (char *)malloc(room + (size_t)RLD_JSON_MEMBERS_MAX * 4u);
+	if ((top == NULL) || (sub == NULL) || (done == NULL) || (text == NULL))
+	{
+		error = "out of memory";
+		goto finish;
+	}
+
+	for (c = 0; c < count; c++)
+	{
+		const int n = Rld_JsonMembers(texts[c], sizes[c], c, &top[topCount], RLD_JSON_MEMBERS_MAX - topCount);
+
+		if (n == -2)
+		{
+			error = "the section chunks have more than 512 sections together";
+			goto finish;
+		}
+		if (n < 0)
+		{
+			error = "a section chunk does not hold one JSON object";
+			goto finish;
+		}
+		topCount += n;
+	}
+
+	text[used++] = '{';
+	for (i = 0; i < topCount; i++)
+	{
+		int shared = 0;
+		int j;
+
+		if (done[i])
+		{
+			continue;
+		}
+		done[i] = 1;
+		for (j = i + 1; j < topCount; j++)
+		{
+			if (Rld_JsonSameKey(&top[i], &top[j]))
+			{
+				if (top[j].owner == top[i].owner)
+				{
+					error = "a section appears twice in one section chunk";
+					goto finish;
+				}
+				shared = 1;
+			}
+		}
+		if (!first)
+		{
+			text[used++] = ',';
+		}
+		first = 0;
+		Rld_JsonPut(text, &used, top[i].key, top[i].keyLength);
+		text[used++] = ':';
+		if (!shared)
+		{
+			Rld_JsonPut(text, &used, top[i].value, top[i].valueLength);
+			continue;
+		}
+
+		// Shared: every value an object, joined one level deep.
+		{
+			int subCount = 0;
+			int a;
+			int b;
+
+			for (j = i; j < topCount; j++)
+			{
+				int n;
+
+				if ((j != i) && (done[j] || !Rld_JsonSameKey(&top[i], &top[j])))
+				{
+					continue;
+				}
+				done[j] = 1;
+				if (top[j].value[0] != '{')
+				{
+					error = "a section that two section chunks share is not an object in both";
+					goto finish;
+				}
+				n = Rld_JsonMembers(top[j].value, top[j].valueLength, top[j].owner, &sub[subCount], RLD_JSON_MEMBERS_MAX - subCount);
+				if (n < 0)
+				{
+					error = (n == -2) ? "a shared section has more than 512 members" : "a section chunk does not hold one JSON object";
+					goto finish;
+				}
+				subCount += n;
+			}
+			for (a = 0; a < subCount; a++)
+			{
+				for (b = a + 1; b < subCount; b++)
+				{
+					if (Rld_JsonSameKey(&sub[a], &sub[b]))
+					{
+						error = "a key appears twice in a section that section chunks share";
+						goto finish;
+					}
+				}
+			}
+			text[used++] = '{';
+			for (a = 0; a < subCount; a++)
+			{
+				if (a > 0)
+				{
+					text[used++] = ',';
+				}
+				Rld_JsonPut(text, &used, sub[a].key, sub[a].keyLength);
+				text[used++] = ':';
+				Rld_JsonPut(text, &used, sub[a].value, sub[a].valueLength);
+			}
+			text[used++] = '}';
+		}
+	}
+	text[used++] = '}';
+	text[used] = '\0';
+
+	if (used > RLD_ENGINE_TEXT_MAX)
+	{
+		error = "the joined track description is larger than 32 MiB";
+		goto finish;
+	}
+	*out = text;
+	*outSize = used;
+	text = NULL;
+
+finish:
+	free(top);
+	free(sub);
+	free(done);
+	free(text);
+	return error;
+}
+
+// Reads every section chunk of an opened engine track and joins them
+// (Rld_JoinSectionTexts). *out as there. NULL or the refusal text.
+static const char *Rld_JoinSections(struct RldReader *reader, char **out, size_t *outSize)
+{
+	u8 *bytes[10];
+	const char *texts[10];
+	size_t sizes[10];
+	const char *error = NULL;
+	int count = 0;
+	int i;
+
+	*out = NULL;
+	*outSize = 0;
+	for (i = 0; (i < reader->chunkCount) && (error == NULL); i++)
+	{
+		const u8 *entry = &reader->directory[i * RLD_DIR_ENTRY_SIZE];
+		size_t size = 0;
+		u8 *chunk;
+
+		// Rld_OpenAs refuses a type twice, so there are at most 10.
+		if (!Rld_IsSectionType(entry) || (count >= 10))
+		{
+			continue;
+		}
+		chunk = Rld_ReadChunk(reader, i, &size, &error);
+		if (chunk == NULL)
+		{
+			break;
+		}
+		bytes[count] = chunk;
+		if ((size < RLD_SECTION_HEAD) || (Rld_ReadLE32(&chunk[0]) != RLD_ENGINE_LAYOUT) || (Rld_ReadLE32(&chunk[4]) != 0u))
+		{
+			error = "a section chunk has a head this build does not know";
+			count++;
+			break;
+		}
+		texts[count] = (const char *)&chunk[RLD_SECTION_HEAD];
+		sizes[count] = size - RLD_SECTION_HEAD;
+		count++;
+	}
+	if (error == NULL)
+	{
+		error = Rld_JoinSectionTexts(texts, sizes, count, out, outSize);
+	}
+	for (i = 0; i < count; i++)
+	{
+		free(bytes[i]);
+	}
+	return error;
 }
 
 // WHAT META STILL CARRIES, AND WHY EXACTLY THAT.

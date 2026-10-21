@@ -495,6 +495,17 @@ if(BUILD_TESTING)
     file(TO_NATIVE_PATH "${ctr_selftest_temp_rldpack}" ctr_selftest_temp_rldpack)
     set_tests_properties(rldpack_selftest PROPERTIES
         ENVIRONMENT "TEMP=${ctr_selftest_temp_rldpack};TMP=${ctr_selftest_temp_rldpack}")
+    # Format 4.4, the engine track (include/rldtrack.inc): an unknown chunk is
+    # skipped, a minimum version above this build is refused with the version
+    # named, the kind comes from the chunks, the section chunks join - on
+    # made-up containers written into a TEMP of its own (and removed).
+    set(ctr_selftest_temp_engine "${CMAKE_BINARY_DIR}/selftest/temp-rldpack-engine")
+    file(MAKE_DIRECTORY "${ctr_selftest_temp_engine}")
+    file(TO_NATIVE_PATH "${ctr_selftest_temp_engine}" ctr_selftest_temp_engine)
+    add_test(NAME rldtrack_engine_selftest COMMAND $<TARGET_FILE:rldpack> selftest-engine)
+    set_tests_properties(rldtrack_engine_selftest PROPERTIES
+        ENVIRONMENT "TEMP=${ctr_selftest_temp_engine};TMP=${ctr_selftest_temp_engine}"
+        PASS_REGULAR_EXPRESSION "rldpack engine self-test: [0-9]+ checks, 0 failures")
     # rldpack --version: "rldpack <CTR_TOOLS_VERSION> (<build id>)" and the
     # line "container format <major>.<minor>", the numbers read here from
     # include/rldtrack.inc - the tools version and the format each from its one
@@ -811,6 +822,9 @@ if(BUILD_TESTING)
     set_tests_properties(ext_cam_log_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-cam-log requires --ext-track")
     add_test(NAME ext_cam_log_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --level 14 --ext-track d --dev-ext-cam-log 0 --dev-race-mode stop)
     set_tests_properties(ext_cam_log_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-ext-cam-log expects the kart's height H in world units, 1..1000")
+    # --ext-track <file.rldtrack>: the container is checked before any window.
+    add_test(NAME ext_track_container_refused COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --level 14 --ext-track no-such-file.rldtrack --dev-race-mode stop)
+    set_tests_properties(ext_track_container_refused PROPERTIES PASS_REGULAR_EXPRESSION "switch --ext-track: container 'no-such-file.rldtrack' refused - cannot be opened")
     # The engine program on the graphics card (platform/engine_testscene.c,
     # Engine_SampleSelfTest): a hidden window and the Vulkan device, made-up VRAM
     # with poisoned rings around small UV boxes, drawn magnified with 4 and 1

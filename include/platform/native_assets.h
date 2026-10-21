@@ -64,6 +64,13 @@ struct NativeTrackEntry
 	u32 formatMinor;
 	u32 unknownFlags;
 
+	// 4.4: the lowest CTR Reload version the header names (0 = none) and the
+	// kind by its chunks (RLD_KIND_CLASSIC 0, RLD_KIND_ENGINE 1). versionText
+	// holds "x.y" for the NEEDS NEWER lines when that version was the reason.
+	u32 minVersion;
+	int kind;
+	char versionText[16];
+
 	// What META holds - only what the reader really needs.
 	//
 	// The name in META is display, not identity: the game tells two
@@ -118,6 +125,7 @@ enum NativeTrackRefusal
 	NATIVE_TRACK_REFUSAL_OLDER,   // major version < 4
 	NATIVE_TRACK_REFUSAL_DAMAGED, // anything else while reading
 	NATIVE_TRACK_REFUSAL_MEMORY,  // META states less memory than the LEV needs
+	NATIVE_TRACK_REFUSAL_ENGINE,  // 4.4: an engine track - read, but not startable from the menu yet
 };
 
 #define NATIVE_TRACK_REFUSAL_LINES 4
@@ -343,6 +351,31 @@ int NativeTrack_SelfTestFile(const char *path, char *why, int whyBytes);
 // stdout. Returns the exit code: 0 only if every file is as expected and there
 // is at least one good- and one bad- file.
 int NativeTrack_SelfTestFolder(const char *dir);
+
+// THE ENGINE TRACK (format 4.4, provisional - maintainer decides).
+//
+// A container without LEV and VRM that the engine draws from its own chunks
+// is not started from the menu yet (it is listed, gray, with the reason). It
+// runs through --ext-track <file.rldtrack>: the game takes the container
+// apart into a folder of its own and hands that folder to the external track,
+// which then reads it as it reads any folder.
+//
+// IsContainerPath: 1 when the path ends in .rldtrack (any case) - then
+// --ext-track names a container, otherwise a folder as before.
+// CheckEngineTrack: every check of the extraction without writing (header,
+// directory, kind, every chunk's hash, file names, the joined description);
+// 1 = it would be extracted, 0 = why holds the reason (for a container that
+// needs a newer game: "needs Reload x.y - ...").
+// ExtractEngineTrack: the same checks, then the folder
+//   <base>/cache/exttrack/<file name without .rldtrack>-<16 hex of the
+//   SHA-256 of the container's directory>/
+// is written anew at every call: exttrack.json (the joined sections) and each
+// file chunk under its name, every file read back and compared with its
+// SHA-256. One folder per container version, so nothing of another version
+// can be in it. 1 and the folder in dirOut, or 0 and why.
+int NativeTrack_IsContainerPath(const char *path);
+int NativeTrack_CheckEngineTrack(const char *path, char *why, int whySize);
+int NativeTrack_ExtractEngineTrack(const char *path, char *dirOut, int dirSize, char *why, int whySize);
 
 // 1 and the SHA-256 of the LEVD chunk of the loaded container track, if the
 // level LOAD_TenStages last armed (the one loading or running) is its seat;
