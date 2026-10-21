@@ -943,6 +943,7 @@ void ExtTrack_OnLevelLoaded(struct Level *lev)
 	ExtPhys_OnLevelLoaded();
 	ExtRace_OnLevelLoaded(lev);
 	ExtNav_OnLevelLoaded(lev);
+	ExtPortal_OnLevelLoaded(lev);
 	ExtMusic_OnLevelLoaded(lev);
 	ExtObstacle_OnLevelLoaded();
 }
@@ -989,6 +990,7 @@ void ExtTrack_OnLogicFrame(void)
 	ExtColl_OnLogicFrame();
 	ExtPhys_OnLogicFrame();
 	ExtRace_OnLogicFrame();
+	ExtPortal_OnLogicFrame();
 	ExtNav_OnLogicFrame();
 	ExtCrates_OnLogicFrame();
 	ExtMusic_OnLogicFrame();

@@ -2,6 +2,7 @@
 #include <platform/native_mods.h>
 #include <platform/native_extcoll.h>
 #include <platform/native_extphys.h>
+#include <platform/native_extportal.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
 // the [CTR Race] line names them, a measurement run must show "cheats none".
@@ -1574,15 +1575,21 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		}
 
 		{
-			const int dx = cn[target].pos.x - (d->posCurr.x >> 8);
-			const int dz = cn[target].pos.z - (d->posCurr.z >> 8);
+			// An external track's teleport portal: a target behind a gate the kart
+			// has still to pass is replaced by the gate (platform/native_extportal.c;
+			// without portals the target stays).
+			const int kartAt[3] = {d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8};
+			int aim[3] = {cn[target].pos.x, cn[target].pos.y, cn[target].pos.z};
+			(void)ExtPortal_SteerAim(kartAt, aim);
+			const int dx = aim[0] - kartAt[0];
+			const int dz = aim[2] - kartAt[2];
 			int want = ratan2(dx, dz) & 0xfff;
 			const int angle = d->angle & 0xfff;
 
 			// In an external track's anti-gravity zone d->angle is a heading
 			// in the surface frame: the target's heading is taken there too
 			// (platform/native_extphys.c; nothing outside a zone).
-			ExtPhys_ZoneHeadingTo(d, dx, cn[target].pos.y - (d->posCurr.y >> 8), dz, &want);
+			ExtPhys_ZoneHeadingTo(d, dx, aim[1] - kartAt[1], dz, &want);
 			int diff = ((want - angle + 0x800) & 0xfff) - 0x800;
 			int turned = ((angle - lastAngle + 0x800) & 0xfff) - 0x800;
 

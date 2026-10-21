@@ -216,6 +216,131 @@ int ExtPortal_Exit(int k, int speed, int outPos[3], int outVel[3], int *outYaw)
 }
 
 // ---------------------------------------------------------------------------
+// the frame and the steering help
+
+enum
+{
+	EXTPORTAL_SEATS = 8,
+	EXTPORTAL_COOLDOWN = 30,  // frames after a pass in which the seat enters no portal
+	EXTPORTAL_KART_MID = 33,  // the kart's middle above posCurr (0.5 H, H = 66.2): the box test and the exit
+	EXTPORTAL_STEER_MAX = 19200, // 300 m: a gate farther than this from the kart is not aimed at
+};
+
+global_variable int s_extPortalCooldown[EXTPORTAL_SEATS];
+global_variable int s_extPortalFrame;
+global_variable int s_extPortalPasses;
+
+internal long long ExtPortal_Dist2(const int a[3], const int b[3])
+{
+	const long long dx = (long long)a[0] - b[0], dy = (long long)a[1] - b[1], dz = (long long)a[2] - b[2];
+
+	return (dx * dx) + (dy * dy) + (dz * dz);
+}
+
+int ExtPortal_SteerAim(const int kartPos[3], int target[3])
+{
+	const long long kt = ExtPortal_Dist2(kartPos, target);
+
+	for (int k = 0; k < s_extPortalCount; k++)
+	{
+		const ExtPortal *p = &s_extPortals[k];
+		const ExtPortal *t;
+		long long kg;
+
+		if (!p->enabled || (p->target < 0) || (p->target >= s_extPortalCount))
+		{
+			continue;
+		}
+		t = &s_extPortals[p->target];
+		kg = ExtPortal_Dist2(kartPos, p->center);
+		// in front of the gate (it is entered along its -y), the gate nearer than the
+		// target and within reach, the target nearer to the exit than to the kart
+		if ((ExtPortal_Local(p, kartPos, 1) > 0) && (kg < kt) && (kg <= (long long)EXTPORTAL_STEER_MAX * EXTPORTAL_STEER_MAX) &&
+		    (ExtPortal_Dist2(target, t->center) < kt))
+		{
+			target[0] = p->center[0];
+			target[1] = p->center[1];
+			target[2] = p->center[2];
+			return 1;
+		}
+	}
+	return 0;
+}
+
+void ExtPortal_OnLogicFrame(void)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	int seats;
+
+	if ((s_extPortalCount == 0) || (gGT == NULL) || ((gGT->gameMode1 & (MAIN_MENU | LOADING)) != 0) || (sdata->Loading.stage != LOAD_IDLE))
+	{
+		return;
+	}
+	s_extPortalFrame++;
+	seats = (gGT->numPlyrCurrGame < EXTPORTAL_SEATS) ? (int)gGT->numPlyrCurrGame : EXTPORTAL_SEATS;
+	for (int seat = 0; seat < seats; seat++)
+	{
+		struct Driver *d = gGT->drivers[seat];
+		int pos[3], vel[3], outPos[3], outVel[3], yaw = 0, k;
+		double speed;
+
+		if (s_extPortalCooldown[seat] > 0)
+		{
+			s_extPortalCooldown[seat]--;
+			continue;
+		}
+		// a bot, a seat driven as a bot after its finish line, a mask grab: not here
+		// (the CPU drivers pass the portals on their nav paths)
+		if ((d == NULL) || ((d->actionsFlagSet & ACTION_BOT) != 0) || (d->kartState == KS_MASK_GRABBED))
+		{
+			continue;
+		}
+		pos[0] = d->posCurr.x >> 8;
+		pos[1] = (d->posCurr.y >> 8) + EXTPORTAL_KART_MID;
+		pos[2] = d->posCurr.z >> 8;
+		vel[0] = d->velocity.x;
+		vel[1] = d->velocity.y;
+		vel[2] = d->velocity.z;
+		k = ExtPortal_Entered(pos, vel);
+		if (k < 0)
+		{
+			continue;
+		}
+		speed = sqrt(((double)vel[0] * vel[0]) + ((double)vel[1] * vel[1]) + ((double)vel[2] * vel[2]));
+		if (!ExtPortal_Exit(k, (int)(speed + 0.5), outPos, outVel, &yaw))
+		{
+			continue;
+		}
+		Platform_Log("[CTR ExtPortal] seat %d frame %d portal %d -> %d pos %d %d %d -> %d %d %d yaw %d -> %d speed %d (%.0f)\n", seat, s_extPortalFrame, k,
+		             s_extPortals[k].target, pos[0], pos[1] - EXTPORTAL_KART_MID, pos[2], outPos[0], outPos[1] - EXTPORTAL_KART_MID, outPos[2],
+		             d->angle & (EXTPORTAL_ANGLE_FULL - 1), yaw, (int)d->speed, speed / 256.0);
+		// THE PASS. The place: the exit's centre is the kart's middle. The way on:
+		// the exit's +y at the speed it came with (velocity and the game's heading
+		// fields, as VehBirth_TeleportSelf sets them; d->speed stays). The surface
+		// frame: world up (the exits lie in gravity volumes, not in zones;
+		// ExtPhys_SeedDriver as on a bot's mask grab). The camera: no blend from the
+		// old place (CAMERA_FLAG_DIRECTION_CHANGED, as after a respawn).
+		d->posCurr.x = outPos[0] << 8;
+		d->posCurr.y = (outPos[1] - EXTPORTAL_KART_MID) << 8;
+		d->posCurr.z = outPos[2] << 8;
+		d->posPrev = d->posCurr;
+		d->velocity.x = outVel[0];
+		d->velocity.y = outVel[1];
+		d->velocity.z = outVel[2];
+		d->rotCurr.y = (s16)yaw;
+		d->rotPrev.y = (s16)yaw;
+		d->angle = (s16)yaw;
+		ExtPhys_SeedDriver(d, NULL, 0);
+		if (d->driverID < 4)
+		{
+			gGT->cameraDC[d->driverID].flags |= CAMERA_FLAG_DIRECTION_CHANGED;
+		}
+		s_extPortalCooldown[seat] = EXTPORTAL_COOLDOWN;
+		s_extPortalPasses++;
+	}
+}
+
+// ---------------------------------------------------------------------------
 // selftest (--ext-selftest portal): no window, no data
 
 internal void ExtPortal_Check(int ok, const char *what, int *n, int *failures)
@@ -282,6 +407,23 @@ int ExtPortal_Selftest(void)
 		                "portal 1 leaves at portal 0 along -x, heading 3072", &n, &failures);
 		ExtPortal_Check(ExtPortal_Entered(atExit, plusZ) == -1, "a kart just out of the exit (moving along its +y) does not enter it again", &n, &failures);
 		ExtPortal_Check(!ExtPortal_Exit(2, 100, pos, vel, &yaw) && !ExtPortal_Exit(-1, 100, pos, vel, &yaw), "no such portal: no exit", &n, &failures);
+	}
+
+	// the steering help: a target past the exit is replaced by the gate; a
+	// target on this side, a kart behind the gate, or a gate farther than the
+	// target are left alone
+	{
+		const int kart[3] = {200, 100, 0};      // 800 in front of gate 0 (entered moving +x)
+		const int behind[3] = {1500, 100, 0};   // past gate 0
+		int tgt[3];
+
+		tgt[0] = -1900, tgt[1] = 300, tgt[2] = 5400; // 400 past exit 1
+		ExtPortal_Check(ExtPortal_SteerAim(kart, tgt) && (tgt[0] == 1000) && (tgt[1] == 100) && (tgt[2] == 0), "steer: a target past the exit -> the gate",
+		                &n, &failures);
+		tgt[0] = 600, tgt[1] = 100, tgt[2] = 50;
+		ExtPortal_Check(!ExtPortal_SteerAim(kart, tgt) && (tgt[0] == 600), "steer: a target before the gate stays", &n, &failures);
+		tgt[0] = -1900, tgt[1] = 300, tgt[2] = 5400;
+		ExtPortal_Check(!ExtPortal_SteerAim(behind, tgt) || (tgt[0] != 1000), "steer: a kart past gate 0 is not sent back to it", &n, &failures);
 	}
 
 	// refusals: each leaves no portal at all

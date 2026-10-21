@@ -17,9 +17,14 @@
 // it leaves at k's target, at the target's centre, moving along the target's
 // local +y. A portal reached along +y is no entry (the pairs do not loop).
 //
-// STATE OF NIGHT RUN 1: reader, geometry and selftest only. Nothing calls the
-// entry points from the game's frame yet (the move of a driver touches the
-// anti-gravity physics and the camera of other parts and waits for them).
+// IN THE GAME (dispatcher, platform/engine_exttrack.c): read at the level load;
+// after the game logic of each frame every human seat (not a bot, not a seat
+// driven as a bot after its finish, not mask-grabbed) whose kart middle enters a
+// portal is put at the exit (ExtPortal_OnLogicFrame); the steering help of
+// --dev-kart-steer aims at the gate when its restart-point target lies behind
+// a portal (ExtPortal_SteerAim). The CPU drivers pass the portals on their nav
+// paths (the converter cuts the air between gate and exit, distance 1 as
+// tools/collision_gen/lev_build.py does at portals).
 
 enum
 {
@@ -57,6 +62,16 @@ int ExtPortal_Entered(const int pos[3], const int vel[3]);
 // per the caller's step), and its heading in game angles (0..4095, ratan2 of
 // x and z as the game's yaw). 1 = done, 0 = no such portal.
 int ExtPortal_Exit(int k, int speed, int outPos[3], int outVel[3], int *outYaw);
+
+// The frame: every human seat against the portals (see above). One log line
+// per pass: [CTR ExtPortal] seat S frame F portal K -> T pos .. -> .. yaw A speed V
+void ExtPortal_OnLogicFrame(void);
+
+// --dev-kart-steer: when the target point (world units) lies on the far side
+// of a portal the kart at kartPos has still to pass - nearer to the portal's
+// exit than to the kart, the kart in front of the gate and nearer to it than to
+// the target - the target becomes the gate's centre (1); else 0, target kept.
+int ExtPortal_SteerAim(const int kartPos[3], int target[3]);
 
 int ExtPortal_Selftest(void);
 

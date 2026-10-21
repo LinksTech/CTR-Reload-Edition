@@ -129,7 +129,7 @@
 #include "platform/native_extcam.c"
 // The telemetry line of seat 0 (night run 1, measuring only): before the dispatcher that calls it.
 #include "platform/native_exttelemetry.c"
-// The teleport portals (night run 1): reader, geometry and selftest; nothing calls them from the frame yet.
+// The teleport portals (night run 1): before the dispatcher that calls them.
 #include "platform/native_extportal.c"
 // The moving obstacles (round of 2026-10-20): their header before the
 // dispatcher (it calls them), the part after it (it reads the draw node list).
