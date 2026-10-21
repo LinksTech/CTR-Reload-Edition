@@ -25,6 +25,12 @@ void ExtZpMem_Destroy(ExtZpMem *m);
 void ExtZpMem_Clear(ExtZpMem *m);                 // every page away
 uint32_t ExtZpMem_Faults(const ExtZpMem *m);
 uint32_t ExtZpMem_LastFault(const ExtZpMem *m); // the address of the last fault (0 none)
+// The write journal: from Begin to End every write into the memory is kept as
+// entries {u32 addr, u32 len, len bytes} (no padding; adjacent writes joined;
+// in order, a later entry wins). End returns the entries (valid until the next
+// Begin) with their total bytes and count.
+void ExtZpMem_JournalBegin(ExtZpMem *m);
+const uint8_t *ExtZpMem_JournalEnd(ExtZpMem *m, uint32_t *bytes, uint32_t *count);
 // The page holding addr (4 KB, NULL if absent and create is 0).
 uint8_t *ExtZpMem_Page(ExtZpMem *m, uint32_t addr, int create);
 // Calls fn for every page present (ascending addresses).

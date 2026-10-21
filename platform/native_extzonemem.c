@@ -16,7 +16,72 @@ struct ExtZpMem
 	uint32_t count, cap;
 	uint32_t faults;
 	uint32_t lastFault; // the address of the last read of an absent page
+	// the write journal (ExtZpMem_JournalBegin/End): every write, adjacent ones joined
+	int journal;
+	uint8_t *jbuf;      // entries {u32 addr, u32 len, len bytes} without padding
+	uint32_t jlen, jcap, jcount;
+	uint32_t jLastEnd;  // the address after the last entry's bytes
+	uint32_t jLastHead; // the offset of the last entry in jbuf
 };
+
+static void ExtZpMem_JournalPut(ExtZpMem *m, const void *src, uint32_t n)
+{
+	if (m->jlen + n > m->jcap)
+	{
+		uint32_t cap = m->jcap ? m->jcap : 65536u;
+		uint8_t *grown;
+		while (cap < m->jlen + n)
+			cap *= 2u;
+		grown = (uint8_t *)realloc(m->jbuf, cap);
+		if (grown == NULL)
+		{
+			m->journal = 0; // out of memory: the journal stops (its caller sees fewer writes)
+			return;
+		}
+		m->jbuf = grown;
+		m->jcap = cap;
+	}
+	memcpy(m->jbuf + m->jlen, src, n);
+	m->jlen += n;
+}
+
+static void ExtZpMem_JournalAdd(ExtZpMem *m, uint32_t addr, const void *src, uint32_t n)
+{
+	if ((m->jcount > 0u) && (addr == m->jLastEnd))
+	{
+		uint32_t len;
+		memcpy(&len, m->jbuf + m->jLastHead + 4u, 4);
+		len += n;
+		memcpy(m->jbuf + m->jLastHead + 4u, &len, 4);
+		ExtZpMem_JournalPut(m, src, n);
+	}
+	else
+	{
+		m->jLastHead = m->jlen;
+		ExtZpMem_JournalPut(m, &addr, 4);
+		ExtZpMem_JournalPut(m, &n, 4);
+		ExtZpMem_JournalPut(m, src, n);
+		m->jcount++;
+	}
+	m->jLastEnd = addr + n;
+}
+
+void ExtZpMem_JournalBegin(ExtZpMem *m)
+{
+	m->journal = 1;
+	m->jlen = 0;
+	m->jcount = 0;
+	m->jLastEnd = 0;
+	m->jLastHead = 0;
+}
+
+const uint8_t *ExtZpMem_JournalEnd(ExtZpMem *m, uint32_t *bytes, uint32_t *count)
+{
+	m->journal = 0;
+	*bytes = m->jlen;
+	*count = m->jcount;
+	return m->jbuf;
+}
 
 static int ExtZpMem_CmpIndex(const void *a, const void *b)
 {
@@ -56,6 +121,7 @@ void ExtZpMem_Destroy(ExtZpMem *m)
 	if (m == NULL)
 		return;
 	ExtZpMem_Clear(m);
+	free(m->jbuf);
 	free(m->pages);
 	free(m->present);
 	free(m);
@@ -103,6 +169,10 @@ void ExtZpMem_ForEachPage(ExtZpMem *m, void (*fn)(uint32_t pageAddr, uint8_t *by
 void ExtZpMem_Write(ExtZpMem *m, uint32_t addr, const void *src, uint32_t n)
 {
 	const uint8_t *s = (const uint8_t *)src;
+	if (m->journal && (n > 0u))
+	{
+		ExtZpMem_JournalAdd(m, addr, src, n);
+	}
 	while (n > 0)
 	{
 		uint32_t off = addr & (EXT_ZM_PAGE - 1u), k = EXT_ZM_PAGE - off;

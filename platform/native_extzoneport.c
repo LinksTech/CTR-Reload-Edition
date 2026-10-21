@@ -445,21 +445,10 @@ void ExtZp_LogEnd(void)
 
 // Writes of an answer: done in the port's memory and kept for the step log
 // (STEPLOG_FORMAT: 'QRY ' blob, nWrites x {addr, len, bytes}).
-global_variable unsigned char s_extZpAns[1024];
 global_variable int s_extZpCoupleContacts; // the coupling configured the contacts for its world
-global_variable uint32_t s_extZpAnsLen, s_extZpAnsWrites;
 internal void ExtZp_AnswerWrite(ExtZpCtx *c, uint32_t addr, const void *bytes, uint32_t len)
 {
-	ExtZpMem_Write(c->m, addr, bytes, len);
-	if (s_extZpAnsLen + 8u + ((len + 3u) & ~3u) <= sizeof(s_extZpAns))
-	{
-		memcpy(s_extZpAns + s_extZpAnsLen, &addr, 4);
-		memcpy(s_extZpAns + s_extZpAnsLen + 4, &len, 4);
-		memset(s_extZpAns + s_extZpAnsLen + 8, 0, (len + 3u) & ~3u);
-		memcpy(s_extZpAns + s_extZpAnsLen + 8, bytes, len);
-		s_extZpAnsLen += 8u + ((len + 3u) & ~3u);
-		s_extZpAnsWrites++;
-	}
+	ExtZpMem_Write(c->m, addr, bytes, len); // kept by the memory's write journal for the step log
 }
 
 // The source's ray request (0x338700: a0 = the request object RC, a1 = start,
@@ -511,12 +500,18 @@ internal void ExtZp_AnswerRay(ExtZpCtx *c, const ExtZpQueryArgs *in, ExtZpQueryR
 // The query callback of the port inside Reload (ExtZp_CtxInit with it). Every
 // query goes to the step log when it is on.
 global_variable u64 s_extZpQueryTicks[8]; // time in Reload's answers by kind (performance counter), the coupling's tick line
+global_variable int s_extZpQueryDepth; // > 1: a query asked while Reload answers another (its writes are the outer one's)
 void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResult *out)
 {
 	const u64 queryStart = SDL_GetPerformanceCounter();
-	s_extZpAnsLen = 0;
-	s_extZpAnsWrites = 0;
+	const int logged = ExtZp_LogOn() && (s_extZpQueryDepth == 0);
+	s_extZpQueryDepth++;
 	memset(out, 0, sizeof(*out));
+	if (logged)
+	{
+		// everything the answer writes (ray record, contact lists, the kart's contact events, the solver)
+		ExtZpMem_JournalBegin(c->m);
+	}
 	if (kind == EXT_ZP_Q_RAY)
 	{
 		ExtZp_AnswerRay(c, in, out);
@@ -532,10 +527,13 @@ void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQue
 		// the zone port's contacts from Reload's geometry (platform/native_extzonecontact.c)
 		(void)ExtZc_Answer(c, kind, in, out);
 	}
-	if (ExtZp_LogOn())
+	s_extZpQueryDepth--;
+	if (logged)
 	{
 		uint32_t head[3 + 16 + 4];
 		static uint32_t seq;
+		uint32_t jBytes = 0, jCount = 0;
+		const uint8_t *j = ExtZpMem_JournalEnd(c->m, &jBytes, &jCount);
 		head[0] = seq++;
 		head[1] = (uint32_t)kind;
 		head[2] = in->func;
@@ -544,12 +542,36 @@ void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQue
 		head[19] = out->v0;
 		head[20] = out->v1;
 		head[21] = out->f0;
-		head[22] = s_extZpAnsWrites;
+		head[22] = jCount;
 		{
-			unsigned char blob[sizeof(head) + sizeof(s_extZpAns)];
-			memcpy(blob, head, sizeof(head));
-			memcpy(blob + sizeof(head), s_extZpAns, s_extZpAnsLen);
-			ExtZp_LogBlob(EXT_ZP_TAG('Q', 'R', 'Y', ' '), blob, (uint32_t)sizeof(head) + s_extZpAnsLen);
+			// the blob: the head, then the writes {addr, len, bytes padded to 4} (STEPLOG_FORMAT 'QRY ')
+			static unsigned char *blob;
+			static uint32_t blobCap;
+			const uint32_t need = (uint32_t)sizeof(head) + jBytes + 3u * jCount + 4u;
+			uint32_t at = (uint32_t)sizeof(head), off = 0;
+			if (need > blobCap)
+			{
+				unsigned char *grown = (unsigned char *)realloc(blob, need);
+				if (grown != NULL)
+				{
+					blob = grown;
+					blobCap = need;
+				}
+			}
+			if (need <= blobCap)
+			{
+				memcpy(blob, head, sizeof(head));
+				for (uint32_t e = 0; e < jCount; e++)
+				{
+					uint32_t len;
+					memcpy(&len, j + off + 4u, 4);
+					memcpy(blob + at, j + off, 8u + len);
+					memset(blob + at + 8u + len, 0, ((len + 3u) & ~3u) - len);
+					at += 8u + ((len + 3u) & ~3u);
+					off += 8u + len;
+				}
+				ExtZp_LogBlob(EXT_ZP_TAG('Q', 'R', 'Y', ' '), blob, at);
+			}
 		}
 	}
 	s_extZpQueryTicks[(kind > 0 && kind < 7) ? kind : 7] += SDL_GetPerformanceCounter() - queryStart;
@@ -1407,5 +1429,31 @@ void ExtZp_CoupleSelftest(int *checks, int *failures, void (*log)(const char *li
 		ExtZpKartView v;
 		ExtZp_Check(!ExtZp_PortActive() && (ExtZp_PortMemory(NULL, NULL, NULL, NULL) == NULL) && !ExtZp_PortKartState(&v) && !v.active,
 		            "coupling: off without the switch", checks, failures, log);
+	}
+	{
+		// the write journal of an answer (step log 'QRY '): adjacent writes joined, in order, nothing outside Begin/End
+		ExtZpMem *m = ExtZpMem_Create();
+		uint32_t bytes = 0, count = 0, a0 = 0, l0 = 0, a1 = 0, l1 = 0, v = 0;
+		const uint8_t *j;
+		int ok = (m != NULL);
+		if (ok)
+		{
+			ZmW32(m, 0x00100000u, 1u);
+			ExtZpMem_JournalBegin(m);
+			ZmW32(m, 0x00200000u, 0x11111111u);
+			ZmW32(m, 0x00200004u, 0x22222222u);
+			ZmW8(m, 0x00300001u, 0x33u);
+			j = ExtZpMem_JournalEnd(m, &bytes, &count);
+			ZmW32(m, 0x00400000u, 4u);
+			memcpy(&a0, j, 4);
+			memcpy(&l0, j + 4, 4);
+			memcpy(&v, j + 12, 4);
+			memcpy(&a1, j + 16, 4);
+			memcpy(&l1, j + 20, 4);
+			ok = (count == 2u) && (bytes == 8u + 8u + 8u + 1u) && (a0 == 0x00200000u) && (l0 == 8u) && (v == 0x22222222u) && (a1 == 0x00300001u) &&
+			     (l1 == 1u) && (j[24] == 0x33u);
+			ExtZpMem_Destroy(m);
+		}
+		ExtZp_Check(ok, "coupling: write journal of an answer", checks, failures, log);
 	}
 }
