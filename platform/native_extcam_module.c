@@ -20,9 +20,10 @@
 //    front of the kart), d behind and h up along the smoothed up, d and h between
 //    the near and far values by the kart's share of its top speed (the
 //    original's chase camera: 3.05/1.2 m near, 3.7/1.4 m far, 64 units a metre).
-//  - The view aims at a point look_ahead in front of the kart's middle so that
-//    it sits at (0, frame_y) of the picture (G1 before the original's framing);
-//    the camera's up is the smoothed up across the view.
+//  - The view runs along the smoothed kart frame (forward = smoothed course, up =
+//    smoothed up); the eye's place puts the kart's middle at y ~0.27 of the
+//    picture; a lifted eye whose view would leave it outside frame_box aims at
+//    the middle at frame_y (G1 before the original's framing).
 //  - Occlusion: the eye moves on the line to the kart's middle to the largest
 //    free share (the measure line's own test, now and occl_ahead frames ahead),
 //    by at most max_pull_L kart lengths a frame; in a tube (both side rays hit)
@@ -481,7 +482,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	GTERegisters savedGte;
 	int zone, grab, ahead, havePrev, framed, tail;
 	double P[3], n2[3], mid[3], vel[3], course[3], fT[3], uT[3], fS[3], uS[3], rS[3];
-	double pivot[3], rel[3], eyeWant[3], off[3], eye[3], E[3], T[3];
+	double pivot[3], rel[3], eyeWant[3], off[3], eye[3], E[3];
 	double step, dt, prevEye[3];
 	ExtCamOrient retailO, prevO, outO;
 	int i;
@@ -790,7 +791,6 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	for (i = 0; i < 3; i++)
 	{
 		E[i] = (double)(&pb->pos.x)[i] + s_extCamMod.weight * (eye[i] - (double)(&pb->pos.x)[i]);
-		T[i] = mid[i] + p->lookAhead * fS[i];
 	}
 	// the eye's step against the eye drawn in the frame before: at most jumpMaxL; the shortened eye only when nothing
 	// lies between it and the kart's middle (0 occluded frames come first)
@@ -831,9 +831,12 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	{
 		ExtCam_OrientOfMatrix(&pb->matrix_Camera, &prevO);
 	}
-	// 5. the view: aimed (the point look_ahead in front of the kart's middle at frame_y, the kart's middle kept in
-	//    the box); at handoverSince half way to the retail view
-	framed = ExtCam_AimAt(E, T, uS, fS, pb->distanceToScreen_PREV, pb->rect.h, p->frameY, &outO);
+	// 5. the view: along the smoothed kart frame itself - forward = the smoothed course, up = the smoothed up (attempt 3:
+	//    the drawn up is the kart's up, KA-U; the view runs with the kart's move, KA-A). The eye sits behind and above
+	//    the pivot, so the kart's middle lies at y = 1.33 (h - H/2) / (d + pivot_ahead) = 0.26..0.29 of the picture, and
+	//    the same when the eye is pulled in on the line to the middle; when it leaves the box (a lifted eye) the view
+	//    is aimed at the middle at frame_y instead (step 6). At handoverSince half way to the retail view.
+	framed = ExtCam_OrientMake(&outO, fS, uS);
 	if (!framed)
 	{
 		outO = retailO;
