@@ -96,6 +96,31 @@ int ExtPhys_ZoneWorldToLocal(const struct Driver *d, const Vec3 *world, s32 loca
 // untouched (the caller keeps its ratan2(dx, dz)); 1 = in a zone (*heading set).
 int ExtPhys_ZoneHeadingTo(const struct Driver *d, int dx, int dy, int dz, int *heading);
 
+// Night run 1 (M1): the anti-gravity state of a driver of the player physics,
+// for the telemetry - reads only, writes nothing. 1 = the zones are in force
+// for the driver; 0 = not (out holds the neutral state: no zone, world down,
+// world up, -1 for every index).
+typedef struct
+{
+	int maglev;         // in a zone (the source game's maglev state)
+	int zone;           // its id, 0 none
+	int ground;         // stands on a record (as ExtPhys_AfterGroundSearch)
+	int groundZone;     // the zone id of that record, 0 none (a zone record = the source game's maglev surface, Z9)
+	int terrain;        // the record's terrain type, -1 none
+	int trackPercent;   // physics.gravity_percent (100 neutral)
+	int volume;         // the gravity volume the gravity was last scaled by, -1 none
+	int volumePercent;  // its share (100 none)
+	int zonePercent;    // the zone's gravity_percent (100 outside)
+	int maggravBox;     // the maggrav box, -1 none
+	int spline;         // its spline, -1 none
+	int node;           // the segment on it, -1 none
+	int gravFromSpline; // this frame's zone gravity came from the spline
+	int gravFrame;      // the frame of the zone gravity read (log frame), 0: none this frame (the game's world -Y)
+	SVec3 gravDir;      // the direction of this frame's gravity (4096, "down")
+	SVec3 alignUp;      // the up the kart is turned to (Reload: the zone's up; world up outside)
+} ExtPhysProbe;
+int ExtPhys_ProbeState(const struct Driver *d, ExtPhysProbe *out);
+
 // THE GROUND PROBE OF THE PLAYER PHYSICS for any driver (fixup round 1: the CPU
 // drivers on the external nav paths, game/BOTS.c): the window of
 // COLL_FIXED_PlayerSearch (EXT_PHYS_PROBE_TOP over pos to EXT_PHYS_PROBE_BOTTOM

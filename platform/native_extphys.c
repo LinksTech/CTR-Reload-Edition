@@ -998,9 +998,12 @@ typedef struct
 	int spline;     // its spline + 1 (0 none or unusable)
 	int node;       // the segment the driver is at, -1 none
 	int fromSpline; // the last frame's gravity came from the spline (log only)
+	int gravFrame;  // the frame of the last zone gravity (log frame; read by ExtPhys_ProbeState only)
+	SVec3 gravDir;  // its direction (4096, "down")
 } ExtPhysMag;
 
 global_variable ExtPhysMag s_extPhysMag[EXT_PHYS_SEATS];
+global_variable int s_extPhysVolumeSeat[EXT_PHYS_SEATS]; // the gravity volume a seat is in, + 1 (0 none; section GRAVITY VOLUMES)
 
 internal const double *ExtPhys_Node(const ExtPhysParams *p, int spline, int i)
 {
@@ -1351,6 +1354,9 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3])
 			}
 			m->fromSpline = fromSpline;
 		}
+		// for the telemetry (ExtPhys_ProbeState): the frame and direction
+		m->gravFrame = s_extPhysRun.tick + 2;
+		m->gravDir = fromSpline ? (SVec3){dir[0], dir[1], dir[2]} : (SVec3){(s16)-s->up.x, (s16)-s->up.y, (s16)-s->up.z};
 		if (fromSpline)
 		{
 			out[0] = (s16)((-g * dir[0]) >> 12);
@@ -1362,6 +1368,55 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3])
 	out[0] = (s16)((g * s->up.x) >> 12);
 	out[1] = (s16)((g * s->up.y) >> 12);
 	out[2] = (s16)((g * s->up.z) >> 12);
+	return 1;
+}
+
+int ExtPhys_ProbeState(const struct Driver *d, ExtPhysProbe *out)
+{
+	const ExtPhysSeatZone *s = ExtPhys_SeatZone(d);
+	const ExtPhysMag *m;
+	int grounded;
+
+	memset(out, 0, sizeof(*out));
+	out->terrain = -1;
+	out->volume = -1;
+	out->maggravBox = -1;
+	out->spline = -1;
+	out->node = -1;
+	out->trackPercent = s_extPhys.p.gravitySet ? s_extPhys.p.gravityPercent : EXT_PHYS_GRAVITY_NEUTRAL;
+	out->volumePercent = EXT_PHYS_GRAVITY_NEUTRAL;
+	out->zonePercent = EXT_PHYS_GRAVITY_NEUTRAL;
+	out->gravDir = (SVec3){0, -4096, 0};
+	out->alignUp = (SVec3){0, 4096, 0};
+	if (s == NULL)
+	{
+		return 0;
+	}
+	m = &s_extPhysMag[d->driverID];
+	grounded = ((d->collisionFlags & DRIVER_COLL_FLAG_GROUNDED) != 0) && (d->currBlockTouching != NULL);
+	out->maglev = s->inZone;
+	out->zone = s->inZone ? s_extPhys.p.zones[s->zone - 1].id : 0;
+	out->ground = grounded;
+	out->groundZone = grounded ? ExtColl_RecordZone(d->currBlockTouching) : 0;
+	out->terrain = grounded ? (int)d->currBlockTouching->terrain_type : -1;
+	if (s_extPhysVolumeSeat[d->driverID] != 0)
+	{
+		out->volume = s_extPhysVolumeSeat[d->driverID] - 1;
+		out->volumePercent = s_extPhys.p.volumes[out->volume].gravityPercent;
+	}
+	out->zonePercent = s->inZone ? s_extPhys.p.zones[s->zone - 1].gravityPercent : EXT_PHYS_GRAVITY_NEUTRAL;
+	out->maggravBox = m->box - 1;
+	out->spline = m->spline - 1;
+	out->node = (m->spline != 0) ? m->node : -1;
+	// the zone gravity of this frame's logic (the log frame of its events is
+	// tick + 1 once the dispatcher has counted the frame, ExtPhys_OnLogicFrame)
+	if (s->inZone && (m->gravFrame != 0) && ((m->gravFrame == s_extPhysRun.tick + 1) || (m->gravFrame == s_extPhysRun.tick + 2)))
+	{
+		out->gravFrame = m->gravFrame;
+		out->gravFromSpline = m->fromSpline;
+		out->gravDir = m->gravDir;
+	}
+	out->alignUp = s->inZone ? s->up : (SVec3){0, 4096, 0};
 	return 1;
 }
 
@@ -1542,9 +1597,8 @@ int ExtPhys_BotGroundAt(const struct Driver *d, const s32 pos[3], const SVec3 *u
 // GRAVITY VOLUMES (physics.gravity_volumes): boxes in which the gravity has its
 // own share (a track's low-gravity jumps, a tube that presses harder). The box
 // that holds the kart's position scales the frame's gravity after the track's
-// own share; the first box in the list wins.
-
-global_variable int s_extPhysVolumeSeat[EXT_PHYS_SEATS]; // the box a seat is in, + 1 (0 none)
+// own share; the first box in the list wins. (The box a seat is in:
+// s_extPhysVolumeSeat, defined with the maggrav state above.)
 
 // The box that holds point p, -1 none.
 internal int ExtPhys_VolumeAtWith(const ExtPhysParams *p, const double pos[3])
@@ -2191,6 +2245,15 @@ int ExtPhys_Selftest(void)
 		                      !ExtPhys_ZoneGravity(&td2, -900, g) && (g[1] == 0) && !ExtPhys_ZoneLocalToWorld(&td2, local, &world) && (world.x == 7) &&
 		                      (world.y == 8) && (world.z == 9),
 		                  "without zones: DriverUp gives world up, no zone gravity, no frame turn", &checks, &failures);
+		{
+			ExtPhysProbe pr;
+
+			memset(&pr, 0x5a, sizeof(pr));
+			ExtPhys_TestCheck(!ExtPhys_ProbeState(&td2, &pr) && !ExtPhys_ProbeState(NULL, &pr) && (pr.maglev == 0) && (pr.zone == 0) && (pr.terrain == -1) &&
+			                      (pr.maggravBox == -1) && (pr.spline == -1) && (pr.node == -1) && (pr.volume == -1) && (pr.trackPercent == 100) &&
+			                      (pr.gravFrame == 0) && (pr.gravDir.y == -4096) && (pr.alignUp.y == 4096),
+			                  "without zones the probe gives the neutral state (no zone, world down, world up, no indices)", &checks, &failures);
+		}
 		{
 			// the ground probe: nothing without a driver, a position or the
 			// external collision; the probe's up is the hint outside a zone
