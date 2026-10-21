@@ -1,1049 +1,943 @@
-// THE RELOAD CAMERA MODULE FOR ANTI-GRAVITY ZONES (night run 1, built on fix
-// round 1 attempt 2; included by platform/native_extcam.c, which holds the
-// vector, orientation, projection and occlusion helpers it uses).
+// THE SOURCE GAME'S CHASE CAMERA FOR ANTI-GRAVITY ZONES (fix round 2; included by
+// platform/native_extcam.c, which holds the vector, orientation and projection
+// helpers it uses).
 //
-// Only with --ext-track, camera.follow_up "zones" and zone records; on every
-// other track and outside its own frames the retail camera stays exactly as it
-// is (nothing is written). What it does per frame of seat 0 while it OWNS the
-// camera:
-//  - Ownership: from the frame a zone frame of the nav path lies at most
-//    own_ahead_frames of driving time ahead of the kart (or the kart is in a
-//    zone) until handover_since frames after the last such frame ("hot": in a
-//    zone or a zone ahead) - so never later than handover_since frames after
-//    the last zone frame; the hand-over to the retail camera happens between
-//    frame handover_since and the next (no minimum hold: the tail is the
-//    hysteresis).
-//  - The kart's orientation (course = moving direction turned by rotCurr.w,
-//    up = the drawn kart's up) is followed by a quaternion with a critically
-//    damped spring (time constant orient_tau): no Euler angles.
-//  - The eye sits in the kart's smoothed frame behind the pivot (pivot_ahead in
-//    front of the kart), d behind and h up along the smoothed up, d and h between
-//    the near and far values by the kart's share of its top speed (the
-//    original's chase camera: 3.05/1.2 m near, 3.7/1.4 m far, 64 units a metre).
-//  - The view runs along the smoothed kart frame (forward = smoothed course, up =
-//    smoothed up); the eye's place puts the kart's middle at y ~0.27 of the
-//    picture; a lifted eye whose view would leave it outside frame_box aims at
-//    the middle at frame_y (G1 before the original's framing).
-//  - Occlusion: the eye moves on the line to the kart's middle to the largest
-//    free share (the measure line's own test, now and occl_ahead frames ahead),
-//    by at most max_pull_L kart lengths a frame; in a tube (both side rays hit)
-//    it may come closer (min_eye_tube_L instead of min_eye_L).
-//  - At most EXT_CAM_TURN_MAX degrees a frame (checked on the drawn up), the eye
-//    blended in from the retail one over in_frames and back out by
-//    handover_since; at handover_since - 0 the view is half way to the retail one.
-// All values are run-time parameters: exttrack.json camera.module { name: value }.
+// WHAT. The source game has no camera of its own for anti-gravity: one chase
+// camera runs all the time, and the kart's maglev state only blends three of its
+// parts over one second (the share of world up in the camera's up, the pitch
+// lock of the view, the 2D velocity). This file rebuilds that chase camera step
+// by step as the source exe runs it (the flow and every value with its address
+// are in the round's camera spec, outside this tree) and shows it while the kart
+// is in a zone. It has no spring, no look ahead, no occlusion ray to the kart and
+// no step limits - the source has none.
+//
+// THE FRAME (Reload's own, not in the source). Off the zones Reload keeps its
+// own camera (the retail one, exactly). So:
+//  R1 the chase camera runs for seat 0 on every follow frame of a track with
+//     zone records (the countdown included) and writes nothing by itself;
+//  R2 it owns the picture from the first maglev frame until its share b is 0
+//     again; maglev = the driver's zone (ExtPhys_DriverZone) and, while the
+//     race has not started, the source's placing rule (a line 20 m down from
+//     the kart: a zone record or no ground at all = maglev);
+//  R3 b moves by dt / 1 s towards 1 in maglev and towards 0 off it (the
+//     source's own 1 s of m_..._TimeTo/FromMagLev); the picture is the retail
+//     eye and view blended with the chase camera's by b, the projection too;
+//  R4 a mask grab holds the chase camera (as the source holds it while the kart
+//     is reset) and lets b fall; after the grab and after ExtCam_OnTeleport the
+//     chase camera starts afresh at the kart;
+//  R5 with --dev-ext-cam-log one "[CTR ExtCam] chase" line per frame: every
+//     input of the step, b, the retail and the written pose (for the offline
+//     model of the measuring tools).
+// The retail camera keeps running underneath: what it wrote to the push buffer
+// in an owned frame is put back before its next tick (ExtCam_RestoreRetail from
+// game/CAM.c), so its own state never sees the chase camera's pose.
+//
+// Without --ext-track, camera.follow_up "zones" or zone records nothing here
+// runs and nothing is written.
+
+int CTR_View_ProjectionDistance(int distanceToScreen); // game/native_view.c
+
+// the source's chase camera parameters (1P near; the values of its camera table)
+#define EXT_CHASE_M 64.0 // world units a metre (the track's conversion)
+global_variable const double s_chaseNear[3] = {0.0, -3.05, 1.2};     // position behind, near (x side, y ahead, z up)
+global_variable const double s_chaseFar[3] = {0.0, -3.7, 1.4};       // position behind, far
+global_variable const double s_chaseBoost[3] = {0.0, -4.55, 1.5};    // position behind while boosting
+global_variable const double s_chaseWallStart[3] = {0.0, -0.5, 1.0}; // the wall ray's start
+#define EXT_CHASE_SPEED_NEAR 5.0
+#define EXT_CHASE_SPEED_FAR 19.0
+#define EXT_CHASE_LOOK_UP 1.7
+#define EXT_CHASE_SPEED_KART_AT 5.0
+#define EXT_CHASE_SPEED_VEL_AT 5.0
+#define EXT_CHASE_YAW_RATE 0.05
+#define EXT_CHASE_BEHIND_RATE 0.05
+#define EXT_CHASE_BEHIND_RATE_BOOST 0.1
+#define EXT_CHASE_UP_RATE 0.03
+#define EXT_CHASE_SLIDE_VEL 0.5
+#define EXT_CHASE_MAX_NONSLIDE_VEL 0.5
+#define EXT_CHASE_PIVOT_AHEAD 0.45
+#define EXT_CHASE_WORLD_UP 0.5
+#define EXT_CHASE_FLOOR_MIN 1.25
+#define EXT_CHASE_FLOOR_START 2.0
+#define EXT_CHASE_FLOOR_BELOW 999.0
+#define EXT_CHASE_FLOOR_NONE_ABOVE 1000.0
+#define EXT_CHASE_WALL_BELOW 10.0
+#define EXT_CHASE_WALL_NONE_ABOVE 15.0
+#define EXT_CHASE_WALL_UP 0.5
+#define EXT_CHASE_SMOOTH_FULL 0.05
+#define EXT_CHASE_SMOOTH_ZERO_BELOW 5.0
+#define EXT_CHASE_SMOOTH_FULL_ABOVE 10.0
+#define EXT_CHASE_SMOOTH_SLOW 1.0
+#define EXT_CHASE_LOOK_UP_WALL 0.3
+#define EXT_CHASE_T_BLEND 1.0 // all six maglev transition times
+#define EXT_CHASE_AVG_N 10
+#define EXT_CHASE_SLIDE_RECENT 1.0
+#define EXT_CHASE_VEL_ADJ 0.05
+#define EXT_CHASE_LOW_SPEED 0.5
+#define EXT_CHASE_FOV 90.0 // horizontal
+#define EXT_CHASE_ASPECT 1.33
+#define EXT_CHASE_BOOST_FOV 100.0
+#define EXT_CHASE_BOOST_FOV_RATE 0.01
+#define EXT_CHASE_FOV_CLOSE 0.5
+#define EXT_CHASE_COMP 150.0     // every rate times dt[ms] * 0.001 * 150, at most 1
+#define EXT_CHASE_PLACE_DOWN 20.0 // the placing line, metres
+
+// the inputs of one step (world units, m/s; the kart's forward and up unit length)
+typedef struct
+{
+	int dtMs;
+	int mag, air, spin, slide, reverse, boost;
+	double pos[3], prev[3];
+	double f[3], u[3];
+	int floorHit; // -1 not cast, 0 none, 1 hit at floorT along the ray
+	double floorT;
+	int wallHit;
+	double wallT;
+} ExtChaseIn;
 
 typedef struct
 {
-	double orientTau;   // s, the spring of the kart's orientation
-	double dNear, hNear, dFar, hFar;
-	double pivotAhead, lookAhead;
-	double speedLo, speedHi; // share of the top speed for near / far
-	double rigRate;     // share per 30 Hz frame of the eye's distance and height
-	double frameY, frameBox;
-	int ownAheadFrames, handoverSince, inFrames, occlAhead;
-	double kartLength;  // L, world units
-	double maxPullL, minEyeL, minEyeTubeL, grow, tubeRayL;
-	double upBlendS;  // s, the linear blend of the target up between off-zone (half world up) and zone (kart up)
-	double jumpMaxL;  // the eye moves at most this many kart lengths a frame (G1: 1 L)
-	int substeps;     // spring steps per frame
-} ExtCamModParams;
-
-global_variable const ExtCamModParams s_extCamModDefaults = {
-    .orientTau = 0.06, // critically damped with the target's own turn fed forward: a turning target is followed
-                       // without lag, a jump settles to 37 % in 2.15 tau = 0.13 s (original at 0.13 s, up 0.22 s)
-    .dNear = 195.0, .hNear = 77.0, .dFar = 237.0, .hFar = 90.0,
-    .pivotAhead = 29.0, .lookAhead = 29.0,
-    .speedLo = 0.2, .speedHi = 0.7,
-    .rigRate = 0.25,
-    .frameY = 0.25, .frameBox = 0.42,
-    .ownAheadFrames = 25, .handoverSince = 44, .inFrames = 12, .occlAhead = 6,
-    .kartLength = 89.9, // L (PLAN NL1 3a): length of the retail kart model of driver 0 in world units
-    .maxPullL = 0.6, .minEyeL = 1.0, .minEyeTubeL = 0.6, .grow = 0.04, .tubeRayL = 4.0,
-    .upBlendS = 1.0, .jumpMaxL = 0.97, .substeps = 4,
-};
+	int ready;
+	double tIn, tOut, t2In, t2Out, slideClock, fov;
+	int f2;
+	double ring[EXT_CHASE_AVG_N][3];
+	int ringN, idx, full, latch;
+	double vlast[3], ws, at[3], up[3], rel[3], c[3];
+} ExtChaseState;
 
 typedef struct
 {
-	double w, x, y, z;
-} ExtCamQuat;
+	double eye[3], look[3], up[3], fwd[3]; // up: the view's up (unit, across fwd)
+	double fov, speed;
+	double pivot[3], a[3], right[3];
+	double floorFrom[3], floorDir[3], floorLen;
+	double wallFrom[3], wallTo[3];
+	int wallOn;
+} ExtChaseOut;
+
+internal double ExtChase_Rate(double r, int dtMs)
+{
+	const double k = r * (double)dtMs * 0.001 * EXT_CHASE_COMP;
+
+	return (k >= 1.0) ? 1.0 : k;
+}
+
+// the share pattern of the source: (x - lo) / (hi - lo) clamped; hi <= lo: a step at lo
+internal double ExtChase_Ramp(double x, double lo, double hi)
+{
+	if (hi - lo > 0.0)
+	{
+		const double t = (x - lo) / (hi - lo);
+
+		return (t <= 0.0) ? 0.0 : ((t >= 1.0) ? 1.0 : t);
+	}
+	return (lo <= x) ? 1.0 : 0.0;
+}
+
+// the share of the maglev value: in maglev the time in it over 1 s, off it 1 - the time out of it over 1 s
+internal double ExtChase_Share(double tIn, double tOut, int flag)
+{
+	return flag ? (tIn / EXT_CHASE_T_BLEND) : (1.0 - tOut / EXT_CHASE_T_BLEND);
+}
+
+internal void ExtChase_MixVec(double t, const double off[3], const double on[3], double out[3])
+{
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		out[i] = (t >= 1.0) ? on[i] : ((t <= 0.0) ? off[i] : (off[i] * (1.0 - t) + on[i] * t));
+	}
+}
+
+// zero-safe normalise (the source's FPU gives 0 for a zero vector)
+internal void ExtChase_Unit(double v[3])
+{
+	if (ExtCam_Norm(v) < 1e-12)
+	{
+		v[0] = v[1] = v[2] = 0.0;
+	}
+}
+
+// a point of the pivot frame (rows right, a, up; origin pivot), p in metres
+internal void ExtChase_FramePoint(const ExtChaseOut *o, const double up[3], const double p[3], double out[3])
+{
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		out[i] = o->pivot[i] + (o->right[i] * p[0] + o->a[i] * p[1] + up[i] * p[2]) * EXT_CHASE_M;
+	}
+}
+
+// the camera's up target: off maglev half the kart's up and half world up, in maglev the kart's up
+internal void ExtChase_UpTarget(const ExtChaseState *s, const double ku[3], int mag, double out[3])
+{
+	const double half[3] = {ku[0] * (1.0 - EXT_CHASE_WORLD_UP), ku[1] * (1.0 - EXT_CHASE_WORLD_UP) + EXT_CHASE_WORLD_UP,
+	                        ku[2] * (1.0 - EXT_CHASE_WORLD_UP)};
+
+	ExtChase_MixVec(ExtChase_Share(s->tIn, s->tOut, mag), half, ku, out);
+}
+
+// R4: a fresh state at the kart (the timers and the FOV run on)
+internal void ExtChase_Reset(ExtChaseState *s, const ExtChaseIn *in)
+{
+	int i;
+
+	s->ringN = 0;
+	s->idx = 0;
+	s->full = 0;
+	s->latch = 0;
+	s->ws = 0.0;
+	for (i = 0; i < 3; i++)
+	{
+		s->vlast[i] = 0.0;
+		s->at[i] = in->f[i];
+		s->rel[i] = s_chaseNear[i];
+		s->c[i] = 0.0;
+	}
+	ExtChase_UpTarget(s, in->u, in->mag, s->up);
+	s->ready = 1;
+}
+
+internal void ExtChase_Init(ExtChaseState *s)
+{
+	memset(s, 0, sizeof(*s));
+	s->fov = EXT_CHASE_FOV;
+}
+
+// Part one of a step: the timers, the velocity, the view direction and the pivot frame, the camera's up, the eye
+// in the frame, the eye in the world before the collision and the floor ray.
+internal void ExtChase_StepA(ExtChaseState *s, const ExtChaseIn *in, ExtChaseOut *o)
+{
+	const int dtMs = in->dtMs;
+	const double dt = (double)dtMs * 0.001;
+	double v[3], vb[3], sp, w, ap[3], vn[3], ut[3], sig;
+	int i;
+
+	if (!s->ready)
+	{
+		ExtChase_Reset(s, in);
+	}
+	s->slideClock = in->slide ? 0.0 : (s->slideClock + dt);
+	// the maglev timers
+	if (in->mag)
+	{
+		s->tIn += dt;
+		s->tOut = 0.0;
+		if (!in->air || s->f2)
+		{
+			s->f2 = 1;
+			s->t2Out = 0.0;
+			s->t2In += dt;
+		}
+		else
+		{
+			s->f2 = 0;
+			s->t2Out += dt;
+			s->t2In = 0.0;
+		}
+	}
+	else
+	{
+		s->tIn = 0.0;
+		s->tOut += dt;
+		s->f2 = 0;
+		s->t2Out += dt;
+		s->t2In = 0.0;
+	}
+	// the velocity: the mean of the last 10, its up share 2D off maglev, the last one below 0.5 m/s
+	for (i = 0; i < 3; i++)
+	{
+		v[i] = (dtMs > 0) ? ((in->pos[i] - in->prev[i]) * 1000.0 / (double)dtMs / EXT_CHASE_M) : 0.0;
+	}
+	if (s->ringN < EXT_CHASE_AVG_N)
+	{
+		memcpy(s->ring[s->ringN], v, sizeof(v));
+		s->ringN++;
+	}
+	else
+	{
+		memcpy(s->ring[s->idx], v, sizeof(v));
+	}
+	s->idx++;
+	if (s->idx >= EXT_CHASE_AVG_N)
+	{
+		s->full = 1;
+		s->idx = 0;
+	}
+	if (s->full)
+	{
+		int k;
+
+		for (i = 0; i < 3; i++)
+		{
+			double sum = 0.0;
+
+			for (k = 0; k < EXT_CHASE_AVG_N; k++)
+			{
+				sum += s->ring[k][i];
+			}
+			vb[i] = sum / (double)EXT_CHASE_AVG_N;
+		}
+	}
+	else
+	{
+		memcpy(vb, v, sizeof(v));
+	}
+	{
+		const double t2 = ExtChase_Share(s->t2In, s->t2Out, s->f2);
+
+		vb[1] = (t2 >= 1.0) ? vb[1] : ((t2 <= 0.0) ? 0.0 : (vb[1] * t2));
+	}
+	sp = sqrt(ExtCam_Dot(vb, vb));
+	if ((sp <= EXT_CHASE_LOW_SPEED) || (in->spin && s->latch))
+	{
+		memcpy(vb, s->vlast, sizeof(vb));
+		sp = sqrt(ExtCam_Dot(vb, vb));
+		if (in->spin)
+		{
+			s->latch = 1;
+		}
+	}
+	if (!in->spin)
+	{
+		s->latch = 0;
+	}
+	if (in->reverse)
+	{
+		for (i = 0; i < 3; i++)
+		{
+			vb[i] = -vb[i];
+		}
+		sp = -sp;
+	}
+	memcpy(s->vlast, vb, sizeof(vb));
+	o->speed = sp;
+	// the view direction and the pivot frame (rows right, a, kart up: the source does not re-orthogonalise them)
+	ExtCam_Cross(in->f, in->u, o->right);
+	for (i = 0; i < 3; i++)
+	{
+		o->pivot[i] = in->pos[i] + in->f[i] * EXT_CHASE_PIVOT_AHEAD * EXT_CHASE_M;
+	}
+	w = ExtChase_Ramp(sp, EXT_CHASE_SPEED_KART_AT, EXT_CHASE_SPEED_VEL_AT);
+	if (!in->slide)
+	{
+		w = (w < EXT_CHASE_MAX_NONSLIDE_VEL) ? w : EXT_CHASE_MAX_NONSLIDE_VEL;
+	}
+	if (in->spin)
+	{
+		w = 1.0;
+	}
+	if (in->slide)
+	{
+		w = EXT_CHASE_SLIDE_VEL;
+	}
+	s->ws += (w - s->ws) * ExtChase_Rate(EXT_CHASE_VEL_ADJ, dtMs);
+	memcpy(vn, vb, sizeof(vn));
+	ExtChase_Unit(vn);
+	{
+		const double k = ExtChase_Rate(EXT_CHASE_YAW_RATE, dtMs);
+
+		for (i = 0; i < 3; i++)
+		{
+			const double tgt = in->f[i] * (1.0 - s->ws) + vn[i] * s->ws;
+
+			s->at[i] += (tgt - s->at[i]) * k;
+		}
+	}
+	ExtChase_Unit(s->at);
+	memcpy(ap, s->at, sizeof(ap));
+	if (ap[1] >= 0.0)
+	{
+		ap[1] = 0.0; // no pitching up off maglev
+		ExtChase_Unit(ap);
+	}
+	ExtChase_MixVec(ExtChase_Share(s->tIn, s->tOut, in->mag), ap, s->at, o->a);
+	ExtChase_Unit(o->a);
+	if (ExtCam_Dot(o->a, o->a) < 1e-18)
+	{
+		memcpy(o->a, in->f, sizeof(o->a));
+	}
+	// the camera's up (not normalised)
+	ExtChase_UpTarget(s, in->u, in->mag, ut);
+	{
+		const double k = ExtChase_Rate(EXT_CHASE_UP_RATE, dtMs);
+
+		for (i = 0; i < 3; i++)
+		{
+			s->up[i] += (ut[i] - s->up[i]) * k;
+		}
+	}
+	// the eye in the frame
+	sig = ExtChase_Ramp(sp, EXT_CHASE_SPEED_NEAR, EXT_CHASE_SPEED_FAR);
+	{
+		const double k = ExtChase_Rate(in->boost ? EXT_CHASE_BEHIND_RATE_BOOST : EXT_CHASE_BEHIND_RATE, dtMs);
+
+		for (i = 0; i < 3; i++)
+		{
+			const double e = in->boost ? s_chaseBoost[i] : (s_chaseNear[i] + (s_chaseFar[i] - s_chaseNear[i]) * sig);
+
+			s->rel[i] += (e - s->rel[i]) * k;
+		}
+	}
+	// E0 and the floor ray: from E0 + 2 m along the camera's up to 1.25 m under E0
+	ExtChase_FramePoint(o, in->u, s->rel, o->eye);
+	{
+		double un[3];
+
+		memcpy(un, s->up, sizeof(un));
+		ExtChase_Unit(un);
+		for (i = 0; i < 3; i++)
+		{
+			o->floorFrom[i] = o->eye[i] + un[i] * EXT_CHASE_FLOOR_START * EXT_CHASE_M;
+			o->floorDir[i] = -un[i];
+		}
+		o->floorLen = (EXT_CHASE_FLOOR_START + EXT_CHASE_FLOOR_MIN) * EXT_CHASE_M;
+	}
+}
+
+// Part two, after the floor hit (in->floorHit / floorT): E1 and the wall ray (cast only under 15 m/s and not
+// within 1 s after a slide).
+internal void ExtChase_StepB(const ExtChaseState *s, const ExtChaseIn *in, ExtChaseOut *o, double e1[3])
+{
+	const double sa = fabs(o->speed);
+	double un[3];
+	int i;
+
+	memcpy(un, s->up, sizeof(un));
+	ExtChase_Unit(un);
+	memcpy(e1, o->eye, 3 * sizeof(double));
+	if ((sa < EXT_CHASE_FLOOR_NONE_ABOVE) && (in->floorHit == 1))
+	{
+		const double q = ExtChase_Ramp(sa, EXT_CHASE_FLOOR_BELOW, EXT_CHASE_FLOOR_NONE_ABOVE);
+
+		for (i = 0; i < 3; i++)
+		{
+			const double hit = o->floorFrom[i] + o->floorDir[i] * in->floorT;
+
+			e1[i] = o->eye[i] * q + (hit + un[i] * EXT_CHASE_FLOOR_MIN * EXT_CHASE_M) * (1.0 - q);
+		}
+	}
+	o->wallOn = (sa < EXT_CHASE_WALL_NONE_ABOVE) && !(s->slideClock <= EXT_CHASE_SLIDE_RECENT);
+	ExtChase_FramePoint(o, in->u, s_chaseWallStart, o->wallFrom);
+	memcpy(o->wallTo, e1, sizeof(o->wallTo));
+}
+
+// Part three: the wall result, the smoothed correction, the look point, the view and the FOV.
+internal void ExtChase_StepC(ExtChaseState *s, const ExtChaseIn *in, ExtChaseOut *o, const double e1[3])
+{
+	const int dtMs = in->dtMs;
+	const double sa = fabs(o->speed);
+	double un[3], e2[3], wallShift = 0.0, loc[3], lp[3], fp[3], sv[3];
+	int i;
+
+	memcpy(un, s->up, sizeof(un));
+	ExtChase_Unit(un);
+	memcpy(e2, e1, sizeof(e2));
+	if (o->wallOn && (in->wallHit == 1))
+	{
+		double d[3];
+		const double q = ExtChase_Ramp(sa, EXT_CHASE_WALL_BELOW, EXT_CHASE_WALL_NONE_ABOVE);
+
+		for (i = 0; i < 3; i++)
+		{
+			d[i] = e1[i] - o->wallFrom[i];
+		}
+		ExtChase_Unit(d);
+		for (i = 0; i < 3; i++)
+		{
+			e2[i] = e1[i] * q + (o->wallFrom[i] + d[i] * in->wallT) * (1.0 - q);
+			d[i] = e2[i] - e1[i];
+		}
+		wallShift = sqrt(ExtCam_Dot(d, d));
+		for (i = 0; i < 3; i++)
+		{
+			e2[i] += un[i] * wallShift * EXT_CHASE_WALL_UP;
+		}
+	}
+	// the correction, smoothed in the frame (its own inverse: the frame is not orthogonal)
+	{
+		double r[3], axu[3], rxu[3], axr[3], det;
+		const double fs = ExtChase_Ramp(sa, EXT_CHASE_SMOOTH_ZERO_BELOW, EXT_CHASE_SMOOTH_FULL_ABOVE);
+		const double k = ExtChase_Rate(EXT_CHASE_SMOOTH_SLOW * (1.0 - fs) + EXT_CHASE_SMOOTH_FULL * fs, dtMs);
+
+		for (i = 0; i < 3; i++)
+		{
+			r[i] = e2[i] - o->pivot[i];
+		}
+		ExtCam_Cross(o->a, in->u, axu);
+		det = ExtCam_Dot(o->right, axu);
+		if (fabs(det) < 1e-12)
+		{
+			loc[0] = loc[1] = loc[2] = 0.0;
+		}
+		else
+		{
+			// Cramer: r = x right + y a + z up
+			ExtCam_Cross(r, in->u, rxu);
+			ExtCam_Cross(o->a, r, axr);
+			loc[0] = ExtCam_Dot(r, axu) / det;
+			loc[1] = ExtCam_Dot(o->right, rxu) / det;
+			loc[2] = ExtCam_Dot(o->right, axr) / det;
+		}
+		for (i = 0; i < 3; i++)
+		{
+			s->c[i] += ((loc[i] - s->rel[i] * EXT_CHASE_M) - s->c[i]) * k;
+			lp[i] = s->rel[i] * EXT_CHASE_M + s->c[i];
+		}
+		for (i = 0; i < 3; i++)
+		{
+			o->eye[i] = o->pivot[i] + o->right[i] * lp[0] + o->a[i] * lp[1] + in->u[i] * lp[2];
+		}
+	}
+	// the look point: over the pivot along the kart's up, lifted by a share of the wall's shift
+	for (i = 0; i < 3; i++)
+	{
+		o->look[i] = o->pivot[i] + in->u[i] * (EXT_CHASE_LOOK_UP * EXT_CHASE_M + EXT_CHASE_LOOK_UP_WALL * wallShift);
+	}
+	// the view (look-at): f' = eye - look, s = up x f', the view's up = f' x s
+	for (i = 0; i < 3; i++)
+	{
+		fp[i] = o->eye[i] - o->look[i];
+	}
+	ExtChase_Unit(fp);
+	ExtCam_Cross(un, fp, sv);
+	ExtChase_Unit(sv);
+	ExtCam_Cross(fp, sv, o->up);
+	for (i = 0; i < 3; i++)
+	{
+		o->fwd[i] = -fp[i];
+	}
+	// the FOV: towards the boost FOV while boosting, back to the normal one
+	if (in->boost)
+	{
+		s->fov += (EXT_CHASE_BOOST_FOV - s->fov) * ExtChase_Rate(EXT_CHASE_BOOST_FOV_RATE, dtMs);
+	}
+	else if (s->fov - EXT_CHASE_FOV > EXT_CHASE_FOV_CLOSE)
+	{
+		s->fov += (EXT_CHASE_FOV - s->fov) * ExtChase_Rate(EXT_CHASE_BOOST_FOV_RATE, dtMs);
+	}
+	else
+	{
+		s->fov = EXT_CHASE_FOV;
+	}
+	o->fov = s->fov;
+}
+
+// A step without collision (the selftest): the rays hit nothing.
+internal void ExtChase_StepFree(ExtChaseState *s, ExtChaseIn *in, ExtChaseOut *o)
+{
+	double e1[3];
+
+	in->floorHit = 0;
+	in->wallHit = 0;
+	ExtChase_StepA(s, in, o);
+	ExtChase_StepB(s, in, o, e1);
+	ExtChase_StepC(s, in, o, e1);
+}
+
+// Reload's projection distance for the source's FOV (horizontal, aspect 1.33), the vertical FOV kept:
+// H = (rect.h / 2) / (0x360/0x600 tan(fovY / 2)), tan(fovY / 2) = tan(fovX / 2) / 1.33 - 255.4 for 90 degrees at
+// 512 x 216 (Reload's own 256).
+internal double ExtChase_HOfFov(double fovDeg, int rectH)
+{
+	const double ty = tan(fovDeg * 3.14159265358979323846 / 360.0) / EXT_CHASE_ASPECT;
+
+	return ((double)rectH * 0.5) / ((double)0x360 / (double)0x600 * ty);
+}
 
 global_variable struct
 {
 	const void *level1;
-	ExtCamModParams p;
-	int paramsRead;
-	int owned;
-	int ownStart;      // gGT->timer the ownership began
-	int lastZoneFrame; // -1 none on this level
-	int lastHotFrame;  // gGT->timer of the last frame in a zone or with a zone ahead
-	ExtCamQuat q;      // the smoothed kart orientation
-	ExtCamQuat qtPrev; // the target of the frame before (its turn is fed forward)
-	int haveQt;
-	int teleported;    // ExtCam_OnTeleport: the next frame starts the module's state at the new place
-	double tUp;        // 0..1: share of the zone's target up (kart up) against the off-zone one
-	double omega[3];   // its angular velocity (rad/s, world)
-	double dCur, hCur;
-	double sigma;
-	double prevKart[3];
-	int havePrevKart;
-	double weight;
+	ExtChaseState st;
+	double b; // R3: the chase camera's share of the picture
+	int wasGrab;
+	int teleport;
+	int haveRaw;
+	ExtChaseOut raw; // the chase camera of the last step (held in a grab)
+	int placeMag;    // the placing rule at the level's first frame (-1 not yet)
+	int prevOwn;
+	// the restore: the retail pose of the last frame this module wrote
+	int wrote;
+	SVec3 retailPos, retailRot;
+	int retailH;
 	int reportOn;
-	u32 frames, owns, pulled, snaps, raised, blocked, tubeFrames, limited, halved, framingOut, lookaheadOwns, eyeClamped, eyeJumpKept;
-} s_extCamMod = {.lastZoneFrame = -1};
+	u32 frames, owned, owns, floorHits, wallHits, wallCasts;
+} s_extChase = {.placeMag = -1};
 
-// --------------------------------------------------------------------------
-// quaternions (w, x, y, z); a frame (f, u) is the rotation with columns
-// r = u x f, u, f (local x right, y up, z forward)
-
-internal ExtCamQuat ExtCamQ_Mul(ExtCamQuat a, ExtCamQuat b)
-{
-	ExtCamQuat q;
-
-	q.w = a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z;
-	q.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
-	q.y = a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x;
-	q.z = a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w;
-	return q;
-}
-
-internal ExtCamQuat ExtCamQ_Conj(ExtCamQuat a)
-{
-	ExtCamQuat q = {a.w, -a.x, -a.y, -a.z};
-
-	return q;
-}
-
-internal ExtCamQuat ExtCamQ_Norm(ExtCamQuat a)
-{
-	const double l = sqrt(a.w * a.w + a.x * a.x + a.y * a.y + a.z * a.z);
-	ExtCamQuat q = {1.0, 0.0, 0.0, 0.0};
-
-	if (l > 1e-12)
-	{
-		q.w = a.w / l;
-		q.x = a.x / l;
-		q.y = a.y / l;
-		q.z = a.z / l;
-	}
-	return q;
-}
-
-internal void ExtCamQ_Rotate(ExtCamQuat q, const double v[3], double out[3])
-{
-	const ExtCamQuat p = {0.0, v[0], v[1], v[2]};
-	const ExtCamQuat r = ExtCamQ_Mul(ExtCamQ_Mul(q, p), ExtCamQ_Conj(q));
-
-	out[0] = r.x;
-	out[1] = r.y;
-	out[2] = r.z;
-}
-
-internal ExtCamQuat ExtCamQ_FromFrame(const double f[3], const double u[3])
-{
-	double r[3], m[3][3];
-	ExtCamQuat q;
-	double t;
-	int i;
-
-	ExtCam_Cross(u, f, r);
-	for (i = 0; i < 3; i++)
-	{
-		m[i][0] = r[i];
-		m[i][1] = u[i];
-		m[i][2] = f[i];
-	}
-	t = m[0][0] + m[1][1] + m[2][2];
-	if (t > 0.0)
-	{
-		const double s = sqrt(t + 1.0) * 2.0;
-
-		q.w = 0.25 * s;
-		q.x = (m[2][1] - m[1][2]) / s;
-		q.y = (m[0][2] - m[2][0]) / s;
-		q.z = (m[1][0] - m[0][1]) / s;
-	}
-	else if ((m[0][0] > m[1][1]) && (m[0][0] > m[2][2]))
-	{
-		const double s = sqrt(1.0 + m[0][0] - m[1][1] - m[2][2]) * 2.0;
-
-		q.w = (m[2][1] - m[1][2]) / s;
-		q.x = 0.25 * s;
-		q.y = (m[0][1] + m[1][0]) / s;
-		q.z = (m[0][2] + m[2][0]) / s;
-	}
-	else if (m[1][1] > m[2][2])
-	{
-		const double s = sqrt(1.0 + m[1][1] - m[0][0] - m[2][2]) * 2.0;
-
-		q.w = (m[0][2] - m[2][0]) / s;
-		q.x = (m[0][1] + m[1][0]) / s;
-		q.y = 0.25 * s;
-		q.z = (m[1][2] + m[2][1]) / s;
-	}
-	else
-	{
-		const double s = sqrt(1.0 + m[2][2] - m[0][0] - m[1][1]) * 2.0;
-
-		q.w = (m[1][0] - m[0][1]) / s;
-		q.x = (m[0][2] + m[2][0]) / s;
-		q.y = (m[1][2] + m[2][1]) / s;
-		q.z = 0.25 * s;
-	}
-	return ExtCamQ_Norm(q);
-}
-
-internal void ExtCamQ_Frame(ExtCamQuat q, double f[3], double u[3])
-{
-	const double z[3] = {0.0, 0.0, 1.0}, y[3] = {0.0, 1.0, 0.0};
-
-	ExtCamQ_Rotate(q, z, f);
-	ExtCamQ_Rotate(q, y, u);
-}
-
-// The rotation vector (axis times angle, radians) of q, the shorter way round.
-internal void ExtCamQ_Log(ExtCamQuat q, double v[3])
-{
-	double s, a;
-
-	if (q.w < 0.0)
-	{
-		q.w = -q.w;
-		q.x = -q.x;
-		q.y = -q.y;
-		q.z = -q.z;
-	}
-	s = sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
-	if (s < 1e-12)
-	{
-		v[0] = v[1] = v[2] = 0.0;
-		return;
-	}
-	a = 2.0 * atan2(s, q.w);
-	v[0] = q.x / s * a;
-	v[1] = q.y / s * a;
-	v[2] = q.z / s * a;
-}
-
-internal ExtCamQuat ExtCamQ_Exp(const double v[3])
-{
-	const double a = sqrt(ExtCam_Dot(v, v));
-	ExtCamQuat q = {1.0, 0.0, 0.0, 0.0};
-
-	if (a > 1e-12)
-	{
-		const double s = sin(0.5 * a) / a;
-
-		q.w = cos(0.5 * a);
-		q.x = v[0] * s;
-		q.y = v[1] * s;
-		q.z = v[2] * s;
-	}
-	return q;
-}
-
-// One step of the critically damped spring of q towards target (time constant tau, dt seconds).
-internal void ExtCamQ_SpringStep(ExtCamQuat *q, double omega[3], ExtCamQuat target, double tau, double dt)
-{
-	const double k = 1.0 / (tau * tau), c = 2.0 / tau;
-	double e[3], dv[3];
-	int i;
-
-	ExtCamQ_Log(ExtCamQ_Mul(target, ExtCamQ_Conj(*q)), e);
-	for (i = 0; i < 3; i++)
-	{
-		omega[i] += (k * e[i] - c * omega[i]) * dt;
-		dv[i] = omega[i] * dt;
-	}
-	*q = ExtCamQ_Norm(ExtCamQ_Mul(ExtCamQ_Exp(dv), *q));
-}
-
-// The same spring with the target's own angular velocity fed forward (the turn
-// from prevTarget to target in dt; a turn over 7 degrees a frame is a jump and
-// not fed forward), in `steps` sub-steps: a smoothly turning target is followed
-// without the lag of a plain spring.
-internal void ExtCamQ_SpringStepFF(ExtCamQuat *q, double omega[3], ExtCamQuat target, ExtCamQuat prevTarget, double tau, double dt, int steps)
-{
-	const double k = 1.0 / (tau * tau), c = 2.0 / tau, h = dt / (double)steps;
-	double wt[3];
-	int i, st;
-
-	ExtCamQ_Log(ExtCamQ_Mul(target, ExtCamQ_Conj(prevTarget)), wt);
-	if (sqrt(ExtCam_Dot(wt, wt)) > 7.0 * 3.14159265358979323846 / 180.0)
-	{
-		wt[0] = wt[1] = wt[2] = 0.0;
-	}
-	for (i = 0; i < 3; i++)
-	{
-		wt[i] /= dt;
-	}
-	for (st = 0; st < steps; st++)
-	{
-		// the target moves on with its own turn: at the end of this sub-step it is that far before `target`
-		const double back = -(dt - (double)(st + 1) * h);
-		const double bv[3] = {wt[0] * back, wt[1] * back, wt[2] * back};
-		const ExtCamQuat tgt = ExtCamQ_Norm(ExtCamQ_Mul(ExtCamQ_Exp(bv), target));
-		double e[3], dv[3];
-
-		ExtCamQ_Log(ExtCamQ_Mul(tgt, ExtCamQ_Conj(*q)), e);
-		for (i = 0; i < 3; i++)
-		{
-			omega[i] += (k * e[i] + c * (wt[i] - omega[i])) * h;
-			dv[i] = omega[i] * h;
-		}
-		*q = ExtCamQ_Norm(ExtCamQ_Mul(ExtCamQ_Exp(dv), *q));
-	}
-}
-
-// --------------------------------------------------------------------------
-// parameters (exttrack.json camera.module; missing keys: the defaults)
-
-internal void ExtCamMod_ReadParams(void)
-{
-	const ExtJsonDoc *doc = ExtTrack_Json();
-	const int cam = ExtTrack_Section("camera");
-	const int mod = ((doc != NULL) && (cam >= 0)) ? ExtJson_Get(doc, cam, "module") : -1;
-	ExtCamModParams *p = &s_extCamMod.p;
-
-	*p = s_extCamModDefaults;
-	if ((doc == NULL) || (mod < 0))
-	{
-		return;
-	}
-#define EXTCAM_MOD_NUM(field, key) p->field = ExtJson_Number(doc, ExtJson_Get(doc, mod, key), p->field)
-#define EXTCAM_MOD_INT(field, key) p->field = (int)ExtJson_Number(doc, ExtJson_Get(doc, mod, key), (double)p->field)
-	EXTCAM_MOD_NUM(orientTau, "orient_tau");
-	EXTCAM_MOD_NUM(dNear, "d_near");
-	EXTCAM_MOD_NUM(hNear, "h_near");
-	EXTCAM_MOD_NUM(dFar, "d_far");
-	EXTCAM_MOD_NUM(hFar, "h_far");
-	EXTCAM_MOD_NUM(pivotAhead, "pivot_ahead");
-	EXTCAM_MOD_NUM(lookAhead, "look_ahead");
-	EXTCAM_MOD_NUM(speedLo, "speed_lo");
-	EXTCAM_MOD_NUM(speedHi, "speed_hi");
-	EXTCAM_MOD_NUM(rigRate, "rig_rate");
-	EXTCAM_MOD_NUM(frameY, "frame_y");
-	EXTCAM_MOD_NUM(frameBox, "frame_box");
-	EXTCAM_MOD_INT(ownAheadFrames, "own_ahead_frames");
-	EXTCAM_MOD_INT(handoverSince, "handover_since");
-	EXTCAM_MOD_INT(inFrames, "in_frames");
-	EXTCAM_MOD_INT(occlAhead, "occl_ahead");
-	EXTCAM_MOD_NUM(kartLength, "kart_length");
-	EXTCAM_MOD_NUM(maxPullL, "max_pull_l");
-	EXTCAM_MOD_NUM(minEyeL, "min_eye_l");
-	EXTCAM_MOD_NUM(minEyeTubeL, "min_eye_tube_l");
-	EXTCAM_MOD_NUM(grow, "grow");
-	EXTCAM_MOD_NUM(tubeRayL, "tube_ray_l");
-	EXTCAM_MOD_NUM(upBlendS, "up_blend_s");
-	EXTCAM_MOD_NUM(jumpMaxL, "jump_max_l");
-	EXTCAM_MOD_INT(substeps, "substeps");
-#undef EXTCAM_MOD_NUM
-#undef EXTCAM_MOD_INT
-	// never later than the gate's 45 frames, never shorter than a sane spring
-	p->handoverSince = (p->handoverSince > 44) ? 44 : ((p->handoverSince < 2) ? 2 : p->handoverSince);
-	p->orientTau = (p->orientTau < 0.03) ? 0.03 : p->orientTau;
-	p->inFrames = (p->inFrames < 1) ? 1 : p->inFrames;
-	p->kartLength = (p->kartLength < 1.0) ? 1.0 : p->kartLength;
-	p->upBlendS = (p->upBlendS < 0.05) ? 0.05 : p->upBlendS;
-	p->substeps = (p->substeps < 1) ? 1 : ((p->substeps > 16) ? 16 : p->substeps);
-}
-
-internal void ExtCamMod_Report(void)
-{
-	Platform_Log("[CTR ExtCam] module at exit: %u frame(s) owned in %u ownership(s) (%u begun by the look ahead), pulled in %u, "
-	             "snapped in %u, lifted %u, no free place %u, tube %u, step cut %u, halved %u, kart's middle outside the box %u, eye step "
-	             "shortened %u, eye step over the limit kept (else occluded) %u\n",
-	             s_extCamMod.frames, s_extCamMod.owns, s_extCamMod.lookaheadOwns, s_extCamMod.pulled, s_extCamMod.snaps, s_extCamMod.raised,
-	             s_extCamMod.blocked, s_extCamMod.tubeFrames, s_extCamMod.limited, s_extCamMod.halved, s_extCamMod.framingOut,
-	             s_extCamMod.eyeClamped, s_extCamMod.eyeJumpKept);
-}
-
-// 1 = a zone frame of the nav path at the kart lies within `frames` frames of
-// driving at `step` units a frame ahead (the path of the nearest frame, walked
-// forward; a frame farther than `near` from the kart does not count as its path).
-internal int ExtCamMod_ZoneAhead(const double kart[3], double step, int frames, double nearMax)
-{
-	short up[3];
-	int path = -1, frame = -1;
-	const struct NavHeader *hdr;
-	const struct NavFrame *arr;
-	double budget, last[3];
-	int i, n;
-
-	if (!ExtNav_UpAt(kart, up, &path, &frame) || (path < 0) || (path >= 3) || (frame < 0))
-	{
-		return 0;
-	}
-	hdr = sdata->NavPath_ptrHeader[path];
-	arr = sdata->NavPath_ptrNavFrameArray[path];
-	if ((hdr == NULL) || (arr == NULL) || (hdr->numPoints <= 0))
-	{
-		return 0;
-	}
-	n = hdr->numPoints;
-	last[0] = (double)arr[frame].pos.x;
-	last[1] = (double)arr[frame].pos.y;
-	last[2] = (double)arr[frame].pos.z;
-	{
-		const double dv[3] = {last[0] - kart[0], last[1] - kart[1], last[2] - kart[2]};
-
-		if (sqrt(ExtCam_Dot(dv, dv)) > nearMax)
-		{
-			return 0;
-		}
-	}
-	budget = step * (double)frames;
-	for (i = 0; (i < n) && (budget >= 0.0); i++)
-	{
-		const struct NavFrame *f = &arr[(frame + i) % n];
-		const double p[3] = {(double)f->pos.x, (double)f->pos.y, (double)f->pos.z};
-		const double dv[3] = {p[0] - last[0], p[1] - last[1], p[2] - last[2]};
-
-		budget -= sqrt(ExtCam_Dot(dv, dv));
-		memcpy(last, p, sizeof(p));
-		if ((budget >= 0.0) && (ExtNav_FrameZone(f) != 0))
-		{
-			return 1;
-		}
-	}
-	return 0;
-}
-
-// The eye at share s of off from mid (lifted by lift along up), in whole units:
-// 1 = at least minEye from mid and nothing between it and mid (the measure
-// line's test), also from the predicted kart (moved by ahead) when ahead != NULL.
-internal int ExtCamMod_EyeFree(const double mid[3], const double off[3], double s, double lift, const double up[3], double minEye,
-                               const double *ahead, double eye[3])
-{
-	double at, len, dv[3];
-	int k;
-
-	for (k = 0; k < 3; k++)
-	{
-		eye[k] = (double)lround(mid[k] + s * off[k] + lift * up[k]);
-		dv[k] = eye[k] - mid[k];
-	}
-	if (sqrt(ExtCam_Dot(dv, dv)) < minEye)
-	{
-		return 0;
-	}
-	if (ExtCam_MeasureOccluded(eye, mid, 0.5 * EXT_CAM_KART_H, &at, &len))
-	{
-		return 0;
-	}
-	if (ahead != NULL)
-	{
-		const double e2[3] = {eye[0] + ahead[0], eye[1] + ahead[1], eye[2] + ahead[2]};
-		const double m2[3] = {mid[0] + ahead[0], mid[1] + ahead[1], mid[2] + ahead[2]};
-
-		if (ExtCam_MeasureOccluded(e2, m2, 0.5 * EXT_CAM_KART_H, &at, &len))
-		{
-			return 0;
-		}
-	}
-	return 1;
-}
-
-// 1 = the kart's middle has collision on both sides within reach (a tube).
-internal int ExtCamMod_InTube(const double mid[3], const double right[3], double reach)
-{
-	ExtCollLineHit hit;
-	const double neg[3] = {-right[0], -right[1], -right[2]};
-
-	return ExtColl_LineQuery(mid, right, 0.0, reach, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_WALL, 0, &hit) &&
-	       ExtColl_LineQuery(mid, neg, 0.0, reach, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_WALL, 0, &hit);
-}
-
-// A wanted jump of the kart (a teleport portal; the caller sets the retail
-// camera's CAMERA_FLAG_DIRECTION_CHANGED as well): for seat 0, while the module
-// owns the camera, its next frame starts at the new place - the orientation
-// spring set to the kart, the eye's share back to 1, no step limits against the
-// frame before (the jump is wanted). Not owning: nothing (the retail camera
-// resets itself). Writes this file's state only.
 void ExtCam_OnTeleport(int seat)
 {
-	if ((seat != 0) || !s_extCamMod.owned)
+	if (seat == 0)
+	{
+		s_extChase.teleport = 1;
+	}
+}
+
+internal void ExtChase_Report(void)
+{
+	Platform_Log("[CTR ExtCam] chase at exit: %u frame(s), owned %u in %u ownership(s), floor hits %u, wall rays %u (hits %u)\n", s_extChase.frames,
+	             s_extChase.owned, s_extChase.owns, s_extChase.floorHits, s_extChase.wallCasts, s_extChase.wallHits);
+}
+
+// game/CAM.c, CAM_ThTick before anything of the tick: what this module wrote into the push buffer in the frame
+// before goes back to the retail camera's own values (pos, rot, projection distance), so the retail camera runs on
+// underneath exactly as if it had been shown. Nothing when this module did not write.
+void ExtCam_RestoreRetail(const struct GameTracker *gGT, struct PushBuffer *pb)
+{
+	if (!s_extChase.wrote || (gGT == NULL) || (pb != &gGT->pushBuffer[0]))
 	{
 		return;
 	}
-	s_extCamMod.teleported = 1;
-	s_extCamMod.haveQt = 0;
-	s_extCamMod.havePrevKart = 0;
-	s_extCamMod.sigma = 1.0;
-	s_extCamMod.omega[0] = s_extCamMod.omega[1] = s_extCamMod.omega[2] = 0.0;
+	s_extChase.wrote = 0;
+	if ((const void *)gGT->level1 != s_extChase.level1)
+	{
+		return;
+	}
+	pb->pos = s_extChase.retailPos;
+	pb->rot = s_extChase.retailRot;
+	pb->distanceToScreen_PREV = s_extChase.retailH;
 }
 
-// game/CAM.c, CAM_FollowDriver_Normal, after the retail camera of this frame is
-// in the push buffer (camPos, lookAt: its wanted camera and look point), also in
-// a mask grab. Returns at once, writing nothing, unless the module owns the camera.
+// The source's placing rule: a line 20 m down along the kart's up from just over it - a zone record (the source's
+// maglev surface) or no ground at all = maglev.
+internal int ExtChase_PlaceMag(const double pos[3], const double up[3])
+{
+	double from[3], dir[3];
+	ExtCollLineHit hit;
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		from[i] = pos[i] + up[i] * (double)EXT_PHYS_PROBE_TOP;
+		dir[i] = -up[i];
+	}
+	if (!ExtColl_LineQuery(from, dir, 0.0, (double)EXT_PHYS_PROBE_TOP + EXT_CHASE_PLACE_DOWN * EXT_CHASE_M, EXT_COLL_LINE_GROUND, 0, &hit))
+	{
+		return 1;
+	}
+	return (hit.zone != 0) ? 1 : 0;
+}
+
+// game/CAM.c, CAM_FollowDriver_Normal, after the retail camera of this frame is in the push buffer.
 void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct PushBuffer *pb, const Vec3 *camPos, const Vec3 *lookAt)
 {
-	const ExtCamModParams *p = &s_extCamMod.p;
 	GTERegisters savedGte;
-	int zone, grab, ahead, havePrev, framed, tail;
-	double P[3], n2[3], mid[3], vel[3], course[3], fT[3], uT[3], fS[3], uS[3], rS[3];
-	double pivot[3], rel[3], eyeWant[3], off[3], eye[3], E[3];
-	double step, dt, prevEye[3];
-	ExtCamOrient retailO, prevO, outO;
-	int i;
+	ExtChaseIn in;
+	ExtChaseOut o;
+	ExtCamOrient retailO;
+	double e1[3];
+	int i, own, countdown;
 
 	(void)camPos;
 	(void)lookAt;
 	if ((gGT == NULL) || (d == NULL) || (pb == NULL) || !ExtCam_On(gGT->levelID) || !s_extCam.follow || (gGT->numPlyrCurrGame != 1) ||
-	    (d->driverID != 0))
+	    (d->driverID != 0) || (pb != &gGT->pushBuffer[0]))
 	{
 		return;
-	}
-	if (s_extCamMod.level1 != (const void *)gGT->level1)
-	{
-		const ExtCamQuat one = {1.0, 0.0, 0.0, 0.0};
-
-		s_extCamMod.level1 = gGT->level1;
-		s_extCamMod.owned = 0;
-		s_extCamMod.lastZoneFrame = -1;
-		s_extCamMod.havePrevKart = 0;
-		s_extCamMod.q = one;
-		s_extCamMod.paramsRead = 0;
-	}
-	if (!s_extCamMod.paramsRead)
-	{
-		ExtCamMod_ReadParams();
-		s_extCamMod.paramsRead = 1;
 	}
 	if (ExtColl_ZoneRecords() <= 0)
 	{
 		return; // a track without zones: retail exactly
 	}
-	for (i = 0; i < 3; i++)
+	if (s_extChase.level1 != (const void *)gGT->level1)
 	{
-		P[i] = (double)((&d->posCurr.x)[i] >> 8);
-	}
-	for (i = 0; i < 3; i++)
-	{
-		vel[i] = s_extCamMod.havePrevKart ? (P[i] - s_extCamMod.prevKart[i]) : 0.0;
-	}
-	memcpy(s_extCamMod.prevKart, P, sizeof(P));
-	s_extCamMod.havePrevKart = 1;
-	step = sqrt(ExtCam_Dot(vel, vel));
-	step = (step < 10.0) ? 10.0 : ((step > 200.0) ? 200.0 : step);
+		const void *lv = gGT->level1;
+		const int reportOn = s_extChase.reportOn;
 
-	zone = ExtPhys_DriverZone(d);
-	grab = (d->kartState == KS_MASK_GRABBED);
-	if (zone != 0)
-	{
-		s_extCamMod.lastZoneFrame = gGT->timer;
+		memset(&s_extChase, 0, sizeof(s_extChase));
+		s_extChase.level1 = lv;
+		s_extChase.placeMag = -1;
+		s_extChase.reportOn = reportOn;
+		ExtChase_Init(&s_extChase.st);
 	}
-	ahead = !grab && ExtCamMod_ZoneAhead(P, step, p->ownAheadFrames, 4.0 * p->kartLength);
-	// ownership: a zone or a zone ahead ("hot"), then handoverSince frames of tail
-	if ((zone != 0) || ahead)
+	if (!s_extChase.reportOn)
 	{
-		s_extCamMod.lastHotFrame = gGT->timer;
-	}
-	if (!s_extCamMod.owned)
-	{
-		if ((zone == 0) && !ahead)
-		{
-			return; // retail exactly
-		}
-		s_extCamMod.owned = 1;
-		s_extCamMod.ownStart = gGT->timer;
-		s_extCamMod.weight = 0.0;
-		s_extCamMod.sigma = 1.0;
-		s_extCamMod.owns++;
-		s_extCamMod.lookaheadOwns += (zone == 0) ? 1u : 0u;
-		s_extCamMod.omega[0] = s_extCamMod.omega[1] = s_extCamMod.omega[2] = 0.0;
-		s_extCamMod.dCur = p->dNear;
-		s_extCamMod.hCur = p->hNear;
-		s_extCamMod.q.w = 0.0; // set from the kart below
-		s_extCamMod.q.x = s_extCamMod.q.y = s_extCamMod.q.z = 0.0;
-		s_extCamMod.haveQt = 0;
-		s_extCamMod.tUp = (zone != 0) ? 1.0 : 0.0;
-		if (!s_extCamMod.reportOn)
-		{
-			s_extCamMod.reportOn = 1;
-			Platform_AtExitReport(ExtCamMod_Report);
-		}
-	}
-	tail = gGT->timer - s_extCamMod.lastHotFrame;
-	if (tail > p->handoverSince)
-	{
-		s_extCamMod.owned = 0;
-		return; // retail exactly from here on
+		s_extChase.reportOn = 1;
+		Platform_AtExitReport(ExtChase_Report);
 	}
 	savedGte = gteRegs;
 
-	// the kart: its middle (the measure line's point), its course and up
+	// the inputs: the drawn kart (forward = third column, up = second of its instance matrix), its move, its state
+	memset(&in, 0, sizeof(in));
+	memset(&o, 0, sizeof(o));
+	in.dtMs = gGT->elapsedTimeMS;
 	for (i = 0; i < 3; i++)
 	{
-		n2[i] = (double)(&d->AxisAngle2_normalVec.x)[i];
+		in.pos[i] = (double)(&d->posCurr.x)[i] / 256.0;
+		in.prev[i] = (double)(&d->posPrev.x)[i] / 256.0;
+		in.f[i] = (double)d->instSelf->matrix.m[i][2];
+		in.u[i] = (double)d->instSelf->matrix.m[i][1];
 	}
-	if (ExtCam_Norm(n2) < 1e-6)
+	ExtCam_Norm(in.f);
+	ExtCam_Norm(in.u);
+	countdown = ((gGT->gameMode1 & START_OF_RACE) != 0) || (gGT->trafficLightsTimer > 0);
+	if (s_extChase.placeMag < 0)
 	{
-		n2[0] = 0.0;
-		n2[1] = 1.0;
-		n2[2] = 0.0;
+		s_extChase.placeMag = ExtChase_PlaceMag(in.pos, in.u);
 	}
-	for (i = 0; i < 3; i++)
-	{
-		mid[i] = P[i] + 0.5 * EXT_CAM_KART_H * n2[i];
-	}
-	dt = (double)gGT->elapsedTimeMS * 0.001;
-	dt = (dt < 1.0 / 120.0) ? (1.0 / 120.0) : ((dt > 0.1) ? 0.1 : dt);
-	// the target up: off a zone half world up (the original's m_PercentWorldUp 0.5), in a zone the kart's up; the
-	// share moves linearly over upBlendS (the original's 1 s; KA-T), continuously (no restart on a short visit)
-	s_extCamMod.tUp += ((zone != 0) ? 1.0 : -1.0) * dt / p->upBlendS;
-	s_extCamMod.tUp = (s_extCamMod.tUp < 0.0) ? 0.0 : ((s_extCamMod.tUp > 1.0) ? 1.0 : s_extCamMod.tUp);
-	{
-		double uN[3] = {n2[0], n2[1] + 1.0, n2[2]};
+	in.mag = ((ExtPhys_DriverZone(d) != 0) || (countdown && s_extChase.placeMag)) ? 1 : 0;
+	in.air = ((d->actionsFlagSet & ACTION_TOUCH_GROUND) == 0) ? 1 : 0;
+	in.spin = (d->kartState == KS_SPINNING) ? 1 : 0;
+	in.slide = (d->kartState == KS_DRIFTING) ? 1 : 0;
+	in.reverse = (d->speed < 0) ? 1 : 0;
+	in.boost = (d->reserves > 0) ? 1 : 0;
+	in.floorHit = -1;
+	in.wallHit = -1;
 
-		if (ExtCam_Norm(uN) < 1e-6)
-		{
-			memcpy(uN, n2, sizeof(uN));
-		}
-		for (i = 0; i < 3; i++)
-		{
-			uT[i] = (1.0 - s_extCamMod.tUp) * uN[i] + s_extCamMod.tUp * n2[i];
-		}
-		if (ExtCam_Norm(uT) < 1e-6)
-		{
-			memcpy(uT, n2, sizeof(uT));
-		}
-	}
-	// the course: the kart's moving direction (matrixMovingDir), across the target up
-	course[0] = d->matrixMovingDir.m[0][2] / 4096.0;
-	course[1] = d->matrixMovingDir.m[1][2] / 4096.0;
-	course[2] = d->matrixMovingDir.m[2][2] / 4096.0;
-	{
-		const double a = ExtCam_Dot(course, uT);
-
-		for (i = 0; i < 3; i++)
-		{
-			fT[i] = course[i] - a * uT[i];
-		}
-	}
-	if (ExtCam_Norm(fT) < 1e-6)
-	{
-		// the course along the up: any direction across it
-		const double t[3] = {(fabs(uT[0]) < 0.9) ? 1.0 : 0.0, (fabs(uT[0]) < 0.9) ? 0.0 : 1.0, 0.0};
-
-		ExtCam_Cross(t, uT, fT);
-		ExtCam_Norm(fT);
-	}
-	// 1. the smoothed orientation: quaternion spring with the target's turn fed forward
-	{
-		const ExtCamQuat qt = ExtCamQ_FromFrame(fT, uT);
-
-		if ((s_extCamMod.q.w == 0.0 && s_extCamMod.q.x == 0.0 && s_extCamMod.q.y == 0.0 && s_extCamMod.q.z == 0.0) || !s_extCamMod.haveQt)
-		{
-			s_extCamMod.q = qt;
-			s_extCamMod.omega[0] = s_extCamMod.omega[1] = s_extCamMod.omega[2] = 0.0;
-		}
-		else
-		{
-			ExtCamQ_SpringStepFF(&s_extCamMod.q, s_extCamMod.omega, qt, s_extCamMod.qtPrev, p->orientTau, dt, p->substeps);
-		}
-		s_extCamMod.qtPrev = qt;
-		s_extCamMod.haveQt = 1;
-	}
-	ExtCamQ_Frame(s_extCamMod.q, fS, uS);
-	ExtCam_Cross(uS, fS, rS);
-	ExtCam_Norm(rS);
-	// 2. the eye in the smoothed frame: distance and height by the speed share, smoothed
-	{
-		const double top = (d->const_Speed_ClassStat > 0) ? (double)d->const_Speed_ClassStat : 1.0;
-		double s = (fabs((double)d->speed) / top - p->speedLo) / ((p->speedHi > p->speedLo) ? (p->speedHi - p->speedLo) : 1.0);
-		const double k = 1.0 - pow(1.0 - p->rigRate, dt * 30.0);
-
-		s = (s < 0.0) ? 0.0 : ((s > 1.0) ? 1.0 : s);
-		s_extCamMod.dCur += k * ((p->dNear + s * (p->dFar - p->dNear)) - s_extCamMod.dCur);
-		s_extCamMod.hCur += k * ((p->hNear + s * (p->hFar - p->hNear)) - s_extCamMod.hCur);
-	}
-	for (i = 0; i < 3; i++)
-	{
-		pivot[i] = P[i] + p->pivotAhead * fS[i];
-		rel[i] = -s_extCamMod.dCur * fS[i] + s_extCamMod.hCur * uS[i];
-		eyeWant[i] = pivot[i] + rel[i];
-		off[i] = eyeWant[i] - mid[i];
-	}
-	havePrev = (s_extCam.prevFollowFrame == gGT->timer - 1) && !s_extCamMod.teleported;
-	s_extCamMod.teleported = 0;
-	for (i = 0; i < 3; i++)
-	{
-		prevEye[i] = (double)pb->matrix_Camera.t[i];
-	}
-	// 3. occlusion: the largest free share now and 3..15 frames ahead (so the pull-in starts early), moved inwards by
-	//    at most what the eye's step leaves beside the kart's own move (G1: eye step <= 1 L)
-	if (grab)
-	{
-		for (i = 0; i < 3; i++)
-		{
-			eye[i] = (double)(&pb->pos.x)[i]; // the mask holds the kart: the eye stays (as retail)
-		}
-	}
-	else
-	{
-		static const double scales[8] = {1.0, 0.85, 0.7, 0.55, 0.42, 0.32, 0.25, 0.2};
-		const int tube = ExtCamMod_InTube(mid, rS, p->tubeRayL * p->kartLength);
-		const double minEye = (tube ? p->minEyeTubeL : p->minEyeL) * p->kartLength;
-		const double offLen = sqrt(ExtCam_Dot(off, off));
-		static const int horizons[4] = {3, 6, 10, 15};
-		double sFree = -1.0, sNow = -1.0, sNew;
-		int sIdx, hIdx;
-
-		s_extCamMod.tubeFrames += tube ? 1u : 0u;
-		for (sIdx = 0; sIdx < 8; sIdx++)
-		{
-			if (ExtCamMod_EyeFree(mid, off, scales[sIdx], 0.0, uS, minEye, NULL, eye))
-			{
-				sNow = scales[sIdx];
-				break;
-			}
-		}
-		// the largest share free now and at every horizon ahead (occl_ahead scales the horizons: 6 = as listed)
-		sFree = sNow;
-		for (hIdx = 0; (hIdx < 4) && (sFree > 0.0); hIdx++)
-		{
-			double aheadV[3];
-			double sH = -1.0;
-
-			for (i = 0; i < 3; i++)
-			{
-				aheadV[i] = vel[i] * (double)horizons[hIdx] * (double)p->occlAhead / 6.0;
-			}
-			for (sIdx = 0; sIdx < 8; sIdx++)
-			{
-				if ((scales[sIdx] <= sFree + 1e-9) && ExtCamMod_EyeFree(mid, off, scales[sIdx], 0.0, uS, minEye, aheadV, eye))
-				{
-					sH = scales[sIdx];
-					break;
-				}
-			}
-			if (sH > 0.0)
-			{
-				sFree = sH;
-			}
-		}
-		if (sNow < 0.0)
-		{
-			// nothing free on the line: lifted along up, else the closest place (counted)
-			const double lift = 0.5 * offLen;
-			int found = 0;
-
-			for (sIdx = 2; (sIdx < 6) && !found; sIdx += 2)
-			{
-				found = ExtCamMod_EyeFree(mid, off, scales[sIdx], lift, uS, minEye, NULL, eye);
-			}
-			if (found)
-			{
-				s_extCamMod.raised++;
-			}
-			else
-			{
-				s_extCamMod.blocked++;
-				(void)ExtCamMod_EyeFree(mid, off, 1.0, 0.0, uS, minEye, NULL, eye);
-			}
-			s_extCamMod.sigma = 1.0;
-		}
-		else
-		{
-			// inwards the eye moves with the kart: the step left beside the kart's move, at most maxPullL
-			const double budget = p->jumpMaxL * p->kartLength * 0.95 - sqrt(ExtCam_Dot(vel, vel));
-			const double cap = p->maxPullL * p->kartLength;
-			const double maxStep = (offLen > 1e-6) ? (((budget < 0.0) ? 0.0 : ((budget > cap) ? cap : budget)) / offLen) : 1.0;
-
-			sNew = s_extCamMod.sigma;
-			if (sNew > sFree)
-			{
-				sNew = (sNew - maxStep > sFree) ? (sNew - maxStep) : sFree;
-			}
-			else
-			{
-				sNew = (sNew + p->grow < sFree) ? (sNew + p->grow) : sFree;
-			}
-			if (!ExtCamMod_EyeFree(mid, off, sNew, 0.0, uS, minEye, NULL, eye))
-			{
-				// the rate would leave the eye behind something: the largest free share at once
-				sNew = sNow;
-				(void)ExtCamMod_EyeFree(mid, off, sNew, 0.0, uS, minEye, NULL, eye);
-				s_extCamMod.snaps++;
-			}
-			s_extCamMod.sigma = sNew;
-			if (sNew < 1.0)
-			{
-				s_extCamMod.pulled++;
-				s_extCam.pullFrame = gGT->timer;
-			}
-		}
-	}
-	// 4. the eye blended with the retail one: in over inFrames, out so that it is retail at handoverSince
-	if (tail <= p->handoverSince - p->inFrames)
-	{
-		s_extCamMod.weight += 1.0 / (double)p->inFrames;
-		s_extCamMod.weight = (s_extCamMod.weight > 1.0) ? 1.0 : s_extCamMod.weight;
-	}
-	else
-	{
-		const double wOut = (double)(p->handoverSince - tail) / (double)p->inFrames;
-
-		s_extCamMod.weight = (wOut < s_extCamMod.weight) ? wOut : s_extCamMod.weight;
-		s_extCamMod.weight = (s_extCamMod.weight < 0.0) ? 0.0 : s_extCamMod.weight;
-	}
-	for (i = 0; i < 3; i++)
-	{
-		E[i] = (double)(&pb->pos.x)[i] + s_extCamMod.weight * (eye[i] - (double)(&pb->pos.x)[i]);
-	}
-	// the eye's step against the eye drawn in the frame before: at most jumpMaxL; the shortened eye only when nothing
-	// lies between it and the kart's middle (0 occluded frames come first)
-	if (havePrev && !grab)
-	{
-		const double dv[3] = {E[0] - prevEye[0], E[1] - prevEye[1], E[2] - prevEye[2]};
-		const double dl = sqrt(ExtCam_Dot(dv, dv));
-		const double lim = p->jumpMaxL * p->kartLength;
-
-		if (dl > lim)
-		{
-			double e2[3], at, len, mv[3];
-
-			for (i = 0; i < 3; i++)
-			{
-				e2[i] = (double)lround(prevEye[i] + dv[i] * (lim - 0.5) / dl);
-				mv[i] = e2[i] - mid[i];
-			}
-			if (!ExtCam_MeasureOccluded(e2, mid, 0.5 * EXT_CAM_KART_H, &at, &len) && (sqrt(ExtCam_Dot(mv, mv)) >= 0.5 * EXT_CAM_KART_H))
-			{
-				memcpy(E, e2, sizeof(e2));
-				s_extCamMod.eyeClamped++;
-			}
-			else
-			{
-				s_extCamMod.eyeJumpKept++;
-			}
-		}
-	}
+	// the retail camera of this frame
+	s_extChase.retailPos = pb->pos;
+	s_extChase.retailRot = pb->rot;
+	s_extChase.retailH = pb->distanceToScreen_PREV;
 	{
 		MATRIX m;
 
 		ConvertRotToMatrix(&m, &pb->rot);
 		ExtCam_OrientOfMatrix(&m, &retailO);
 	}
-	prevO = retailO;
-	if (havePrev)
-	{
-		ExtCam_OrientOfMatrix(&pb->matrix_Camera, &prevO);
-	}
-	// 5. the view: along the smoothed kart frame itself - forward = the smoothed course, up = the smoothed up (attempt 3:
-	//    the drawn up is the kart's up, KA-U; the view runs with the kart's move, KA-A). The eye sits behind and above
-	//    the pivot, so the kart's middle lies at y = 1.33 (h - H/2) / (d + pivot_ahead) = 0.26..0.29 of the picture, and
-	//    the same when the eye is pulled in on the line to the middle; when it leaves the box (a lifted eye) the view
-	//    is aimed at the middle at frame_y instead (step 6). At handoverSince half way to the retail view.
-	framed = ExtCam_OrientMake(&outO, fS, uS);
-	if (!framed)
-	{
-		outO = retailO;
-	}
-	if (tail >= p->handoverSince)
-	{
-		double axis[3], ang;
-		ExtCamOrient half;
 
-		ExtCam_OrientDelta(&outO, &retailO, axis, &ang);
-		ExtCam_Turn(outO.f, axis, 0.5 * ang, half.f);
-		ExtCam_Turn(outO.u, axis, 0.5 * ang, half.u);
-		if (ExtCam_OrientMake(&half, half.f, half.u))
+	// R4 and the step
+	if (d->kartState == KS_MASK_GRABBED)
+	{
+		s_extChase.b -= (double)in.dtMs * 0.001 / EXT_CHASE_T_BLEND;
+		s_extChase.b = (s_extChase.b < 0.0) ? 0.0 : s_extChase.b;
+		s_extChase.wasGrab = 1;
+		o = s_extChase.raw;
+	}
+	else
+	{
+		ExtCollLineHit hit;
+
+		if (s_extChase.wasGrab || s_extChase.teleport || !s_extChase.st.ready)
 		{
-			outO = half;
+			ExtChase_Reset(&s_extChase.st, &in);
 		}
-		framed = 0;
-	}
-	// 6. at most EXT_CAM_TURN_MAX from the frame before (checked on the drawn up); the kart's middle outside the box:
-	//    aim at the middle itself, then up to EXT_CAM_TURN_CHECK
-	{
-		SVec3 rot;
-		int cut = 0, halvings = 0;
-		double drawnStep = 0.0;
-
-		if (havePrev)
+		s_extChase.wasGrab = 0;
+		ExtChase_StepA(&s_extChase.st, &in, &o);
+		in.floorHit = 0;
+		if ((fabs(o.speed) < EXT_CHASE_FLOOR_NONE_ABOVE) && ExtColl_LineQuery(o.floorFrom, o.floorDir, 0.0, o.floorLen, EXT_COLL_LINE_GROUND, 0, &hit))
 		{
-			double pic[3];
+			in.floorHit = 1;
+			in.floorT = hit.t;
+			s_extChase.floorHits++;
+		}
+		ExtChase_StepB(&s_extChase.st, &in, &o, e1);
+		if (o.wallOn)
+		{
+			double dir[3], len;
 
-			rot = ExtCam_LimitedRot(&prevO, &outO, &cut, &halvings, &drawnStep);
-			ExtCam_InPicture(&rot, E, pb, mid, pic);
-			if (framed && ((pic[2] <= 0.0) || (fabs(pic[0]) > p->frameBox) || (fabs(pic[1]) > p->frameBox)))
+			for (i = 0; i < 3; i++)
 			{
-				ExtCamOrient aimMid;
-
-				if (ExtCam_AimAt(E, mid, uS, fS, pb->distanceToScreen_PREV, pb->rect.h, p->frameY, &aimMid))
-				{
-					outO = aimMid;
-				}
-				rot = ExtCam_LimitedRotMax(&prevO, &outO, EXT_CAM_TURN_CHECK, &cut, &halvings, &drawnStep);
-				ExtCam_InPicture(&rot, E, pb, mid, pic);
-				s_extCamMod.framingOut += ((pic[2] <= 0.0) || (fabs(pic[0]) > p->frameBox) || (fabs(pic[1]) > p->frameBox)) ? 1u : 0u;
+				dir[i] = o.wallTo[i] - o.wallFrom[i];
 			}
-			s_extCamMod.limited += cut ? 1u : 0u;
-			s_extCamMod.halved += (halvings > 0) ? 1u : 0u;
+			len = sqrt(ExtCam_Dot(dir, dir));
+			in.wallHit = 0;
+			s_extChase.wallCasts++;
+			if ((len > 1e-6) && ExtColl_LineQuery(o.wallFrom, dir, 0.0, len, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_WALL, 0, &hit))
+			{
+				in.wallHit = 1;
+				in.wallT = hit.t;
+				s_extChase.wallHits++;
+			}
 		}
-		else
-		{
-			rot = ExtCam_RotOf(&outO);
-		}
-		pb->pos.x = (s16)lround(E[0]);
-		pb->pos.y = (s16)lround(E[1]);
-		pb->pos.z = (s16)lround(E[2]);
-		pb->rot = rot;
+		ExtChase_StepC(&s_extChase.st, &in, &o, e1);
+		s_extChase.raw = o;
+		s_extChase.haveRaw = 1;
+		s_extChase.b += (in.mag ? 1.0 : -1.0) * (double)in.dtMs * 0.001 / EXT_CHASE_T_BLEND;
+		s_extChase.b = (s_extChase.b < 0.0) ? 0.0 : ((s_extChase.b > 1.0) ? 1.0 : s_extChase.b);
 	}
-	s_extCam.extFrame = gGT->timer;
-	s_extCamMod.frames++;
+	s_extChase.frames++;
+	own = ((s_extChase.b > 0.0) && s_extChase.haveRaw) ? 1 : 0;
+
+	// R3: the picture - the retail eye, view and projection blended with the chase camera's by b
+	if (own)
+	{
+		ExtCamOrient chaseO, outO;
+		double axis[3], ang, eye[3];
+		const double b = s_extChase.b;
+		const double hFov = (double)CTR_View_ProjectionDistance((int)lround(ExtChase_HOfFov(s_extChase.raw.fov, pb->rect.h)));
+
+		if (!ExtCam_OrientMake(&chaseO, s_extChase.raw.fwd, s_extChase.raw.up))
+		{
+			chaseO = retailO;
+		}
+		ExtCam_OrientDelta(&retailO, &chaseO, axis, &ang);
+		ExtCam_Turn(retailO.f, axis, ang * b, outO.f);
+		ExtCam_Turn(retailO.u, axis, ang * b, outO.u);
+		if (!ExtCam_OrientMake(&outO, outO.f, outO.u))
+		{
+			outO = retailO;
+		}
+		for (i = 0; i < 3; i++)
+		{
+			eye[i] = (double)(&s_extChase.retailPos.x)[i] + (s_extChase.raw.eye[i] - (double)(&s_extChase.retailPos.x)[i]) * b;
+		}
+		pb->pos.x = (s16)lround(eye[0]);
+		pb->pos.y = (s16)lround(eye[1]);
+		pb->pos.z = (s16)lround(eye[2]);
+		pb->rot = ExtCam_RotOf(&outO);
+		pb->distanceToScreen_PREV = (int)lround((double)s_extChase.retailH + (hFov - (double)s_extChase.retailH) * b);
+		s_extChase.wrote = 1;
+		s_extCam.extFrame = gGT->timer;
+		s_extChase.owned++;
+		s_extChase.owns += s_extChase.prevOwn ? 0u : 1u;
+	}
+	s_extChase.prevOwn = own;
+	if (g_cfg_extCamLogH > 0.0)
+	{
+		const int st = (in.spin ? 1 : 0) | (in.slide ? 2 : 0) | (in.reverse ? 4 : 0);
+		const int fresh = ((d->kartState != KS_MASK_GRABBED) && (s_extChase.st.ringN == 1)) ? 1 : 0;
+
+		Platform_Log("[CTR ExtCam] chase f %d own %d b %.6f mag %d air %d st %d boost %d grab %d tp %d dt %d pos %.5f %.5f %.5f prev %.5f %.5f %.5f "
+		             "kf %.6f %.6f %.6f ku %.6f %.6f %.6f rpos %d %d %d rf %.6f %.6f %.6f ru %.6f %.6f %.6f rh %d rect %d %d floor %d %.4f "
+		             "wall %d %.4f opos %d %d %d orot %d %d %d oh %d eye %.4f %.4f %.4f look %.4f %.4f %.4f up %.6f %.6f %.6f fov %.4f\n",
+		             gGT->timer, own, s_extChase.b, in.mag, in.air, st, in.boost, (d->kartState == KS_MASK_GRABBED) ? 1 : 0, fresh, in.dtMs, in.pos[0],
+		             in.pos[1], in.pos[2], in.prev[0], in.prev[1], in.prev[2], in.f[0], in.f[1], in.f[2], in.u[0], in.u[1], in.u[2],
+		             (int)s_extChase.retailPos.x, (int)s_extChase.retailPos.y, (int)s_extChase.retailPos.z, retailO.f[0], retailO.f[1], retailO.f[2],
+		             retailO.u[0], retailO.u[1], retailO.u[2], s_extChase.retailH, (int)pb->rect.w, (int)pb->rect.h, in.floorHit, in.floorT, in.wallHit,
+		             in.wallT, (int)pb->pos.x, (int)pb->pos.y, (int)pb->pos.z, (int)pb->rot.x, (int)pb->rot.y, (int)pb->rot.z,
+		             (int)pb->distanceToScreen_PREV, o.eye[0], o.eye[1], o.eye[2], o.look[0], o.look[1], o.look[2], o.up[0], o.up[1], o.up[2], o.fov);
+	}
 	gteRegs = savedGte;
 }
 
 // --------------------------------------------------------------------------
-// Selftest of the module (from ExtCam_Selftest): quaternion round trips, the
-// spring's time constant, a run over the top (no Euler flip) and the share rule.
+// Selftest of the chase camera (from ExtCam_Selftest): the same cases as the
+// offline model's own selftest.
+internal void ExtChase_TestIn(ExtChaseIn *in, int i, double speedMps, const double f[3], const double u[3], int mag)
+{
+	int k;
+
+	memset(in, 0, sizeof(*in));
+	in->dtMs = 33;
+	in->mag = mag;
+	for (k = 0; k < 3; k++)
+	{
+		in->f[k] = f[k];
+		in->u[k] = u[k];
+		in->pos[k] = f[k] * speedMps * EXT_CHASE_M * 0.033 * (double)i;
+		in->prev[k] = f[k] * speedMps * EXT_CHASE_M * 0.033 * (double)(i - 1);
+	}
+}
+
+// the kart's middle (H/2 over pos along u) in Reload's picture of the chase view (512 x 216, H of its FOV): y
+internal double ExtChase_TestMidY(const ExtChaseOut *o, const double pos[3], const double u[3])
+{
+	double d[3], vz, vy;
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		d[i] = pos[i] + u[i] * 0.5 * EXT_CAM_KART_H - o->eye[i];
+	}
+	vz = ExtCam_Dot(d, o->fwd);
+	vy = -ExtCam_Dot(d, o->up) * (double)0x360 / (double)0x600;
+	return ExtChase_HOfFov(o->fov, 216) * vy / (vz * 108.0);
+}
+
 internal int ExtCamMod_Selftest(int *n, int *failures)
 {
 	const int before = *failures;
-	int c;
+	const double fz[3] = {0.0, 0.0, -1.0}, uy[3] = {0.0, 1.0, 0.0};
+	const double deg = 3.14159265358979323846 / 180.0;
+	ExtChaseState s;
+	ExtChaseIn in;
+	ExtChaseOut o;
+	int i;
 
-	// frame -> quaternion -> frame
-	for (c = 0; c < 64; c++)
+#define EXTCHASE_CHECK(cond, ...)                                                                                                                       \
+	do                                                                                                                                                 \
+	{                                                                                                                                                  \
+		(*n)++;                                                                                                                                        \
+		if (!(cond))                                                                                                                                   \
+		{                                                                                                                                              \
+			(*failures)++;                                                                                                                             \
+			printf("ext selftest cam chase: " __VA_ARGS__);                                                                                            \
+			printf("\n");                                                                                                                              \
+		}                                                                                                                                              \
+	} while (0)
+
+	EXTCHASE_CHECK(fabs(ExtChase_Rate(0.05, 33) - 0.2475) < 1e-9, "rate 0.05 at 33 ms");
+	EXTCHASE_CHECK(fabs(ExtChase_HOfFov(90.0, 216) - 255.36) < 0.05, "H(90) %.3f", ExtChase_HOfFov(90.0, 216));
+	// far rig at 25 m/s, flat
+	ExtChase_Init(&s);
+	for (i = 1; i <= 120; i++)
 	{
-		const double a = (double)c * 0.41, b = (double)c * 0.23 - 3.0;
-		double f[3] = {cos(a) * cos(b), sin(b), sin(a) * cos(b)}, u0[3] = {0.0, 1.0, 0.0}, u[3], f2[3], u2[3], r[3];
-		ExtCamQuat q;
-
-		ExtCam_Cross(f, u0, r);
-		if (ExtCam_Norm(r) < 1e-6)
-		{
-			continue;
-		}
-		ExtCam_Cross(r, f, u);
-		ExtCam_Norm(u);
-		ExtCam_Turn(u, f, (double)c * 0.7, u);
-		q = ExtCamQ_FromFrame(f, u);
-		ExtCamQ_Frame(q, f2, u2);
-		(*n)++;
-		if ((ExtCam_AngleDeg(f, f2) > 0.01) || (ExtCam_AngleDeg(u, u2) > 0.01))
-		{
-			(*failures)++;
-			printf("ext selftest cam module: frame %d through the quaternion %.4f / %.4f deg off\n", c, ExtCam_AngleDeg(f, f2), ExtCam_AngleDeg(u, u2));
-		}
+		ExtChase_TestIn(&in, i, 25.0, fz, uy, 0);
+		ExtChase_StepFree(&s, &in, &o);
 	}
-	// the spring: a 90-degree step about the course - after 0.2 s (6 frames of 30 Hz) about 35 % left (critically damped:
-	// (1 + t/tau) e^(-t/tau), tau 0.09)
 	{
-		const double f[3] = {0.0, 0.0, 1.0}, u[3] = {0.0, 1.0, 0.0}, u90[3] = {1.0, 0.0, 0.0};
-		ExtCamQuat q = ExtCamQ_FromFrame(f, u), target = ExtCamQ_FromFrame(f, u90);
-		double omega[3] = {0.0, 0.0, 0.0}, f2[3], u2[3], left;
-		const double tau = 0.09, dt = 1.0 / 30.0;
-		int k;
+		const double rel[3] = {o.eye[0] - o.pivot[0], o.eye[1] - o.pivot[1], o.eye[2] - o.pivot[2]};
 
-		for (k = 0; k < 6; k++)
-		{
-			ExtCamQ_SpringStep(&q, omega, target, tau, dt);
-		}
-		ExtCamQ_Frame(q, f2, u2);
-		left = ExtCam_AngleDeg(u2, u90) / 90.0;
-		(*n)++;
-		if ((left < 0.20) || (left > 0.50))
-		{
-			(*failures)++;
-			printf("ext selftest cam module: after 0.2 s %.2f of the step left (0.20..0.50 expected)\n", left);
-		}
-		for (k = 0; k < 60; k++)
-		{
-			ExtCamQ_SpringStep(&q, omega, target, tau, dt);
-		}
-		ExtCamQ_Frame(q, f2, u2);
-		(*n)++;
-		if (ExtCam_AngleDeg(u2, u90) > 0.5)
-		{
-			(*failures)++;
-			printf("ext selftest cam module: the spring does not settle (%.2f deg left)\n", ExtCam_AngleDeg(u2, u90));
-		}
+		EXTCHASE_CHECK((fabs(rel[2] - 3.7 * EXT_CHASE_M) < 0.5) && (fabs(rel[1] - 1.4 * EXT_CHASE_M) < 0.5), "far rig %.2f %.2f", rel[2], rel[1]);
+		EXTCHASE_CHECK(fabs(o.look[1] - o.pivot[1] - 1.7 * EXT_CHASE_M) < 1e-6, "look point 1.7 m");
+		EXTCHASE_CHECK(fabs(ExtChase_TestMidY(&o, in.pos, uy) - 0.481) < 0.01, "kart middle far %.4f", ExtChase_TestMidY(&o, in.pos, uy));
 	}
-	// over the top: the kart's up turns about its side by 360 degrees in 120 frames; the smoothed up turns on without
-	// a jump (no frame step over 10 degrees) and ends where the kart is
+	// standing in maglev: near rig, the kart's middle at 0.595 (the source's framing)
+	ExtChase_Init(&s);
+	for (i = 1; i <= 90; i++)
 	{
-		const double side[3] = {1.0, 0.0, 0.0};
-		double f0[3] = {0.0, 0.0, 1.0}, u0[3] = {0.0, 1.0, 0.0};
-		ExtCamQuat q = ExtCamQ_FromFrame(f0, u0);
-		double omega[3] = {0.0, 0.0, 0.0}, prevU[3], worst = 0.0;
-		int k;
-
-		memcpy(prevU, u0, sizeof(prevU));
-		for (k = 1; k <= 150; k++)
-		{
-			const double ang = (k <= 120) ? (2.0 * 3.14159265358979323846 * (double)k / 120.0) : 0.0;
-			double f[3], u[3], fs[3], us[3];
-
-			ExtCam_Turn(f0, side, ang, f);
-			ExtCam_Turn(u0, side, ang, u);
-			ExtCamQ_SpringStep(&q, omega, ExtCamQ_FromFrame(f, u), 0.09, 1.0 / 30.0);
-			ExtCamQ_Frame(q, fs, us);
-			worst = (ExtCam_AngleDeg(us, prevU) > worst) ? ExtCam_AngleDeg(us, prevU) : worst;
-			memcpy(prevU, us, sizeof(prevU));
-		}
-		(*n)++;
-		if ((worst > 10.0) || (ExtCam_AngleDeg(prevU, u0) > 1.0))
-		{
-			(*failures)++;
-			printf("ext selftest cam module: over the top the up stepped %.2f deg at most and ended %.2f deg off\n", worst, ExtCam_AngleDeg(prevU, u0));
-		}
+		ExtChase_TestIn(&in, i, 0.0, fz, uy, 1);
+		ExtChase_StepFree(&s, &in, &o);
 	}
-	// the spring with the target's turn fed forward: a target turning 3 degrees a frame about the side (a loop) is
-	// followed within 1 degree after 20 frames (a plain spring of the same tau lags ~2 tau x rate), and a 90-degree
-	// jump still settles (not fed forward)
+	EXTCHASE_CHECK(fabs(ExtChase_TestMidY(&o, in.pos, uy) - 0.595) < 0.01, "kart middle near %.4f", ExtChase_TestMidY(&o, in.pos, uy));
+	// the camera's up: outside half world up, 3 s into maglev the kart's up (tilted 40 degrees)
 	{
-		const double side[3] = {1.0, 0.0, 0.0};
-		const double f0[3] = {0.0, 0.0, 1.0}, u0[3] = {0.0, 1.0, 0.0};
-		ExtCamQuat q = ExtCamQ_FromFrame(f0, u0), prevT = q;
-		double omega[3] = {0.0, 0.0, 0.0}, worstLate = 0.0;
-		int k;
+		const double tilt[3] = {sin(40.0 * deg), cos(40.0 * deg), 0.0};
+		double half[3] = {tilt[0] * 0.5, tilt[1] * 0.5 + 0.5, 0.0}, up59[3] = {0}, up75[3] = {0}, up149[3] = {0};
 
-		for (k = 1; k <= 80; k++)
+		ExtCam_Norm(half);
+		ExtChase_Init(&s);
+		for (i = 0; i < 150; i++)
 		{
-			const double ang = 3.0 * (double)k * 3.14159265358979323846 / 180.0;
-			double f[3], u[3], fs[3], us[3];
-			ExtCamQuat t;
-
-			ExtCam_Turn(f0, side, ang, f);
-			ExtCam_Turn(u0, side, ang, u);
-			t = ExtCamQ_FromFrame(f, u);
-			ExtCamQ_SpringStepFF(&q, omega, t, prevT, 0.06, 1.0 / 30.0, 4);
-			prevT = t;
-			ExtCamQ_Frame(q, fs, us);
-			if ((k > 20) && (ExtCam_AngleDeg(us, u) > worstLate))
+			ExtChase_TestIn(&in, i, 25.0, fz, tilt, i >= 60);
+			ExtChase_StepFree(&s, &in, &o);
+			if (i == 59)
 			{
-				worstLate = ExtCam_AngleDeg(us, u);
+				memcpy(up59, s.up, sizeof(up59));
+			}
+			if (i == 75)
+			{
+				memcpy(up75, s.up, sizeof(up75));
+			}
+			if (i == 149)
+			{
+				memcpy(up149, s.up, sizeof(up149));
 			}
 		}
-		(*n)++;
-		if (worstLate > 1.0)
+		EXTCHASE_CHECK(ExtCam_AngleDeg(up59, half) < 0.5, "outside: half world up (%.2f)", ExtCam_AngleDeg(up59, half));
+		EXTCHASE_CHECK(ExtCam_AngleDeg(up149, tilt) < 0.5, "maglev: the kart's up (%.2f)", ExtCam_AngleDeg(up149, tilt));
+		EXTCHASE_CHECK(ExtCam_AngleDeg(up75, tilt) > 2.0, "0.5 s into maglev still blending (%.2f)", ExtCam_AngleDeg(up75, tilt));
+	}
+	// the pitch lock: up a 20 degree slope, level outside maglev, free in it
+	{
+		const double sl[3] = {0.0, sin(20.0 * deg), -cos(20.0 * deg)};
+		const double upn[3] = {0.0, cos(20.0 * deg), sin(20.0 * deg)};
+		int mag;
+
+		for (mag = 0; mag <= 1; mag++)
 		{
-			(*failures)++;
-			printf("ext selftest cam module: fed-forward spring lags %.2f deg behind a 3 deg/frame turn\n", worstLate);
+			ExtChase_Init(&s);
+			for (i = 0; i < 120; i++)
+			{
+				ExtChase_TestIn(&in, i, 25.0, sl, upn, mag);
+				ExtChase_StepFree(&s, &in, &o);
+			}
+			EXTCHASE_CHECK(fabs(asin(o.a[1]) / deg - (mag ? 20.0 : 0.0)) < 0.5, "pitch %s maglev %.2f", mag ? "in" : "out", asin(o.a[1]) / deg);
 		}
+	}
+	// the boost FOV towards 100 degrees
+	ExtChase_Init(&s);
+	for (i = 0; i < 3; i++)
+	{
+		ExtChase_TestIn(&in, i, 25.0, fz, uy, 1);
+		in.boost = 1;
+		ExtChase_StepFree(&s, &in, &o);
 	}
 	{
-		const double f0[3] = {0.0, 0.0, 1.0}, u0[3] = {0.0, 1.0, 0.0}, u90[3] = {1.0, 0.0, 0.0};
-		const ExtCamQuat start = ExtCamQ_FromFrame(f0, u0), t = ExtCamQ_FromFrame(f0, u90);
-		ExtCamQuat q = start;
-		double omega[3] = {0.0, 0.0, 0.0}, fs[3], us[3];
-		int k;
+		const double k = 1.0 - ExtChase_Rate(0.01, 33);
 
-		ExtCamQ_SpringStepFF(&q, omega, t, start, 0.06, 1.0 / 30.0, 4);
-		for (k = 0; k < 30; k++)
-		{
-			ExtCamQ_SpringStepFF(&q, omega, t, t, 0.06, 1.0 / 30.0, 4);
-		}
-		ExtCamQ_Frame(q, fs, us);
-		(*n)++;
-		if (ExtCam_AngleDeg(us, u90) > 0.5)
-		{
-			(*failures)++;
-			printf("ext selftest cam module: fed-forward spring does not settle after a jump (%.2f deg left)\n", ExtCam_AngleDeg(us, u90));
-		}
+		EXTCHASE_CHECK(fabs(o.fov - (100.0 - 10.0 * k * k * k)) < 1e-9, "boost FOV %.4f", o.fov);
 	}
+#undef EXTCHASE_CHECK
 	return *failures - before;
 }

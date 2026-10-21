@@ -10,16 +10,17 @@
 //                   camera, CAM_EndOfRace_Battle) instead of the donor's
 //                   end-of-race cameras (pointers[ST1_CAMERA_EOR], chosen by
 //                   the donor's restart points).
-// "follow_up": "zones"  the Reload camera module (night run 1,
-//                   platform/native_extcam_module.c, included below): it owns
-//                   the follow camera from a few frames before an anti-gravity
-//                   zone (look ahead on the nav path) until 44 frames after it
-//                   and draws it in a quaternion-smoothed kart frame (details
-//                   at the head of that file). Writes the push buffer's
-//                   position and rotation only; the GTE registers are put back.
-//                   On every track without zones, and outside its frames,
-//                   nothing is written: the retail camera exactly.
-//                   (Fix round 1 attempt 2 is the base; its helpers stay here.)
+// "follow_up": "zones"  the source game's chase camera (fix round 2,
+//                   platform/native_extcam_module.c, included below): it runs
+//                   beside the retail camera and is shown from the first frame
+//                   of an anti-gravity zone, blended in and out over 1 s
+//                   (details at the head of that file). Writes the push
+//                   buffer's position, rotation and projection distance only
+//                   and puts the retail values back before the next camera
+//                   tick; the GTE registers are put back. On every track
+//                   without zones, and outside its frames, nothing is written:
+//                   the retail camera exactly. (The helpers below stay from
+//                   fix round 1 and night run 1.)
 // Log: one summary at exit.
 //
 // THE MEASURE LINE (--dev-ext-cam-log <H>, main.c; measuring only, 0 = off;

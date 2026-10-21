@@ -9,6 +9,7 @@ int ExtCam_EndSpin(int levelID);
 void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct PushBuffer *pb, const Vec3 *camPos, const Vec3 *lookAt);
 void ExtCam_NoteFollow(const struct GameTracker *gGT, const struct Driver *d, int turningAway);
 void ExtCam_NoteRig(const struct GameTracker *gGT, const struct Driver *d, const Vec3 *pos);
+void ExtCam_RestoreRetail(const struct GameTracker *gGT, struct PushBuffer *pb);
 #endif
 #include <platform/native_extcoll.h>
 
@@ -1895,6 +1896,13 @@ void CAM_ThTick(struct Thread *t)
 	cDC = (struct CameraDC *)t->inst;
 	d = cDC->driverToFollow;
 	pb = cDC->pushBuffer;
+
+#if defined(CTR_NATIVE)
+	// The external track's zone camera (platform/native_extcam.c) puts back what
+	// the retail camera wrote into the push buffer before the zone camera's pose
+	// was shown in the frame before - nothing when it did not write.
+	ExtCam_RestoreRetail(gGT, pb);
+#endif
 
 	if ((cDC->flags & CAMERA_FLAG_FROZEN) != 0)
 	{
