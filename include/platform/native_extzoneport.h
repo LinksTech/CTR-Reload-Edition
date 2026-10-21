@@ -135,8 +135,14 @@ enum
 extern const char *g_cfg_extStepLog; // the file of --dev-ext-step-log, NULL = off
 int ExtZp_LogOn(void);
 void ExtZp_LogBegin(uint32_t recordTag, const uint32_t *head, int headWords);
-void ExtZp_LogBlob(uint32_t tag, const void *data, uint32_t length);
+void ExtZp_LogBlob(uint32_t tag, const void *bytes, uint32_t length);
 void ExtZp_LogEnd(void);
+
+// The port's queries answered by Reload (ray: the exact line query of the
+// external collision; the other kinds: nothing yet, v0 = 0) - every query
+// into the step log when it is on (needs include/platform/native_extzonemem.h).
+#include <platform/native_extzonemem.h>
+void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResult *out);
 
 // The selftest part (called by --ext-selftest phys): the reader on a made-up
 // section, the mapping, the log record layout.

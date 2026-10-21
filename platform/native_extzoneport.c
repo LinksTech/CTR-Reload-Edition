@@ -1,4 +1,6 @@
 #include <platform/native_extzoneport.h>
+#include <platform/native_extzonephys.h>
+#include <platform/native_extcoll.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -337,7 +339,7 @@ global_variable unsigned char *s_extZpRec;
 global_variable uint32_t s_extZpRecLen, s_extZpRecCap;
 global_variable uint32_t s_extZpRecords;
 
-internal void ExtZp_RecPut(const void *data, uint32_t n)
+internal void ExtZp_RecPut(const void *bytes, uint32_t n)
 {
 	if (s_extZpRecLen + n > s_extZpRecCap)
 	{
@@ -356,7 +358,7 @@ internal void ExtZp_RecPut(const void *data, uint32_t n)
 		s_extZpRec = grown;
 		s_extZpRecCap = cap;
 	}
-	memcpy(s_extZpRec + s_extZpRecLen, data, n);
+	memcpy(s_extZpRec + s_extZpRecLen, bytes, n);
 	s_extZpRecLen += n;
 }
 
@@ -402,13 +404,13 @@ void ExtZp_LogBegin(uint32_t recordTag, const uint32_t *head, int headWords)
 	ExtZp_RecPut(head, (uint32_t)headWords * 4u);
 }
 
-void ExtZp_LogBlob(uint32_t tag, const void *data, uint32_t length)
+void ExtZp_LogBlob(uint32_t tag, const void *bytes, uint32_t length)
 {
 	static const unsigned char pad[4] = {0, 0, 0, 0};
 
 	ExtZp_RecPut(&tag, 4);
 	ExtZp_RecPut(&length, 4);
-	ExtZp_RecPut(data, length);
+	ExtZp_RecPut(bytes, length);
 	ExtZp_RecPut(pad, (4u - (length & 3u)) & 3u);
 }
 
@@ -429,6 +431,105 @@ void ExtZp_LogEnd(void)
 	else
 	{
 		s_extZpLogFailed = 1;
+	}
+}
+
+// ------------------------------------------------------------------ Reload's answers to the port's queries
+
+// Writes of an answer: done in the port's memory and kept for the step log
+// (STEPLOG_FORMAT: 'QRY ' blob, nWrites x {addr, len, bytes}).
+global_variable unsigned char s_extZpAns[1024];
+global_variable uint32_t s_extZpAnsLen, s_extZpAnsWrites;
+internal void ExtZp_AnswerWrite(ExtZpCtx *c, uint32_t addr, const void *bytes, uint32_t len)
+{
+	ExtZpMem_Write(c->m, addr, bytes, len);
+	if (s_extZpAnsLen + 8u + ((len + 3u) & ~3u) <= sizeof(s_extZpAns))
+	{
+		memcpy(s_extZpAns + s_extZpAnsLen, &addr, 4);
+		memcpy(s_extZpAns + s_extZpAnsLen + 4, &len, 4);
+		memset(s_extZpAns + s_extZpAnsLen + 8, 0, (len + 3u) & ~3u);
+		memcpy(s_extZpAns + s_extZpAnsLen + 8, bytes, len);
+		s_extZpAnsLen += 8u + ((len + 3u) & ~3u);
+		s_extZpAnsWrites++;
+	}
+}
+
+// The source's ray request (0x338700: a0 = the request object RC, a1 = start,
+// a2 = end, both vec4 in metres): Reload's exact line query on the external
+// collision; a hit writes RC+0x30 point (vec4), RC+0x40 normal (vec4), RC+0x50
+// the fraction along the ray, RC+0x54 the surface type (24 = a zone record,
+// the source's maglev surface; 1 = other ground; 27 = wall). v0 = 1 hit.
+internal void ExtZp_AnswerRay(ExtZpCtx *c, const ExtZpQueryArgs *in, ExtZpQueryResult *out)
+{
+	double a[3], b[3], ra[3], rb[3], dir[3], len;
+	ExtCollLineHit hit;
+
+	for (int k = 0; k < 3; k++)
+	{
+		a[k] = Ps2F_ToDouble(ZmRF(c->m, in->a[1] + 4u * (uint32_t)k));
+		b[k] = Ps2F_ToDouble(ZmRF(c->m, in->a[2] + 4u * (uint32_t)k));
+	}
+	ExtZp_PointFromSource(a, ra);
+	ExtZp_PointFromSource(b, rb);
+	dir[0] = rb[0] - ra[0];
+	dir[1] = rb[1] - ra[1];
+	dir[2] = rb[2] - ra[2];
+	len = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+	out->v0 = 0;
+	if (len <= 0.0 || !ExtColl_LineQuery(ra, dir, 0.0, len, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_WALL, 0, &hit))
+	{
+		return;
+	}
+	{
+		double p[3], n[3];
+		Ps2F rec[10];
+		ExtZp_PointToSource(hit.pos, p);
+		ExtZp_DirToSource(hit.normal, n);
+		rec[0] = ExtZp_ToPs2(p[0]);
+		rec[1] = ExtZp_ToPs2(p[1]);
+		rec[2] = ExtZp_ToPs2(p[2]);
+		rec[3] = PS2F_ONE;
+		rec[4] = ExtZp_ToPs2(n[0]);
+		rec[5] = ExtZp_ToPs2(n[1]);
+		rec[6] = ExtZp_ToPs2(n[2]);
+		rec[7] = 0;
+		rec[8] = ExtZp_ToPs2(hit.t / len);
+		rec[9] = (hit.zone != 0) ? 24u : ((hit.cls == EXT_COLL_LINE_WALL) ? 27u : 1u);
+		ExtZp_AnswerWrite(c, in->a[0] + 0x30u, rec, sizeof(rec));
+	}
+	out->v0 = 1;
+}
+
+// The query callback of the port inside Reload (ExtZp_CtxInit with it). Every
+// query goes to the step log when it is on.
+void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResult *out)
+{
+	s_extZpAnsLen = 0;
+	s_extZpAnsWrites = 0;
+	memset(out, 0, sizeof(*out));
+	if (kind == EXT_ZP_Q_RAY)
+	{
+		ExtZp_AnswerRay(c, in, out);
+	}
+	if (ExtZp_LogOn())
+	{
+		uint32_t head[3 + 16 + 4];
+		static uint32_t seq;
+		head[0] = seq++;
+		head[1] = (uint32_t)kind;
+		head[2] = in->func;
+		memcpy(&head[3], in->a, 32);
+		memcpy(&head[11], in->f, 32);
+		head[19] = out->v0;
+		head[20] = out->v1;
+		head[21] = out->f0;
+		head[22] = s_extZpAnsWrites;
+		{
+			unsigned char blob[sizeof(head) + sizeof(s_extZpAns)];
+			memcpy(blob, head, sizeof(head));
+			memcpy(blob + sizeof(head), s_extZpAns, s_extZpAnsLen);
+			ExtZp_LogBlob(EXT_ZP_TAG('Q', 'R', 'Y', ' '), blob, (uint32_t)sizeof(head) + s_extZpAnsLen);
+		}
 	}
 }
 
