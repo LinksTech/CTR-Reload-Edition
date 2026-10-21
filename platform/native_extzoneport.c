@@ -2,6 +2,8 @@
 #include <platform/native_extzonephys.h>
 #include <platform/native_extcoll.h>
 #include <platform/native_extphys.h>
+#include <platform/native_extzonecontact.h>
+#include <platform/native_extzonephys_s2.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -444,6 +446,7 @@ void ExtZp_LogEnd(void)
 // Writes of an answer: done in the port's memory and kept for the step log
 // (STEPLOG_FORMAT: 'QRY ' blob, nWrites x {addr, len, bytes}).
 global_variable unsigned char s_extZpAns[1024];
+global_variable int s_extZpCoupleContacts; // the coupling configured the contacts for its world
 global_variable uint32_t s_extZpAnsLen, s_extZpAnsWrites;
 internal void ExtZp_AnswerWrite(ExtZpCtx *c, uint32_t addr, const void *bytes, uint32_t len)
 {
@@ -515,6 +518,17 @@ void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQue
 	if (kind == EXT_ZP_Q_RAY)
 	{
 		ExtZp_AnswerRay(c, in, out);
+	}
+	else if ((kind == EXT_ZP_Q_COLLIDE) && (in->func == 0x003B1960u) && s_extZpCoupleContacts)
+	{
+		// the subspace's contact solver (type 1): the port's own (parts s1-s3) on the detector's records
+		ExtZp_Solver_3b1960(c, in->a[0]);
+	}
+	else if (s_extZpCoupleContacts)
+	{
+		// the collision detector, penetration handling, material and allocator of the source:
+		// the zone port's contacts from Reload's geometry (platform/native_extzonecontact.c)
+		(void)ExtZc_Answer(c, kind, in, out);
 	}
 	if (ExtZp_LogOn())
 	{
@@ -719,6 +733,60 @@ int ExtZp_PortActive(void)
 	return s_extZpc.ready && s_extZpc.active;
 }
 
+// The contacts (platform/native_extzonecontact.c) for the loaded world: the
+// track's static shell (body B of the kart's records) and the record class are
+// taken from the detector's record list in the start world (world -> +0x64 ->
+// +0x08 -> +0x1C -> subspace -> +0x70 detector -> +0x14 -> list +0xF8): the
+// first record of seat 0's body, else the first record; an arena of free port
+// memory below the port's stack holds the records the detector writes.
+#define EXT_ZPC_CONTACT_ARENA 0x01C00000u
+internal void ExtZpc_ConfigureContacts(void)
+{
+	ExtZpMem *m = s_extZpc.m;
+	const uint32_t env = ZmR32(m, ZmR32(m, s_extZpc.world + 0x64u) + 0x08u);
+	const uint32_t sub = ZmR32(m, ZmR32(m, env + 0x1Cu));
+	const uint32_t P = ZmR32(m, ZmR32(m, sub + EXT_ZC_SUB_DETECTOR) + EXT_ZC_DET_INNER);
+	const uint32_t count = ZmR32(m, P + EXT_ZC_P_CONTACTS + EXT_ZC_VEC_COUNT);
+	const uint32_t recs = ZmR32(m, P + EXT_ZC_P_CONTACTS + EXT_ZC_VEC_DATA);
+	uint32_t pick = 0;
+	ExtZcConfig cfg;
+	static const uint8_t zero[256] = {0};
+
+	s_extZpCoupleContacts = 0;
+	if ((count == 0u) || (recs == 0u))
+	{
+		Platform_Log("[CTR ExtZp] contacts: the start world has no detector records - no contacts\n");
+		return;
+	}
+	for (uint32_t i = 0; i < count; i++)
+	{
+		const uint32_t shellA = ZmR32(m, recs + EXT_ZC_REC_SIZE * i + EXT_ZC_REC_SHELL_A);
+		if (ZmR32(m, shellA + 0x18u) == s_extZpc.body)
+		{
+			pick = i;
+			break;
+		}
+	}
+	for (uint32_t a = 0; a < (uint32_t)EXT_ZC_ARENA_BYTES; a += (uint32_t)sizeof(zero))
+	{
+		ExtZpMem_Write(m, EXT_ZPC_CONTACT_ARENA + a, zero, (uint32_t)sizeof(zero));
+	}
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.triangles = ExtZc_ReloadTriangles;
+	cfg.user = NULL;
+	cfg.trackShell = ZmR32(m, recs + EXT_ZC_REC_SIZE * pick + EXT_ZC_REC_SHELL_B);
+	cfg.recordClass = ZmR32(m, recs + EXT_ZC_REC_SIZE * pick + EXT_ZC_REC_VTABLE);
+	cfg.recordArena = EXT_ZPC_CONTACT_ARENA;
+	cfg.radius = 0x3F051EB8u; // 0.52 m
+	ExtZc_Configure(&cfg);
+	s_extZpCoupleContacts = 1;
+	if (!s_extZpc.ready)
+	{
+		Platform_Log("[CTR ExtZp] contacts: track shell 0x%08x record class 0x%08x arena 0x%08x (record %u of %u)\n", cfg.trackShell, cfg.recordClass,
+		             cfg.recordArena, (unsigned)pick, (unsigned)count);
+	}
+}
+
 internal int ExtZpc_LoadWorld(void)
 {
 	ExtZpMem *m = s_extZpc.m;
@@ -739,6 +807,7 @@ internal int ExtZpc_LoadWorld(void)
 	s_extZpc.body = ZmR32(m, s_extZpc.entity + EXT_ZPC_E_BODY);
 	owner = ZmR32(m, s_extZpc.kart + EXT_ZPC_K_OWNER);
 	s_extZpc.input = (owner != 0u) ? owner + EXT_ZPC_OWNER_INPUT : 0u;
+	ExtZpc_ConfigureContacts();
 	return (s_extZpc.world != 0u) && (s_extZpc.kart != 0u) && (s_extZpc.entity != 0u) && (s_extZpc.body != 0u) && (s_extZpc.input != 0u) &&
 	       (ExtZpMem_Faults(m) == 0u);
 }
