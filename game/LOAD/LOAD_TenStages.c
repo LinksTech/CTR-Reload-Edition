@@ -862,6 +862,10 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			gGT->ptrSparkle = (u32)DecalGlobal_FindInLEV(lev, rdata.s_sparkle);
 		}
 
+		// Every level load: the main menu saves the banner's texels and puts the
+		// chosen logo in; any other level forgets them (MM_MenuLogo.c).
+		MM_MenuLogo_LevelLoaded(gGT, lev);
+
 		// if linked list of icons exists
 		if (gGT->mpkIcons != 0)
 		{

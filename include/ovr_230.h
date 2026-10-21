@@ -337,6 +337,17 @@ int MM_NativeCharGrid_NameShown(int playerIndex);                  // retail: cu
 const char *MM_NativeCharGrid_SeatName(int index);                 // NameBand: the custom name shown for seat index, else NULL
 int MM_NativeCharGrid_SelfTest(void);                              // --char-grid-selftest; 0 = passed
 
+// The banner of the main-menu logo, ORIGINAL or REFUELED (game/230/MM_MenuLogo.c).
+// Debug menu VIDEO -> MENU LOGO; not saved, every start shows the original.
+enum MenuLogoVariant
+{
+	MM_MENU_LOGO_ORIGINAL = 0,
+	MM_MENU_LOGO_REFUELED = 1,
+};
+void MM_MenuLogo_LevelLoaded(struct GameTracker *gGT, struct Level *lev); // LOAD_TenStages stage 7: main menu - find and save the strips, apply the choice
+void MM_MenuLogo_Toggle(void);                                            // the debug row: switch, and write at once while the main menu is loaded
+const char *MM_MenuLogo_Name(void);                                       // "ORIGINAL" or "REFUELED"
+
 // NITRO-PIT -> CRYSTAL (game/230/MM_NativeCrystal.c): the crystal challenge
 // for containers, on the path of the debug jump.
 void MM_NativeCrystal_ModeBits(u32 *addBits, u32 *remBits);

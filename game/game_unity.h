@@ -275,6 +275,8 @@
 #include "230/MM_Battle.c"
 #include "230/MM_MenuFlow.c"
 #include "230/MM_Title.c"
+// The logo's banner, ORIGINAL or REFUELED: a debug-menu switch.
+#include "230/MM_MenuLogo.c"
 #include "230/MM_CheatCodes.c"
 #include "230/MM_Characters.c"
 // Directly behind the original on purpose: the custom grid of the driver select

@@ -291,6 +291,17 @@ Copyright (c) 2011-2012, Jovanny Lemonad (jovanny.ru), with Reserved Font Name
 "Russo". License: SIL Open Font License, Version 1.1
 <https://openfontlicense.org>
 
+## Alfa Slab One (main-menu banner "ReFueled")
+
+The lettering in `game/230/MM_MenuLogo_Banner.inc` (the optional "ReFueled"
+banner of the main-menu logo, debug menu VIDEO -> MENU LOGO) is the font Alfa
+Slab One, rendered to texel indices by `tools/refueled_banner.py`. The font
+itself is not included; its license is in `tools/fonts/AlfaSlabOne-OFL.txt`.
+
+Copyright 2016 The Alfa Slab One Project Authors (http://www.jmsole.cl |
+info@jmsole.cl), with Reserved Font Name "Alfa Slab". License: SIL Open Font
+License, Version 1.1 <https://openfontlicense.org>
+
 ## SDL3
 
 Source: <https://github.com/libsdl-org/SDL>

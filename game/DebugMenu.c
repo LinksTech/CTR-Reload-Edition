@@ -202,6 +202,10 @@ enum
 	DBG_VIDEO_LOD_FIRST,
 	DBG_VIDEO_LOD_LAST = DBG_VIDEO_LOD_FIRST + CTR_LOD_STAGE_COUNT - 1,
 
+	// The banner of the main-menu logo, ORIGINAL or REFUELED (MM_MenuLogo.c).
+	// After the stage rows, so every row above keeps its place.
+	DBG_VIDEO_MENU_LOGO,
+
 	DBG_VIDEO_WINDOW,
 	DBG_VIDEO_FRAME,
 	DBG_VIDEO_TARGET,
@@ -1108,6 +1112,11 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 			CTR_Lod_ToggleStage(stage);
 			Platform_SettingsSave();
 			Platform_Log("[CTR Debug] %s %s\n", CTR_Lod_StageLabel(stage), CTR_Lod_StageForced(stage) ? "highest stage" : "stock");
+		}
+		else if (row == DBG_VIDEO_MENU_LOGO)
+		{
+			// Not saved on purpose: every start shows the original logo.
+			MM_MenuLogo_Toggle();
 		}
 		break;
 
@@ -3936,6 +3945,10 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 					// their own bit or the row above them decided it, and
 					// turning one off would look like it did nothing.
 					sprintf(line, "%-12s%s", CTR_Lod_StageLabel(stage), byMode ? "-- NO LOD" : (CTR_Lod_StageForced(stage) ? "HIGH" : "STOCK"));
+				}
+				else if (i == DBG_VIDEO_MENU_LOGO)
+				{
+					sprintf(line, "%-12s%s", "MENU LOGO", MM_MenuLogo_Name());
 				}
 				else if (i == DBG_VIDEO_TARGET)
 				{

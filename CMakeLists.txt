@@ -1303,6 +1303,15 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
 
+    # The generator of the "ReFueled" banner lettering (game/230/MM_MenuLogo_Banner.inc):
+    # texel packing, CLUT hash, nearest-colour choice and the .inc format, on
+    # made-up values (no game data, no font, no Pillow needed).
+    add_test(NAME refueled_banner_selftest
+        COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_SOURCE_DIR}/tools/refueled_banner.py --selftest)
+    set_tests_properties(refueled_banner_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "selftest passed"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+
     # Material comparison engine against retail (oracle log): synthetic logs for
     # every rule, the exception list in tools/ and the fault control.
     add_test(
