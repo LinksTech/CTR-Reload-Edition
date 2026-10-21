@@ -2259,6 +2259,11 @@ internal void ExtPhys_TestCheck(int ok, const char *what, int *n, int *failures)
 	}
 }
 
+internal void ExtPhys_TestLog(const char *line)
+{
+	printf("ext selftest phys: %s\n", line);
+}
+
 // Parses text and reads its "physics" (or the whole text when it has none).
 internal int ExtPhys_TestRead(const char *text, ExtPhysParams *p)
 {
@@ -2889,6 +2894,10 @@ int ExtPhys_Selftest(void)
 		                      (ExtPhys_SideGripWith(&fp, 0, 0, 100, 0, 8000, 0, 33) == 0) && (ExtPhys_SideGripWith(&fp, 0, 1, 2000, 0, 0, 0, 33) == 2000 - 1038),
 		                  "side grip: hi turn, braking, air", &checks, &failures);
 	}
+
+	// The second console's single precision arithmetic of the zone physics port
+	// (platform/native_ps2float.c): hand-computed cases and reference vectors.
+	Ps2F_Selftest(&checks, &failures, ExtPhys_TestLog);
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));
 	if (failures)

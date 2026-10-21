@@ -120,6 +120,7 @@
 // The external track (--ext-track, round of 2026-10-19): its parts, then the
 // switch's state, the JSON reader and the dispatcher that calls them.
 #include "platform/native_extcoll.c"
+#include "platform/native_ps2float.c"
 #include "platform/native_extphys.c"
 #include "platform/native_exttrack_race.c"
 #include "platform/native_exttrack_nav.c"
