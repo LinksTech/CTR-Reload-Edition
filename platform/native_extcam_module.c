@@ -79,6 +79,7 @@ global_variable struct
 	ExtCamQuat q;      // the smoothed kart orientation
 	ExtCamQuat qtPrev; // the target of the frame before (its turn is fed forward)
 	int haveQt;
+	int teleported;    // ExtCam_OnTeleport: the next frame starts the module's state at the new place
 	double tUp;        // 0..1: share of the zone's target up (kart up) against the off-zone one
 	double omega[3];   // its angular velocity (rad/s, world)
 	double dCur, hCur;
@@ -452,6 +453,25 @@ internal int ExtCamMod_InTube(const double mid[3], const double right[3], double
 	       ExtColl_LineQuery(mid, neg, 0.0, reach, EXT_COLL_LINE_GROUND | EXT_COLL_LINE_WALL, 0, &hit);
 }
 
+// A wanted jump of the kart (a teleport portal; the caller sets the retail
+// camera's CAMERA_FLAG_DIRECTION_CHANGED as well): for seat 0, while the module
+// owns the camera, its next frame starts at the new place - the orientation
+// spring set to the kart, the eye's share back to 1, no step limits against the
+// frame before (the jump is wanted). Not owning: nothing (the retail camera
+// resets itself). Writes this file's state only.
+void ExtCam_OnTeleport(int seat)
+{
+	if ((seat != 0) || !s_extCamMod.owned)
+	{
+		return;
+	}
+	s_extCamMod.teleported = 1;
+	s_extCamMod.haveQt = 0;
+	s_extCamMod.havePrevKart = 0;
+	s_extCamMod.sigma = 1.0;
+	s_extCamMod.omega[0] = s_extCamMod.omega[1] = s_extCamMod.omega[2] = 0.0;
+}
+
 // game/CAM.c, CAM_FollowDriver_Normal, after the retail camera of this frame is
 // in the push buffer (camPos, lookAt: its wanted camera and look point), also in
 // a mask grab. Returns at once, writing nothing, unless the module owns the camera.
@@ -644,7 +664,8 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		eyeWant[i] = pivot[i] + rel[i];
 		off[i] = eyeWant[i] - mid[i];
 	}
-	havePrev = (s_extCam.prevFollowFrame == gGT->timer - 1);
+	havePrev = (s_extCam.prevFollowFrame == gGT->timer - 1) && !s_extCamMod.teleported;
+	s_extCamMod.teleported = 0;
 	for (i = 0; i < 3; i++)
 	{
 		prevEye[i] = (double)pb->matrix_Camera.t[i];
