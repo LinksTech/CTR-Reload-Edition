@@ -5728,6 +5728,16 @@ static int Rld_SelftestMake(void)
 	return failed;
 }
 
+// rldpack make-engine: the engine track's packer (format 4.4).
+#include "rldpack_engine.inc"
+
+// GOLDEN HASH of make-engine: the container built from the made-up folder of
+// selftest-engine (case 11), worked out once from the format rules by an
+// independent model (outside this tree), not taken from this packer's output.
+// A different value means make-engine writes other bytes - never update it to
+// make the test pass.
+#define RLD_GOLDEN_ENGINE "1976ef65a4519b2bc748d08642f195ae34759e4a6420f6732b2a0cda95ac3639"
+
 //========================================================================================
 // SELFTEST-ENGINE - the reader rules of format 4.4 (the engine track), on
 // made-up bytes only: a chunk the reader does not know is skipped, a minimum
@@ -5913,6 +5923,7 @@ static int Cmd_SelftestEngine(void)
 	size_t joinedSize = 0;
 	char text[16];
 	const u32 own = Rld_ReaderVersion();
+	int failedGolden = 0;
 
 	printf("rldpack self-test of format %u.%u (the engine track)\n", (unsigned)RLD_VERSION_MAJOR, (unsigned)RLD_VERSION_MINOR_ENGINE);
 
@@ -6106,6 +6117,175 @@ static int Cmd_SelftestEngine(void)
 		Rld_WriteLE32(&blob[0], 2u);
 		RldEngine_Check(Rld_BlobView(blob, sizeof(blob), name, &file, &fileSize) != NULL, "file view: unknown layout refused");
 		RldEngine_Check(Rld_BlobCheckContent((const u8 *)"STRM", (const u8 *)"glTF____________", 16) != NULL, "STRM must hold a RIFF WAVE");
+	}
+
+
+	// 11. make-engine (tools/rldpack_engine.inc) on a made-up folder in TEMP:
+	// two builds byte for byte the same and the same as the golden hash, the
+	// reader takes it (engine, minor 4, flags 3, the version given), physics
+	// split into PHYS and ZONE, the value bytes kept, and its refusals.
+	{
+		static const char json[] =
+		    "{\"format\":\"test\",\"version\":1,"
+		    "\"render\":{\"glb\":\"rldpack-engine-track.glb\",\"materials\":[1.50,2e3]},"
+		    "\"sky\":{\"glb\":\"rldpack-engine-sky.glb\"},"
+		    "\"collision\":{\"glb\":\"rldpack-engine-coll.glb\"},"
+		    "\"race\":{\"laps\":3},\"nav\":{},"
+		    "\"physics\":{\"version\":1,\"zones\":[{\"id\":1}],\"gravity_volumes\":[],\"maglev_low_speed\":4},"
+		    "\"music\":{\"file\":\"rldpack-engine-music.wav\"},"
+		    "\"map\":{\"line\":[]}}";
+		static const char noRender[] = "{\"collision\":{\"glb\":\"rldpack-engine-coll.glb\"},\"race\":{}}";
+		static const char badName[] = "{\"render\":{\"glb\":\"../x.glb\"},\"collision\":{\"glb\":\"rldpack-engine-coll.glb\"},\"race\":{}}";
+		static const char notGlb[] = "{\"render\":{\"glb\":\"rldpack-engine-music.wav\"},\"collision\":{\"glb\":\"rldpack-engine-coll.glb\"},\"race\":{}}";
+		static const char *const names[4] = {"rldpack-engine-track.glb", "rldpack-engine-sky.glb", "rldpack-engine-coll.glb", "rldpack-engine-music.wav"};
+		const char *folder = getenv("TEMP");
+		char file[1024];
+		char out[1024];
+		char why[600];
+		struct RldEngineInput in;
+		u8 *a;
+		u8 *b;
+		size_t sizeA = 0;
+		size_t sizeB = 0;
+		int k;
+
+		if ((folder == NULL) || (folder[0] == '\0'))
+		{
+			folder = getenv("TMP");
+		}
+		if ((folder == NULL) || (folder[0] == '\0'))
+		{
+			folder = ".";
+		}
+		// The made-up files: GLB 2 heads and a RIFF WAVE head, then counted bytes.
+		for (k = 0; k < 4; k++)
+		{
+			u8 bytes[32];
+			FILE *f;
+			int x;
+
+			memset(bytes, 0, sizeof(bytes));
+			for (x = 12; x < (int)sizeof(bytes); x++)
+			{
+				bytes[x] = (u8)(x * 3 + k);
+			}
+			if (k < 3)
+			{
+				memcpy(bytes, "glTF", 4);
+				Rld_WriteLE32(&bytes[4], 2u);
+				Rld_WriteLE32(&bytes[8], (u32)sizeof(bytes));
+			}
+			else
+			{
+				memcpy(bytes, "RIFF", 4);
+				Rld_WriteLE32(&bytes[4], (u32)sizeof(bytes) - 8u);
+				memcpy(&bytes[8], "WAVE", 4);
+			}
+			snprintf(file, sizeof(file), "%s/%s", folder, names[k]);
+			f = fopen(file, "wb");
+			if (f != NULL)
+			{
+				fwrite(bytes, 1, sizeof(bytes), f);
+				fclose(f);
+			}
+		}
+		snprintf(file, sizeof(file), "%s/exttrack.json", folder);
+		snprintf(out, sizeof(out), "%s/rldpack-engine-made.rldtrack", folder);
+		{
+			FILE *f = fopen(file, "wb");
+
+			if (f != NULL)
+			{
+				fwrite(json, 1, strlen(json), f);
+				fclose(f);
+			}
+		}
+
+		memset(&in, 0, sizeof(in));
+		in.folder = folder;
+		in.strings[0] = "engine selftest";
+		in.strings[1] = "rldpack";
+		in.modes = RLD_MODE_RACE;
+		in.trackVersion = 1;
+		in.minVersion = 0x000800u;
+		a = Rld_BuildEngine(&in, &sizeA, why, sizeof(why));
+		b = Rld_BuildEngine(&in, &sizeB, why, sizeof(why));
+		RldEngine_Check((a != NULL) && (b != NULL) && (sizeA == sizeB) && (memcmp(a, b, sizeA) == 0), "make-engine: built twice, byte for byte the same");
+		if (a == NULL)
+		{
+			printf("       %s\n", why);
+		}
+		failedGolden = (a == NULL) || Rld_CheckGolden("make-engine (made-up folder)", a, sizeA, RLD_GOLDEN_ENGINE);
+		RldEngine_Check(!failedGolden, "make-engine: the golden hash of the made-up folder");
+		if (a != NULL)
+		{
+			FILE *f = fopen(out, "wb");
+
+			if (f != NULL)
+			{
+				fwrite(a, 1, sizeA, f);
+				fclose(f);
+			}
+			RldEngine_Check(RldEngine_Verify(out, folder, in.minVersion, why, sizeof(why)) == NULL, "make-engine: the written file checks with the game's reader (as a 0.8.0 reader)");
+			s_rldReaderVersionForTest = 0x000800u;
+			error = Rld_Open(&reader, out);
+			s_rldReaderVersionForTest = 0u;
+			RldEngine_Check((error == NULL) && (reader.kind == RLD_KIND_ENGINE) && (reader.minor == RLD_VERSION_MINOR_ENGINE) && (reader.minVersion == 0x000800u) &&
+			                    (Rld_ReadLE32(&a[0x0c]) == (RLD_FEATURE_MIN_RELOAD | RLD_FEATURE_ENGINE_TRACK)),
+			                "make-engine: engine track, minor 4, flags 0x3, needs 0.8.0");
+			if (error == NULL)
+			{
+				RldEngine_Check((Rld_FindEntry(&reader, "PHYS", NULL) != NULL) && (Rld_FindEntry(&reader, "ZONE", NULL) != NULL) &&
+				                    (Rld_FindEntry(&reader, "MINI", NULL) != NULL) && (Rld_FindEntry(&reader, "SKYB", NULL) != NULL) &&
+				                    (Rld_FindEntry(&reader, "STRM", NULL) != NULL) && (Rld_FindEntry(&reader, "PLAC", NULL) == NULL),
+				                "make-engine: PHYS and ZONE split, MINI, SKYB, STRM there, no empty PLAC");
+				error = Rld_JoinSections(&reader, &joined, &joinedSize);
+				RldEngine_Check((error == NULL) && (strstr(joined, "\"materials\":[1.50,2e3]") != NULL) &&
+				                    (strstr(joined, "\"physics\":{\"version\":1,\"gravity_volumes\":[],\"zones\":[{\"id\":1}],\"maglev_low_speed\":4}") != NULL),
+				                "make-engine: values keep their spelling, physics joined back");
+				free(joined);
+				joined = NULL;
+				Rld_Close(&reader);
+			}
+		}
+		free(a);
+		free(b);
+
+		// Refusals.
+		{
+			const char *const texts[3] = {noRender, badName, notGlb};
+			const char *const wants[3] = {"render", "A-Z a-z 0-9", "GLB"};
+			const char *const whats[3] = {"make-engine: no render section refused", "make-engine: file name ../x.glb refused",
+			                              "make-engine: a WAVE as the geometry refused"};
+
+			for (k = 0; k < 3; k++)
+			{
+				FILE *f = fopen(file, "wb");
+				u8 *c;
+				size_t sizeC = 0;
+
+				if (f != NULL)
+				{
+					fwrite(texts[k], 1, strlen(texts[k]), f);
+					fclose(f);
+				}
+				c = Rld_BuildEngine(&in, &sizeC, why, sizeof(why));
+				RldEngine_Check((c == NULL) && (strstr(why, wants[k]) != NULL), whats[k]);
+				if (c != NULL || (strstr(why, wants[k]) == NULL))
+				{
+					printf("       %s\n", why);
+				}
+				free(c);
+			}
+		}
+
+		remove(file);
+		remove(out);
+		for (k = 0; k < 4; k++)
+		{
+			snprintf(file, sizeof(file), "%s/%s", folder, names[k]);
+			remove(file);
+		}
 	}
 
 	remove(path);
@@ -6911,6 +7091,18 @@ static void Rld_Usage(void)
 	printf("                              info --machine takes several files and also reads\n");
 	printf("                              the LEVD of each\n\n");
 
+	printf("MAKE-ENGINE (format 4.4, provisional)\n");
+	printf("  rldpack make-engine <folder> <out.rldtrack> [switches]\n");
+	printf("  The folder holds exttrack.json (the external track's description) and the\n");
+	printf("  files it names (render.glb, sky.glb, collision.glb, music.file). The\n");
+	printf("  container is an engine track: no LEV, no VRM; the game lists it gray and\n");
+	printf("  runs it through --ext-track <file>. Checked with the game's reader after\n");
+	printf("  writing.\n");
+	printf("  --name, --author             META strings (name: the folder name)\n");
+	printf("  --modes, --track-version     as with build (default race, 1)\n");
+	printf("  --min-reload <x.y[.z]>       lowest CTR Reload that reads it (default: this\n");
+	printf("                              build's game version)\n\n");
+
 	printf("MAKE\n");
 	printf("  rldpack make <folder> [switches]\n");
 	printf("  The folder holds exactly one .lev and one .vrm, at most one music file\n");
@@ -7244,6 +7436,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "selftest") == 0)
 	{
 		return Cmd_Selftest();
+	}
+	if (strcmp(argv[1], "make-engine") == 0)
+	{
+		return Cmd_MakeEngine(argc - 2, &argv[2]);
 	}
 	if (strcmp(argv[1], "selftest-engine") == 0)
 	{
