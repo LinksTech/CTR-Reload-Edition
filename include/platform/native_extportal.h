@@ -14,8 +14,9 @@
 //
 // THE RULE (measured by the converter on the source's time-trial ghost): a kart enters
 // portal k when its centre lies in k's box while it moves along k's local -y;
-// it leaves at k's target, at the target's centre, moving along the target's
-// local +y. A portal reached along +y is no entry (the pairs do not loop).
+// it leaves at k's target, in front of the target along its local +y, moving
+// along it, turned as the target (ExtPortal_Exit; the exe's rule). A portal
+// reached along +y is no entry (the pairs do not loop).
 //
 // IN THE GAME (dispatcher, platform/engine_exttrack.c): read at the level load;
 // after the game logic of each frame every human seat (not a bot, not a seat
@@ -57,11 +58,13 @@ const ExtPortal *ExtPortal_Get(int k);
 // without a valid target is never entered.
 int ExtPortal_Entered(const int pos[3], const int vel[3]);
 
-// Where a kart that entered portal k comes out: the target's centre and the
-// target's local +y as the new direction of travel at the given speed (units
-// per the caller's step), and its heading in game angles (0..4095, ratan2 of
-// x and z as the game's yaw). 1 = done, 0 = no such portal.
-int ExtPortal_Exit(int k, int speed, int outPos[3], int outVel[3], int *outYaw);
+// Where a kart that entered portal k comes out, as the original (exe 0x13D7D0):
+// its middle at the target's centre + the target's local +y * (EXTPORTAL_EXIT_GAP
+// + m_Size.y), the target's local +y as the new direction of travel at the given
+// speed (units per the caller's step), the target's local z as its up, and the
+// heading of the +y in game angles on world up (0..4095, ratan2 of x and z as
+// the game's yaw). 1 = done, 0 = no such portal.
+int ExtPortal_Exit(int k, int speed, int outPos[3], int outVel[3], int outUp[3], int *outYaw);
 
 // The frame: every human seat against the portals (see above). One log line
 // per pass: [CTR ExtPortal] seat S frame F portal K -> T pos .. -> .. yaw A speed V

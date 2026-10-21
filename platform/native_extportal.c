@@ -19,6 +19,7 @@ enum
 	EXTPORTAL_AXIS_SLACK = 8,  // |axis| = 4096 +- 8
 	EXTPORTAL_COORD_MAX = 32767,
 	EXTPORTAL_ANGLE_FULL = 4096,
+	EXTPORTAL_EXIT_GAP = 48,   // 0.75 m: the exit place's gap beyond m_Size.y (ExtPortal_Exit)
 };
 
 int ExtPortal_Count(void)
@@ -193,21 +194,31 @@ int ExtPortal_Entered(const int pos[3], const int vel[3])
 	return -1;
 }
 
-int ExtPortal_Exit(int k, int speed, int outPos[3], int outVel[3], int *outYaw)
+int ExtPortal_Exit(int k, int speed, int outPos[3], int outVel[3], int outUp[3], int *outYaw)
 {
 	const ExtPortal *p = ExtPortal_Get(k);
 	const ExtPortal *t;
 	double yaw;
+	long long reach;
 
 	if ((p == NULL) || (p->target < 0) || (p->target >= s_extPortalCount))
 	{
 		return 0;
 	}
 	t = &s_extPortals[p->target];
+	// THE ORIGINAL'S EXIT (exe 0x13D7D0, called from the kart's portal handler
+	// 0x199220): the kart's body at the target's position + its local +y *
+	// (k + 0.1 + m_Size.y) - k a kart value plus a global one, their sum not
+	// determined in the exe; the source's time-trial ghost bounds k + 0.1 by
+	// 0.75 m (EXTPORTAL_EXIT_GAP) -, its velocity the target's local +y times the
+	// speed it came with, its rotation the target's rotation (forward = local +y,
+	// up = local z). m_Size.y = 2 * half[1].
+	reach = (long long)EXTPORTAL_EXIT_GAP + (2LL * t->half[1]);
 	for (int a = 0; a < 3; a++)
 	{
-		outPos[a] = t->center[a];
+		outPos[a] = t->center[a] + (int)(((long long)t->axes[1][a] * reach) / EXTPORTAL_UNIT);
 		outVel[a] = (int)(((long long)t->axes[1][a] * speed) / EXTPORTAL_UNIT);
+		outUp[a] = t->axes[2][a];
 	}
 	// the game's heading of a direction (x, z): ratan2(x, z) in 4096 per turn
 	yaw = atan2((double)t->axes[1][0], (double)t->axes[1][2]) * (double)EXTPORTAL_ANGLE_FULL / (2.0 * 3.14159265358979323846);
@@ -224,7 +235,42 @@ enum
 	EXTPORTAL_COOLDOWN = 30,  // frames after a pass in which the seat enters no portal
 	EXTPORTAL_KART_MID = 33,  // the kart's middle above posCurr (0.5 H, H = 66.2): the box test and the exit
 	EXTPORTAL_STEER_MAX = 19200, // 300 m: a gate farther than this from the kart is not aimed at
+	EXTPORTAL_HEADING_STEP = 16, // the heading search: a coarse pass, then every angle around the best
 };
+
+// The game's heading (d->rotCurr.y, d->angle) for which the kart frame of
+// VehPhysForce_RotAxisAngle (the drawn kart: column 1 = the normal, column 2 =
+// forward) built on the normal `up` (4096 = 1) points its forward nearest to
+// `fwd`.
+internal int ExtPortal_HeadingInFrame(const int up[3], const int fwd[3])
+{
+	s16 n[3] = {(s16)up[0], (s16)up[1], (s16)up[2]};
+	long long best = 0;
+	int bestA = 0, from = 0, to = EXTPORTAL_ANGLE_FULL, step = EXTPORTAL_HEADING_STEP, first = 1;
+
+	for (int pass = 0; pass < 2; pass++)
+	{
+		for (int a = from; a < to; a += step)
+		{
+			MATRIX m;
+			long long dd;
+
+			memset(&m, 0, sizeof(m));
+			VehPhysForce_RotAxisAngle(&m, n, (s16)(a & (EXTPORTAL_ANGLE_FULL - 1)));
+			dd = ((long long)m.m[0][2] * fwd[0]) + ((long long)m.m[1][2] * fwd[1]) + ((long long)m.m[2][2] * fwd[2]);
+			if (first || (dd > best))
+			{
+				best = dd;
+				bestA = a & (EXTPORTAL_ANGLE_FULL - 1);
+				first = 0;
+			}
+		}
+		from = bestA - EXTPORTAL_HEADING_STEP;
+		to = bestA + EXTPORTAL_HEADING_STEP + 1;
+		step = 1;
+	}
+	return bestA;
+}
 
 global_variable int s_extPortalCooldown[EXTPORTAL_SEATS];
 
@@ -286,7 +332,7 @@ void ExtPortal_OnLogicFrame(void)
 	for (int seat = 0; seat < seats; seat++)
 	{
 		struct Driver *d = gGT->drivers[seat];
-		int pos[3], vel[3], outPos[3], outVel[3], yaw = 0, k;
+		int pos[3], vel[3], outPos[3], outVel[3], outUp[3], yaw = 0, k;
 		double speed;
 
 		if (s_extPortalCooldown[seat] > 0)
@@ -312,22 +358,27 @@ void ExtPortal_OnLogicFrame(void)
 			continue;
 		}
 		speed = sqrt(((double)vel[0] * vel[0]) + ((double)vel[1] * vel[1]) + ((double)vel[2] * vel[2]));
-		if (!ExtPortal_Exit(k, (int)(speed + 0.5), outPos, outVel, &yaw))
+		if (!ExtPortal_Exit(k, (int)(speed + 0.5), outPos, outVel, outUp, &yaw))
 		{
 			continue;
 		}
-		Platform_Log("[CTR ExtPortal] seat %d frame %d portal %d -> %d pos %d %d %d -> %d %d %d yaw %d -> %d speed %d (%.0f)\n", seat, s_extPortalFrame, k,
-		             s_extPortals[k].target, pos[0], pos[1] - EXTPORTAL_KART_MID, pos[2], outPos[0], outPos[1] - EXTPORTAL_KART_MID, outPos[2],
-		             d->angle & (EXTPORTAL_ANGLE_FULL - 1), yaw, (int)d->speed, speed / 256.0);
-		// THE PASS. The place: the exit's centre is the kart's middle. The way on:
-		// the exit's +y at the speed it came with (velocity and the game's heading
-		// fields, as VehBirth_TeleportSelf sets them; d->speed stays). The surface
-		// frame: world up (the exits lie in gravity volumes, not in zones;
-		// ExtPhys_SeedDriver as on a bot's mask grab). The camera: no blend from the
-		// old place (CAMERA_FLAG_DIRECTION_CHANGED, as after a respawn).
-		d->posCurr.x = outPos[0] << 8;
-		d->posCurr.y = (outPos[1] - EXTPORTAL_KART_MID) << 8;
-		d->posCurr.z = outPos[2] << 8;
+		yaw = ExtPortal_HeadingInFrame(outUp, s_extPortals[s_extPortals[k].target].axes[1]);
+		Platform_Log("[CTR ExtPortal] seat %d frame %d portal %d -> %d pos %d %d %d -> %d %d %d yaw %d -> %d speed %d (%.0f) up %d %d %d\n", seat,
+		             s_extPortalFrame, k, s_extPortals[k].target, pos[0], pos[1] - EXTPORTAL_KART_MID, pos[2], outPos[0], outPos[1], outPos[2],
+		             d->angle & (EXTPORTAL_ANGLE_FULL - 1), yaw, (int)d->speed, speed / 256.0, outUp[0], outUp[1], outUp[2]);
+		// THE PASS, as the original (ExtPortal_Exit). The place: the kart's middle
+		// at the exit place outPos, posCurr 0.5 H below it along the new up. The
+		// way on: the exit's +y at the speed it came with (velocity; d->speed
+		// stays). The kart frame: the target's rotation - up = its local z (the
+		// normals the kart is drawn and blended with), the heading the one whose
+		// drawn forward is the target's +y (ExtPortal_HeadingInFrame); the drawn
+		// matrix is set at once, so the frame of the pass already shows it. The
+		// zone state: none (the exits lie in gravity volumes, not in zones;
+		// ExtPhys_SeedDriver as on a bot's mask grab). The camera: no blend from
+		// the old place (CAMERA_FLAG_DIRECTION_CHANGED, as after a respawn).
+		d->posCurr.x = (outPos[0] - ((outUp[0] * EXTPORTAL_KART_MID) / EXTPORTAL_UNIT)) << 8;
+		d->posCurr.y = (outPos[1] - ((outUp[1] * EXTPORTAL_KART_MID) / EXTPORTAL_UNIT)) << 8;
+		d->posCurr.z = (outPos[2] - ((outUp[2] * EXTPORTAL_KART_MID) / EXTPORTAL_UNIT)) << 8;
 		d->posPrev = d->posCurr;
 		d->velocity.x = outVel[0];
 		d->velocity.y = outVel[1];
@@ -336,6 +387,23 @@ void ExtPortal_OnLogicFrame(void)
 		d->rotPrev.y = (s16)yaw;
 		d->angle = (s16)yaw;
 		ExtPhys_SeedDriver(d, NULL, 0);
+		{
+			const SVec3 up = {(s16)outUp[0], (s16)outUp[1], (s16)outUp[2]};
+
+			d->normalVecUP = up;
+			d->AxisAngle1_normalVec = up;
+			d->AxisAngle2_normalVec = up;
+			d->AxisAngle3_normalVec = up;
+			d->AxisAngle4_normalVec = up;
+			VehPhysForce_RotAxisAngle(&d->matrixFacingDir, CTR_VECTOR_DATA(&(d->AxisAngle2_normalVec)), d->rotCurr.y);
+			if (d->instSelf != NULL)
+			{
+				memcpy(d->instSelf->matrix.m, d->matrixFacingDir.m, sizeof(d->instSelf->matrix.m));
+				d->instSelf->matrix.t[0] = d->posCurr.x >> 8;
+				d->instSelf->matrix.t[1] = d->posCurr.y >> 8;
+				d->instSelf->matrix.t[2] = d->posCurr.z >> 8;
+			}
+		}
 		if (d->driverID < 4)
 		{
 			gGT->cameraDC[d->driverID].flags |= CAMERA_FLAG_DIRECTION_CHANGED;
@@ -440,13 +508,37 @@ int ExtPortal_Selftest(void)
 		                &n, &failures);
 		ExtPortal_Check((ExtPortal_Entered(sideIn, plusX) == 0) && (ExtPortal_Entered(sideOut, plusX) == -1) && (ExtPortal_Entered(highOut, plusX) == -1),
 		                "the gate's sides: local x half 300, local z half 500", &n, &failures);
-		ExtPortal_Check(ExtPortal_Exit(0, 200, pos, vel, &yaw) && (pos[0] == -2000) && (pos[1] == 300) && (pos[2] == 5000) && (vel[0] == 0) &&
-		                    (vel[1] == 0) && (vel[2] == 200) && (yaw == 0),
-		                "portal 0 leaves at portal 1's centre along its +y (+z), heading 0", &n, &failures);
-		ExtPortal_Check(ExtPortal_Exit(1, 4096, pos, vel, &yaw) && (pos[0] == 1000) && (vel[0] == -4096) && (yaw == 3072),
-		                "portal 1 leaves at portal 0 along -x, heading 3072", &n, &failures);
+		int upv[3] = {0, 0, 0};
+
+		ExtPortal_Check(ExtPortal_Exit(0, 200, pos, vel, upv, &yaw) && (pos[0] == -2000) && (pos[1] == 300) && (pos[2] == 5000 + 48 + 200) &&
+		                    (vel[0] == 0) && (vel[1] == 0) && (vel[2] == 200) && (yaw == 0) && (upv[0] == 0) && (upv[1] == 4096) && (upv[2] == 0),
+		                "portal 0 leaves 48 + m_Size.y (200) past portal 1's centre along its +y (+z), heading 0, up its local z", &n, &failures);
+		ExtPortal_Check(ExtPortal_Exit(1, 4096, pos, vel, upv, &yaw) && (pos[0] == 1000 - 48 - 128) && (pos[1] == 100) && (pos[2] == 0) &&
+		                    (vel[0] == -4096) && (yaw == 3072),
+		                "portal 1 leaves 48 + m_Size.y (128) past portal 0's centre along -x, heading 3072", &n, &failures);
 		ExtPortal_Check(ExtPortal_Entered(atExit, plusZ) == -1, "a kart just out of the exit (moving along its +y) does not enter it again", &n, &failures);
-		ExtPortal_Check(!ExtPortal_Exit(2, 100, pos, vel, &yaw) && !ExtPortal_Exit(-1, 100, pos, vel, &yaw), "no such portal: no exit", &n, &failures);
+		ExtPortal_Check(!ExtPortal_Exit(2, 100, pos, vel, upv, &yaw) && !ExtPortal_Exit(-1, 100, pos, vel, upv, &yaw), "no such portal: no exit", &n,
+		                &failures);
+	}
+
+	// the heading in the exit's frame: the drawn forward of VehPhysForce_RotAxisAngle
+	// on the exit's up points along the exit's +y
+	{
+		const int flatUp[3] = {0, 4096, 0}, plusZ[3] = {0, 0, 4096}, minusX[3] = {-4096, 0, 0};
+		const int tiltUp[3] = {0, 3511, -2110}, tiltFwd[3] = {0, -2110, -3511}; // 31 deg pitched down, along -z
+		MATRIX m;
+		s16 tn[3] = {0, 3511, -2110};
+		int a;
+		double c;
+
+		ExtPortal_Check((ExtPortal_HeadingInFrame(flatUp, plusZ) == 0) && (ExtPortal_HeadingInFrame(flatUp, minusX) == 3072),
+		                "heading on world up: +z 0, -x 3072", &n, &failures);
+		a = ExtPortal_HeadingInFrame(tiltUp, tiltFwd);
+		memset(&m, 0, sizeof(m));
+		VehPhysForce_RotAxisAngle(&m, tn, (s16)a);
+		c = (((double)m.m[0][2] * tiltFwd[0]) + ((double)m.m[1][2] * tiltFwd[1]) + ((double)m.m[2][2] * tiltFwd[2])) / (4096.0 * 4096.0);
+		ExtPortal_Check((a == 2048) && (c > cos(1.0 * 3.14159265358979323846 / 180.0)), "heading on a pitched up: 2048, drawn forward within 1 deg", &n,
+		                &failures);
 	}
 
 	// the steering help: a target past the exit is replaced by the gate; a
