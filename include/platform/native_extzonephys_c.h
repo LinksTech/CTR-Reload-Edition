@@ -30,6 +30,8 @@ uint32_t ExtZp_Kart_1c2010(ExtZpCtx *c, uint32_t obj, uint32_t n);
 // EXT_ZP_Q_OTHER with func = the method found in the object's table) and walks
 // the parent chain (+0x38) for cls. Returns 1 / 0.
 uint32_t ExtZp_Kart_512ee0(ExtZpCtx *c, uint32_t obj, uint32_t cls);
+// The driver object's table slot +0x34 (driver, value): computer driver -> driver + 0xCC; else a query.
+void ExtZp_Kart_DriverSlot34(ExtZpCtx *c, uint32_t driver, uint32_t value);
 
 // ---- state change and the state table
 // Method pointer {adjust, index, target} at address mp inside the state table

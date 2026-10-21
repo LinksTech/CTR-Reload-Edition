@@ -440,8 +440,9 @@ static Ps2F g_BrakeBase(ExtZpCtx *c, uint32_t kart, Ps2F f1)
 // Resets the body's velocity to zero and renormalises it (the kart is standing and not jumping).
 static void g_StandStill(ExtZpCtx *c, uint32_t kart)
 {
-	uint32_t zero = ExtZp_Push(c, 16u); // a vec4 of zeros (the original reads one from its data)
+	uint32_t zero = ExtZp_Push(c, 16u); // a copy of the original's vector at 0x6A2160 (read from memory)
 	uint32_t frame = g_Frame(c, kart);
+	ZmWV(c->m, zero, ZmRV(c->m, 0x006A2160u));
 	uint32_t a0 = ExtZp_Kart_136160(c, zero);
 	ExtZp_Kart_13dd40(c, ZmR32(c->m, frame + G_F_BODY), a0);
 	ExtZp_Glue_136050(c, frame);

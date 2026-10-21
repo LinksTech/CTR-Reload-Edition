@@ -5,15 +5,18 @@
 #include <platform/native_extzonephys.h>
 #include <platform/native_extzonephys_c.h>
 
+#include <string.h>
+
 #define KC_G_WORLD 0x006FA190u  // global: pointer to the physics world (its +0x74 is the ray test object)
 #define KC_G_CLASS 0x006F63E0u  // global: the type object a controller node must be of
 #define KC_G_STATES 0x006F53F0u // the state table (36 bytes per state), known to the port as a switch
 
-// A zero vector: the original's constant vector at 0x6A2160 (all four words 0).
-static Ps2Vec4 kc_zero4(void)
+// The original's vector at 0x6A2160 (read from memory: (0, 0, 0, 0) in the loaded exe,
+// (0, 0, 0, 1.0) once the running game has set it up).
+#define KC_G_VEC0 0x006A2160u
+static Ps2Vec4 kc_zero4(ExtZpMem *m)
 {
-	Ps2Vec4 z = {{0u, 0u, 0u, 0u}};
-	return z;
+	return ZmRV(m, KC_G_VEC0);
 }
 
 // dst.xyz = a.xyz op b.xyz with w from a (lqc2, lqc2, vadd/vsub.xyz, sqc2).
@@ -92,6 +95,28 @@ uint32_t ExtZp_Kart_1c2010(ExtZpCtx *c, uint32_t obj, uint32_t n)
 	return (ZmR32(c->m, obj + 0xCu) & (1u << (n & 31u))) != 0u;
 }
 
+// The driver object's method at its table slot +0x34, called with (driver, value): for a
+// computer driver (0x15DB60) it stores the value at driver + 0xCC; the player's (0x16D760)
+// keeps the screen's boost counters and is handed to Reload as a query.
+void ExtZp_Kart_DriverSlot34(ExtZpCtx *c, uint32_t driver, uint32_t value)
+{
+	ExtZpMem *m = c->m;
+	const uint32_t target = ZmR32(m, ZmR32(m, driver + 4u) + 0x34u);
+	if (target == 0x0015DB60u)
+	{
+		ZmW32(m, driver + 0xCCu, value);
+	}
+	else
+	{
+		ExtZpQueryArgs args;
+		memset(&args, 0, sizeof(args));
+		args.func = target;
+		args.a[0] = driver;
+		args.a[1] = value;
+		(void)ExtZp_Query(c, EXT_ZP_Q_OTHER, &args);
+	}
+}
+
 uint32_t ExtZp_Kart_512ee0(ExtZpCtx *c, uint32_t obj, uint32_t cls)
 {
 	ExtZpMem *m = c->m;
@@ -112,6 +137,11 @@ uint32_t ExtZp_Kart_512ee0(ExtZpCtx *c, uint32_t obj, uint32_t cls)
 	{
 		// the known target: the object answers with itself
 		v0 = ExtZp_Kart_136160(c, obj);
+	}
+	else if (args.func == 0x0028AA30u)
+	{
+		// the gravity spline's type method (0x28AA30): its type node, the word at 0x6F63E0
+		v0 = ZmR32(m, 0x006F63E0u);
 	}
 	else
 	{
@@ -353,24 +383,24 @@ void ExtZp_Kart_190670(ExtZpCtx *c, uint32_t K, Ps2F dt)
 			ExtZp_Glue_136050(c, s0);
 		}
 		// the force accumulator and the last velocity are cleared
-		ZmWV(m, K + 0x3B0u, kc_zero4());
-		ZmWV(m, K + 0x3D0u, kc_zero4());
+		ZmWV(m, K + 0x3B0u, kc_zero4(m));
+		ZmWV(m, K + 0x3D0u, kc_zero4(m));
 	}
 
 	// 2. the force of this call joins the accumulator, the call's force is cleared
 	kc_vadd(m, K + 0x3B0u, K + 0x3B0u, K + 0x3C0u);
-	ZmWV(m, K + 0x3C0u, kc_zero4());
+	ZmWV(m, K + 0x3C0u, kc_zero4(m));
 
 	// 3. state 14: the body is stopped, nothing else runs
 	if (ZmR32(m, K + 0x3E0u) == 0xEu)
 	{
 		s0 = ZmR32(m, ZmR32(m, K + 0x2Cu));
-		ZmWV(m, sp + 0x110u, kc_zero4());
+		ZmWV(m, sp + 0x110u, kc_zero4(m));
 		v0 = ExtZp_Kart_136160(c, sp + 0x110u);
 		ExtZp_Kart_13dd40(c, ZmR32(m, s0 + 0x94u), v0);
 		ExtZp_Glue_136050(c, s0);
 		s0 = ZmR32(m, ZmR32(m, K + 0x2Cu));
-		ZmWV(m, sp + 0x100u, kc_zero4());
+		ZmWV(m, sp + 0x100u, kc_zero4(m));
 		v0 = ExtZp_Kart_136160(c, sp + 0x100u);
 		ExtZp_Kart_190350(c, ZmR32(m, s0 + 0x94u), v0);
 		ExtZp_Glue_190280(c, s0);
@@ -436,7 +466,7 @@ void ExtZp_Kart_190670(ExtZpCtx *c, uint32_t K, Ps2F dt)
 
 	// 7. the angular velocity of the body is cleared
 	s0 = ZmR32(m, ZmR32(m, K + 0x2Cu));
-	ZmWV(m, sp + 0xD0u, kc_zero4());
+	ZmWV(m, sp + 0xD0u, kc_zero4(m));
 	v0 = ExtZp_Kart_136160(c, sp + 0xD0u);
 	ExtZp_Kart_190350(c, ZmR32(m, s0 + 0x94u), v0);
 	ExtZp_Glue_190280(c, s0);
@@ -610,7 +640,7 @@ void ExtZp_Kart_190670(ExtZpCtx *c, uint32_t K, Ps2F dt)
 	if (Ps2F_Le(f1, f0))
 	{
 		ZmWF(m, K + 0x438u, f0);
-		ZmWV(m, K + 0x440u, kc_zero4());
+		ZmWV(m, K + 0x440u, kc_zero4(m));
 		ZmW8(m, K + 0x450u, 0u);
 		ZmW8(m, K + 0x451u, 0u);
 		ZmWF(m, K + 0x434u, f0);

@@ -65,23 +65,10 @@ static uint32_t h_frame(ExtZpMem *m, uint32_t kart)
 	return ZmR32(m, ZmR32(m, kart + H_K_FRAME));
 }
 
-// The driver's virtual method (vtable + 0x34) called with (driver, arg): not a function of the
-// path, handed out as a query (func = the call target, which the original keeps in t9).
+// The driver's method at its table slot +0x34 (driver, arg), see ExtZp_Kart_DriverSlot34.
 static void h_driver_call(ExtZpCtx *c, uint32_t driver, uint32_t arg)
 {
-	ExtZpMem *m = c->m;
-	ExtZpQueryArgs args;
-	int i;
-
-	for (i = 0; i < 8; i++)
-	{
-		args.a[i] = 0;
-		args.f[i] = 0;
-	}
-	args.func = ZmR32(m, ZmR32(m, driver + 4) + 0x34);
-	args.a[0] = driver;
-	args.a[1] = arg;
-	(void)ExtZp_Query(c, EXT_ZP_Q_OTHER, &args);
+	ExtZp_Kart_DriverSlot34(c, driver, arg); // part c
 }
 
 // body force accumulator += v.xyz (vadd.xyz); the body is read again, as the original does.

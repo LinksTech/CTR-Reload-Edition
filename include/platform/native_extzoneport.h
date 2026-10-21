@@ -19,7 +19,8 @@
 //                       "rot": [4 bits] (obb), "centre": [3 bits], "size": [3 bits]}],
 //         "maggrav_splines": [{"type", "hkindex", "nodes": [[6 bits: pos, dir]]}],
 //         "magdisp_splines": [...],
-//         "csv": {"<table>": [{"name", "text": [cells], "bits": [nearest float bits]}]}}
+//         "csv": {"<table>": [{"name", "text": [cells], "bits": [nearest float bits]}]},
+//         "world": {...}}   the start world of the port (platform/native_extzoneworld.c)
 //     Without the section (or with "port" 0) nothing of the port runs: the
 //     track behaves exactly as before.
 //   - the frame mapping between Reload world units (y up) and the source world:
@@ -143,6 +144,16 @@ void ExtZp_LogEnd(void);
 // into the step log when it is on (needs include/platform/native_extzonemem.h).
 #include <platform/native_extzonemem.h>
 void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResult *out);
+
+// THE START WORLD (platform/native_extzoneworld.c; physics.source.world): the
+// source's physics objects in their own layout, written into the port's
+// memory; 1 = loaded (*world = the step's world object, *dt = the step time).
+int ExtZp_WorldLoad(ExtZpMem *m, uint32_t *world, Ps2F *dt);
+void ExtZp_ClearWorld(void);
+int ExtZp_WorldPages(void);
+int ExtZp_WorldWords(void);
+int ExtZp_WorldBad(void);
+void ExtZp_WorldSelftest(int *checks, int *failures, void (*log)(const char *line));
 
 // The selftest part (called by --ext-selftest phys): the reader on a made-up
 // section, the mapping, the log record layout.

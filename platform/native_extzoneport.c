@@ -30,6 +30,7 @@ void ExtZp_ClearSource(void)
 {
 	memset(&s_extZpSource, 0, sizeof(s_extZpSource));
 	s_extZpSource.scale = 64.0;
+	ExtZp_ClearWorld(); // the start world (platform/native_extzoneworld.c)
 }
 
 const ExtZpSourceCsvRow *ExtZp_CsvRow(const char *table, const char *name)
@@ -253,7 +254,10 @@ void ExtZp_ReadSource(const ExtJsonDoc *doc, int node)
 	ExtZp_ReadSplines(doc, ExtJson_Get(doc, node, "maggrav_splines"), s->maggrav, &s->maggravCount);
 	ExtZp_ReadSplines(doc, ExtJson_Get(doc, node, "magdisp_splines"), s->magdisp, &s->magdispCount);
 	ExtZp_ReadCsv(doc, ExtJson_Get(doc, node, "csv"));
+	ExtZp_ReadWorld(doc, ExtJson_Get(doc, node, "world"));
 	s->present = 1;
+	Platform_Log("[CTR ExtZp] physics.source: port %d, %d phantom(s), %d + %d spline(s), %d csv table(s), start world %d page(s) %d word(s), %d bad\n",
+	             s->port, s->phantomCount, s->maggravCount, s->magdispCount, s->csvCount, ExtZp_WorldPages(), ExtZp_WorldWords(), s->badValues + ExtZp_WorldBad());
 }
 
 // ------------------------------------------------------------------ frame mapping

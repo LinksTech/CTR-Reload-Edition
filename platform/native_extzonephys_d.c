@@ -381,13 +381,8 @@ void ExtZp_Kart_196890(ExtZpCtx *c, uint32_t kart, uint32_t stage, Ps2F intensit
 		driver = ZmR32(m, kart + 0x38);
 		if (driver != 0u)
 		{
-			// virtual method (driver, count) at vtable + 0x34: not a function of the path
-			// (args.func = the call target, which the original keeps in t9)
-			ExtZpQueryArgs args;
-			KdQueryInit(&args, ZmR32(m, ZmR32(m, driver + 4) + 0x34));
-			args.a[0] = driver;
-			args.a[1] = ZmR32(m, kart + 0x4D0);
-			(void)ExtZp_Query(c, EXT_ZP_Q_OTHER, &args);
+			// the driver's method at its table slot +0x34 (driver, count): part c
+			ExtZp_Kart_DriverSlot34(c, driver, ZmR32(m, kart + 0x4D0));
 		}
 	}
 	ZmW32(m, kart + 0x4BC, ZmR32(m, kart + 0x1D4)); // push timer

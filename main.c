@@ -124,6 +124,7 @@
 #include "platform/native_extzonemem.c"
 #include "platform/native_extzonephys.c"
 #include "platform/native_extchasecam.c"
+#include "platform/native_extzoneworld.c"
 #include "platform/native_extzoneport.c"
 #include "platform/native_extphys.c"
 #include "platform/native_exttrack_race.c"

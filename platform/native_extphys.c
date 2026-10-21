@@ -2907,6 +2907,8 @@ int ExtPhys_Selftest(void)
 	Ps2F_Selftest(&checks, &failures, ExtPhys_TestLog);
 	// The zone port's Reload side (platform/native_extzoneport.c): physics.source, the frame mapping, the step log.
 	ExtZp_Selftest(&checks, &failures, ExtPhys_TestLog);
+	// The zone port's start world (platform/native_extzoneworld.c).
+	ExtZp_WorldSelftest(&checks, &failures, ExtPhys_TestLog);
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));
 	if (failures)
