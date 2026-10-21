@@ -351,20 +351,42 @@ Ps2F Ps2F_MulSub(Ps2F acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc, 0, a, b, 
 Ps2F Ps2F_Abs(Ps2F a) { return a & PS2F_FMAX; }
 Ps2F Ps2F_Neg(Ps2F a) { return a ^ PS2F_SIGN; }
 
+// The compare of the main CPU's C.cond.S: an exponent-0 operand (zero or
+// denormal, either sign) counts as +0, a negative one has its other bits
+// turned over, then the two are compared as signed integers (the published
+// description, PCSX2 fpuCompareFull): -0 == +0, -denormal == +0.
+static int32_t Ps2F_CompareKey(Ps2F f)
+{
+	if (!(f & 0x7F800000u))
+		f = 0;
+	if (f & PS2F_SIGN)
+		f ^= 0x7FFFFFFFu;
+	return (int32_t)f;
+}
 int Ps2F_Compare(Ps2F a, Ps2F b)
 {
-	int32_t va = (int32_t)(a & PS2F_FMAX), vb = (int32_t)(b & PS2F_FMAX);
-	if (Ps2F_SignBit(a))
-		va = -va;
-	if (Ps2F_SignBit(b))
-		vb = -vb;
+	int32_t va = Ps2F_CompareKey(a), vb = Ps2F_CompareKey(b);
 	return va < vb ? -1 : (va > vb ? 1 : 0);
 }
 int Ps2F_Eq(Ps2F a, Ps2F b) { return Ps2F_Compare(a, b) == 0; }
 int Ps2F_Lt(Ps2F a, Ps2F b) { return Ps2F_Compare(a, b) < 0; }
 int Ps2F_Le(Ps2F a, Ps2F b) { return Ps2F_Compare(a, b) <= 0; }
-Ps2F Ps2F_Min(Ps2F a, Ps2F b) { return Ps2F_Compare(a, b) <= 0 ? a : b; }
-Ps2F Ps2F_Max(Ps2F a, Ps2F b) { return Ps2F_Compare(a, b) >= 0 ? a : b; }
+// MAX.S / MIN.S (and the vector unit's MAX / MINI): the patterns as signed
+// integers, both negative the other way round; no exponent-0 rule.
+Ps2F Ps2F_Max(Ps2F a, Ps2F b)
+{
+	int32_t sa = (int32_t)a, sb = (int32_t)b;
+	if (sa < 0 && sb < 0)
+		return (Ps2F)(sa < sb ? sa : sb);
+	return (Ps2F)(sa > sb ? sa : sb);
+}
+Ps2F Ps2F_Min(Ps2F a, Ps2F b)
+{
+	int32_t sa = (int32_t)a, sb = (int32_t)b;
+	if (sa < 0 && sb < 0)
+		return (Ps2F)(sa > sb ? sa : sb);
+	return (Ps2F)(sa < sb ? sa : sb);
+}
 
 // ---------------------------------------------------------------- conversions
 
@@ -523,17 +545,20 @@ Ps2Acc Ps2A_Mula(Ps2F a, Ps2F b)
 Ps2Acc Ps2A_Madda(Ps2Acc acc, Ps2F a, Ps2F b)
 {
 	unsigned f = 0;
-	Ps2F v = Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 0, &f);
+	Ps2F v = Ps2F_MulAddEx(acc.v, 0, a, b, 0, &f);
 	return Ps2A_Make(v, f);
 }
 Ps2Acc Ps2A_Msuba(Ps2Acc acc, Ps2F a, Ps2F b)
 {
 	unsigned f = 0;
-	Ps2F v = Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 1, &f);
+	Ps2F v = Ps2F_MulAddEx(acc.v, 0, a, b, 1, &f);
 	return Ps2A_Make(v, f);
 }
-Ps2F Ps2A_Madd(Ps2Acc acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 0, 0); }
-Ps2F Ps2A_Msub(Ps2Acc acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 1, 0); }
+// The published description starts every multiply-add from the accumulator's
+// value alone: the overflow flag of the operation that wrote it is not carried
+// (the flag is kept in Ps2Acc for the record only).
+Ps2F Ps2A_Madd(Ps2Acc acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc.v, 0, a, b, 0, 0); }
+Ps2F Ps2A_Msub(Ps2Acc acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc.v, 0, a, b, 1, 0); }
 
 void Ps2V_Adda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
 {
@@ -553,17 +578,28 @@ void Ps2V_Mula(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
 		if (PS2V_LANE(mask, i))
 			acc->lane[i] = Ps2A_Mula(a->v[i], b->v[i]);
 }
+// The vector unit's ...A multiply-adds read the accumulator's overflow flag
+// (set by the MULA or MADDA that wrote it) and set it from their own result;
+// the final MADD/MSUB into a register does not read it (measured against the
+// offline bench, which follows the published description: vmula+vmadda+vmadd,
+// vmula+vmadda+vmadda+vmadd, vadda+vmadd, 200 000 cases each, 0 differences).
+static Ps2Acc Ps2V_LaneMadda(Ps2Acc acc, Ps2F a, Ps2F b, int sub)
+{
+	unsigned f = 0;
+	Ps2F v = Ps2F_MulAddEx(acc.v, acc.overflow, a, b, sub, &f);
+	return Ps2A_Make(v, f);
+}
 void Ps2V_Madda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
 {
 	for (int i = 0; i < 4; i++)
 		if (PS2V_LANE(mask, i))
-			acc->lane[i] = Ps2A_Madda(acc->lane[i], a->v[i], b->v[i]);
+			acc->lane[i] = Ps2V_LaneMadda(acc->lane[i], a->v[i], b->v[i], 0);
 }
 void Ps2V_Msuba(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
 {
 	for (int i = 0; i < 4; i++)
 		if (PS2V_LANE(mask, i))
-			acc->lane[i] = Ps2A_Msuba(acc->lane[i], a->v[i], b->v[i]);
+			acc->lane[i] = Ps2V_LaneMadda(acc->lane[i], a->v[i], b->v[i], 1);
 }
 void Ps2V_MaddAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
 {
@@ -677,7 +713,10 @@ void Ps2F_Selftest(int *checks, int *failures, void (*log)(const char *line))
 	PS2F_EXPECT("msub overflow", Ps2F_MulSub(0x3F800000u, 0x7F000000u, 0x7F000000u), PS2F_FMAX_NEG);
 	PS2F_EXPECT("madd 1+2*3", Ps2F_MulAdd(0x3F800000u, 0x40000000u, 0x40400000u), 0x40E00000u);
 	// Compare, min/max: sign-magnitude, +0 == -0.
-	PS2F_EXPECT("cmp +0 -0", Ps2F_Eq(0x00000000u, 0x80000000u), 1);
+	PS2F_EXPECT("cmp +0 == -0", Ps2F_Eq(0x00000000u, 0x80000000u), 1);
+	PS2F_EXPECT("cmp -0 not < +0", Ps2F_Lt(0x80000000u, 0x00000000u), 0);
+	PS2F_EXPECT("cmp -1 < -0.5", Ps2F_Lt(0xBF800000u, 0xBF000000u), 1);
+	PS2F_EXPECT("cmp -denormal == +0", Ps2F_Eq(0x80400000u, 0x00000000u), 1);
 	PS2F_EXPECT("cmp -1 < 0", Ps2F_Lt(0xBF800000u, 0x00000000u), 1);
 	PS2F_EXPECT("cmp Fmax > 2^128", Ps2F_Lt(0x7F800000u, PS2F_FMAX), 1);
 	PS2F_EXPECT("max", Ps2F_Max(0xC0000000u, 0x3F800000u), 0x3F800000u);
@@ -720,7 +759,7 @@ void Ps2F_Selftest(int *checks, int *failures, void (*log)(const char *line))
 	{
 		Ps2Acc ov = Ps2A_Adda(PS2F_FMAX, PS2F_FMAX);
 		PS2F_EXPECT("adda overflow flag", (uint32_t)ov.overflow, 1u);
-		PS2F_EXPECT("madd keeps an overflowed acc", Ps2A_Madd(ov, 0x3F800000u, 0x3F800000u), PS2F_FMAX);
+		PS2F_EXPECT("madd from an overflowed acc: its value", Ps2A_Madd(ov, 0x3F800000u, 0x3F800000u), PS2F_FMAX);
 		Ps2Acc acc = Ps2A_Mula(0x3F800000u, 0x40000000u);
 		acc = Ps2A_Madda(acc, 0x40400000u, 0x40800000u);
 		PS2F_EXPECT("mula madda madd", Ps2A_Madd(acc, 0x40A00000u, 0x40C00000u), 0x42300000u);

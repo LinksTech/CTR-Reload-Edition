@@ -69,8 +69,8 @@ Ps2F Ps2F_MulAddEx(Ps2F acc, int accOverflow, Ps2F a, Ps2F b, int sub, unsigned 
 Ps2F Ps2F_MulAdd(Ps2F acc, Ps2F a, Ps2F b); // accumulator without overflow
 Ps2F Ps2F_MulSub(Ps2F acc, Ps2F a, Ps2F b);
 
-// Sign handling, compares (sign-magnitude, +0 == -0; denormals keep their
-// pattern as in the hardware compare), MIN/MAX.
+// Sign handling, compares (exponent 0 of either sign counts as +0), MIN/MAX
+// (signed patterns).
 Ps2F Ps2F_Abs(Ps2F a);
 Ps2F Ps2F_Neg(Ps2F a);
 int Ps2F_Compare(Ps2F a, Ps2F b);   // -1, 0, 1
@@ -110,7 +110,8 @@ void Ps2V_OpMsub(Ps2Vec4 *d, const Ps2Vec4 *acc, const Ps2Vec4 *fs, const Ps2Vec
 
 // THE ACCUMULATOR (main CPU ADDA/SUBA/MULA/MADDA/MSUBA, MADD/MSUB; the vector
 // unit's ...A forms per lane): its value and whether the operation that wrote
-// it overflowed (that flag steers the next multiply-add, Ps2F_MulAddEx).
+// it overflowed (kept for the record: the published description does not
+// carry it into the next multiply-add).
 typedef struct Ps2Acc { Ps2F v; int overflow; } Ps2Acc;
 Ps2Acc Ps2A_Adda(Ps2F a, Ps2F b);
 Ps2Acc Ps2A_Suba(Ps2F a, Ps2F b);
@@ -119,7 +120,10 @@ Ps2Acc Ps2A_Madda(Ps2Acc acc, Ps2F a, Ps2F b);
 Ps2Acc Ps2A_Msuba(Ps2Acc acc, Ps2F a, Ps2F b);
 Ps2F Ps2A_Madd(Ps2Acc acc, Ps2F a, Ps2F b); // fd = acc + a*b (acc unchanged)
 Ps2F Ps2A_Msub(Ps2Acc acc, Ps2F a, Ps2F b); // fd = acc - a*b
-// The vector accumulator: lanes as above; mask as the instruction's xyzw.
+// The vector accumulator: lanes as above; mask as the instruction's xyzw. Unlike
+// the main CPU, the vector unit's MADDA/MSUBA start from an overflowed
+// accumulator as overflowed (the flag of the MULA/MADDA before) and set the
+// flag from their own result; the final MADD/MSUB into a register does not.
 typedef struct Ps2VAcc { Ps2Acc lane[4]; } Ps2VAcc;
 void Ps2V_Adda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
 void Ps2V_Suba(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
