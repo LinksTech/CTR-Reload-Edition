@@ -663,6 +663,12 @@ int ExtNav_UpAt(const double pos[3], short up[3], int *path, int *frame)
 // = its signed distance along u, d = (pos - hit) . front normal (negative = the
 // kart lies behind / under the face); "none" = no ground on the line. The
 // checker applies the gate's reach (8 H) to |t|.
+// Beside it, only when a kart's state changes (and once at the first frame):
+//   [CTR ExtDmg] f F s S blast 0|1 gnd 0|1
+// blast = the explosion's damage state (a bot: BOT_FLAG_DAMAGE_ACTIVE with
+// aiDamageState 2 = BOTS_DAMAGE_STATE_BLAST, game/BOTS.c:3131; a player:
+// kartState KS_BLASTED), gnd = ACTION_TOUCH_GROUND. For the exception "an
+// explosion hit until the landing" of the gates (night run 1, PLAN 3).
 int g_cfg_extKartLog = 0;
 
 enum
@@ -672,6 +678,7 @@ enum
 };
 
 global_variable int s_extNavKartFrame;
+global_variable int s_extNavDmgState[EXT_NAV_KART_SEATS]; // last logged blast | gnd << 1, -1 = not yet
 
 void ExtNav_OnLogicFrame(void)
 {
@@ -685,6 +692,10 @@ void ExtNav_OnLogicFrame(void)
 	if ((gGT == NULL) || ((gGT->gameMode1 & (MAIN_MENU | LOADING)) != 0) || (sdata->Loading.stage != LOAD_IDLE))
 	{
 		s_extNavKartFrame = 0;
+		for (int seat = 0; seat < EXT_NAV_KART_SEATS; seat++)
+		{
+			s_extNavDmgState[seat] = -1;
+		}
 		return;
 	}
 	s_extNavKartFrame++;
@@ -702,6 +713,17 @@ void ExtNav_OnLogicFrame(void)
 		if (d == NULL)
 		{
 			continue;
+		}
+		{
+			const int blast = bot ? (((d->botData.botFlags & BOT_FLAG_DAMAGE_ACTIVE) != 0) && (d->botData.aiDamageState == 2)) : (d->kartState == KS_BLASTED);
+			const int gnd = (d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0;
+			const int state = (blast ? 1 : 0) | (gnd ? 2 : 0);
+
+			if ((s_extNavKartFrame == 1) || (state != s_extNavDmgState[seat]))
+			{
+				s_extNavDmgState[seat] = state;
+				Platform_Log("[CTR ExtDmg] f %d s %d blast %d gnd %d\n", s_extNavKartFrame, seat, blast ? 1 : 0, gnd ? 1 : 0);
+			}
 		}
 		pos[0] = d->posCurr.x / 256.0;
 		pos[1] = d->posCurr.y / 256.0;
