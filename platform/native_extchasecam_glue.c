@@ -253,7 +253,13 @@ internal void ExtChaseGlue_Query(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in
 
 // ------------------------------------------------------------------ the level
 
-internal void ExtChaseGlue_LogPages(uint32_t tag)
+// The pages of a step into the step log (version 2, the zone port's delta rule for the camera too): with delta 0 (the
+// first step of the level) every page; with delta 1 'PRE ' only the pages that differ from the image the reader holds
+// (the last step's POST) and 'POST' only the pages the step changed. The image is kept here per page.
+global_variable uint8_t s_camGlueImg[CAM_GLUE_PAGE_COUNT + 1][4096];
+global_variable int s_camGlueImgValid;
+
+internal void ExtChaseGlue_LogPages(uint32_t tag, int delta)
 {
 	unsigned char buf[4 + 4096];
 
@@ -266,6 +272,11 @@ internal void ExtChaseGlue_LogPages(uint32_t tag)
 		{
 			continue;
 		}
+		if (delta && (memcmp(bytes, s_camGlueImg[i], 4096) == 0))
+		{
+			continue;
+		}
+		memcpy(s_camGlueImg[i], bytes, 4096);
 		memcpy(buf, &pg, 4);
 		memcpy(buf + 4, bytes, 4096);
 		ExtZp_LogBlob(tag, buf, sizeof(buf));
@@ -286,6 +297,7 @@ int ExtChaseGlue_Ready(const void *level)
 	s_camGlue.ready = 0;
 	s_camGlue.teleport = 1;
 	s_camGlue.airTime = 0.0;
+	s_camGlueImgValid = 0;
 	if (!ExtZp_PortWanted())
 	{
 		return 0; // not a track of the port: nothing, no line
@@ -455,29 +467,31 @@ int ExtChaseGlue_Step(const void *level, const ExtChaseGlueIn *in, ExtChaseGlueO
 
 		if (log)
 		{
-			uint32_t head[4], args[17];
+			uint32_t head[5], args[17];
 			char note[160];
 
 			head[0] = (uint32_t)in->frame;
 			head[1] = 0u;
 			head[2] = (uint32_t)EXT_ZP_LOG_STEP_CAMERA;
 			head[3] = 0x00122430u;
+			head[4] = s_camGlueImgValid ? 1u : 0u; // version 2: delta
 			memset(args, 0, sizeof(args));
 			args[0] = s_camGlue.cam;
 			args[1] = CAM_GLUE_VIEW;
-			ExtZp_LogBegin(EXT_ZP_TAG('S', 'T', 'E', 'P'), head, 4);
+			ExtZp_LogBegin(EXT_ZP_TAG('S', 'T', 'E', 'P'), head, 5);
 			ExtZp_LogBlob(EXT_ZP_TAG('A', 'R', 'G', 'S'), args, sizeof(args));
 			snprintf(note, sizeof(note), "CAM=0x%08X KC=0x%08X S=0x%08X CLOCK=0x%08X VW=0x%08X", s_camGlue.cam, s_camGlue.kc, s_camGlue.s,
 			         s_camGlue.clock, CAM_GLUE_VIEW);
 			ExtZp_LogBlob(EXT_ZP_TAG('N', 'O', 'T', 'E'), note, (uint32_t)strlen(note));
-			ExtChaseGlue_LogPages(EXT_ZP_TAG('P', 'R', 'E', ' '));
+			ExtChaseGlue_LogPages(EXT_ZP_TAG('P', 'R', 'E', ' '), head[4] != 0u);
 		}
 		ExtZp_Cam_122430(&s_camGlue.ctx, s_camGlue.cam, CAM_GLUE_VIEW, 0u);
 		if (log)
 		{
 			const uint32_t ret[2] = {0u, 0u};
 
-			ExtChaseGlue_LogPages(EXT_ZP_TAG('P', 'O', 'S', 'T'));
+			ExtChaseGlue_LogPages(EXT_ZP_TAG('P', 'O', 'S', 'T'), 1);
+			s_camGlueImgValid = 1;
 			ExtZp_LogBlob(EXT_ZP_TAG('R', 'E', 'T', ' '), ret, sizeof(ret));
 			ExtZp_LogEnd();
 		}
