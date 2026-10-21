@@ -43,10 +43,14 @@ typedef struct
 	int ownAheadFrames, handoverSince, inFrames, occlAhead;
 	double kartLength;  // L, world units
 	double maxPullL, minEyeL, minEyeTubeL, grow, tubeRayL;
+	double upBlendS;  // s, the linear blend of the target up between off-zone (half world up) and zone (kart up)
+	double jumpMaxL;  // the eye moves at most this many kart lengths a frame (G1: 1 L)
+	int substeps;     // spring steps per frame
 } ExtCamModParams;
 
 global_variable const ExtCamModParams s_extCamModDefaults = {
-    .orientTau = 0.09, // critically damped: 37 % left after 2.15 tau = 0.19 s (original up 0.22 s, at 0.13 s, e-folding)
+    .orientTau = 0.06, // critically damped with the target's own turn fed forward: a turning target is followed
+                       // without lag, a jump settles to 37 % in 2.15 tau = 0.13 s (original at 0.13 s, up 0.22 s)
     .dNear = 195.0, .hNear = 77.0, .dFar = 237.0, .hFar = 90.0,
     .pivotAhead = 29.0, .lookAhead = 29.0,
     .speedLo = 0.2, .speedHi = 0.7,
@@ -55,6 +59,7 @@ global_variable const ExtCamModParams s_extCamModDefaults = {
     .ownAheadFrames = 25, .handoverSince = 44, .inFrames = 12, .occlAhead = 6,
     .kartLength = 89.9, // L (PLAN NL1 3a): length of the retail kart model of driver 0 in world units
     .maxPullL = 0.6, .minEyeL = 1.0, .minEyeTubeL = 0.6, .grow = 0.04, .tubeRayL = 4.0,
+    .upBlendS = 1.0, .jumpMaxL = 0.97, .substeps = 4,
 };
 
 typedef struct
@@ -72,6 +77,9 @@ global_variable struct
 	int lastZoneFrame; // -1 none on this level
 	int lastHotFrame;  // gGT->timer of the last frame in a zone or with a zone ahead
 	ExtCamQuat q;      // the smoothed kart orientation
+	ExtCamQuat qtPrev; // the target of the frame before (its turn is fed forward)
+	int haveQt;
+	double tUp;        // 0..1: share of the zone's target up (kart up) against the off-zone one
 	double omega[3];   // its angular velocity (rad/s, world)
 	double dCur, hCur;
 	double sigma;
@@ -79,7 +87,7 @@ global_variable struct
 	int havePrevKart;
 	double weight;
 	int reportOn;
-	u32 frames, owns, pulled, snaps, raised, blocked, tubeFrames, limited, halved, framingOut, lookaheadOwns;
+	u32 frames, owns, pulled, snaps, raised, blocked, tubeFrames, limited, halved, framingOut, lookaheadOwns, eyeClamped, eyeJumpKept;
 } s_extCamMod = {.lastZoneFrame = -1};
 
 // --------------------------------------------------------------------------
@@ -248,6 +256,43 @@ internal void ExtCamQ_SpringStep(ExtCamQuat *q, double omega[3], ExtCamQuat targ
 	*q = ExtCamQ_Norm(ExtCamQ_Mul(ExtCamQ_Exp(dv), *q));
 }
 
+// The same spring with the target's own angular velocity fed forward (the turn
+// from prevTarget to target in dt; a turn over 7 degrees a frame is a jump and
+// not fed forward), in `steps` sub-steps: a smoothly turning target is followed
+// without the lag of a plain spring.
+internal void ExtCamQ_SpringStepFF(ExtCamQuat *q, double omega[3], ExtCamQuat target, ExtCamQuat prevTarget, double tau, double dt, int steps)
+{
+	const double k = 1.0 / (tau * tau), c = 2.0 / tau, h = dt / (double)steps;
+	double wt[3];
+	int i, st;
+
+	ExtCamQ_Log(ExtCamQ_Mul(target, ExtCamQ_Conj(prevTarget)), wt);
+	if (sqrt(ExtCam_Dot(wt, wt)) > 7.0 * 3.14159265358979323846 / 180.0)
+	{
+		wt[0] = wt[1] = wt[2] = 0.0;
+	}
+	for (i = 0; i < 3; i++)
+	{
+		wt[i] /= dt;
+	}
+	for (st = 0; st < steps; st++)
+	{
+		// the target moves on with its own turn: at the end of this sub-step it is that far before `target`
+		const double back = -(dt - (double)(st + 1) * h);
+		const double bv[3] = {wt[0] * back, wt[1] * back, wt[2] * back};
+		const ExtCamQuat tgt = ExtCamQ_Norm(ExtCamQ_Mul(ExtCamQ_Exp(bv), target));
+		double e[3], dv[3];
+
+		ExtCamQ_Log(ExtCamQ_Mul(tgt, ExtCamQ_Conj(*q)), e);
+		for (i = 0; i < 3; i++)
+		{
+			omega[i] += (k * e[i] + c * (wt[i] - omega[i])) * h;
+			dv[i] = omega[i] * h;
+		}
+		*q = ExtCamQ_Norm(ExtCamQ_Mul(ExtCamQ_Exp(dv), *q));
+	}
+}
+
 // --------------------------------------------------------------------------
 // parameters (exttrack.json camera.module; missing keys: the defaults)
 
@@ -287,6 +332,9 @@ internal void ExtCamMod_ReadParams(void)
 	EXTCAM_MOD_NUM(minEyeTubeL, "min_eye_tube_l");
 	EXTCAM_MOD_NUM(grow, "grow");
 	EXTCAM_MOD_NUM(tubeRayL, "tube_ray_l");
+	EXTCAM_MOD_NUM(upBlendS, "up_blend_s");
+	EXTCAM_MOD_NUM(jumpMaxL, "jump_max_l");
+	EXTCAM_MOD_INT(substeps, "substeps");
 #undef EXTCAM_MOD_NUM
 #undef EXTCAM_MOD_INT
 	// never later than the gate's 45 frames, never shorter than a sane spring
@@ -294,14 +342,18 @@ internal void ExtCamMod_ReadParams(void)
 	p->orientTau = (p->orientTau < 0.03) ? 0.03 : p->orientTau;
 	p->inFrames = (p->inFrames < 1) ? 1 : p->inFrames;
 	p->kartLength = (p->kartLength < 1.0) ? 1.0 : p->kartLength;
+	p->upBlendS = (p->upBlendS < 0.05) ? 0.05 : p->upBlendS;
+	p->substeps = (p->substeps < 1) ? 1 : ((p->substeps > 16) ? 16 : p->substeps);
 }
 
 internal void ExtCamMod_Report(void)
 {
 	Platform_Log("[CTR ExtCam] module at exit: %u frame(s) owned in %u ownership(s) (%u begun by the look ahead), pulled in %u, "
-	             "snapped in %u, lifted %u, no free place %u, tube %u, step cut %u, halved %u, kart's middle outside the box %u\n",
+	             "snapped in %u, lifted %u, no free place %u, tube %u, step cut %u, halved %u, kart's middle outside the box %u, eye step "
+	             "shortened %u, eye step over the limit kept (else occluded) %u\n",
 	             s_extCamMod.frames, s_extCamMod.owns, s_extCamMod.lookaheadOwns, s_extCamMod.pulled, s_extCamMod.snaps, s_extCamMod.raised,
-	             s_extCamMod.blocked, s_extCamMod.tubeFrames, s_extCamMod.limited, s_extCamMod.halved, s_extCamMod.framingOut);
+	             s_extCamMod.blocked, s_extCamMod.tubeFrames, s_extCamMod.limited, s_extCamMod.halved, s_extCamMod.framingOut,
+	             s_extCamMod.eyeClamped, s_extCamMod.eyeJumpKept);
 }
 
 // 1 = a zone frame of the nav path at the kart lies within `frames` frames of
@@ -410,7 +462,7 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	int zone, grab, ahead, havePrev, framed, tail;
 	double P[3], n2[3], mid[3], vel[3], course[3], fT[3], uT[3], fS[3], uS[3], rS[3];
 	double pivot[3], rel[3], eyeWant[3], off[3], eye[3], E[3], T[3];
-	double step, dt;
+	double step, dt, prevEye[3];
 	ExtCamOrient retailO, prevO, outO;
 	int i;
 
@@ -483,6 +535,8 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		s_extCamMod.hCur = p->hNear;
 		s_extCamMod.q.w = 0.0; // set from the kart below
 		s_extCamMod.q.x = s_extCamMod.q.y = s_extCamMod.q.z = 0.0;
+		s_extCamMod.haveQt = 0;
+		s_extCamMod.tUp = (zone != 0) ? 1.0 : 0.0;
 		if (!s_extCamMod.reportOn)
 		{
 			s_extCamMod.reportOn = 1;
@@ -512,34 +566,63 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 	{
 		mid[i] = P[i] + 0.5 * EXT_CAM_KART_H * n2[i];
 	}
-	ExtCam_KartCourse(d, course);
+	dt = (double)gGT->elapsedTimeMS * 0.001;
+	dt = (dt < 1.0 / 120.0) ? (1.0 / 120.0) : ((dt > 0.1) ? 0.1 : dt);
+	// the target up: off a zone half world up (the original's m_PercentWorldUp 0.5), in a zone the kart's up; the
+	// share moves linearly over upBlendS (the original's 1 s; KA-T), continuously (no restart on a short visit)
+	s_extCamMod.tUp += ((zone != 0) ? 1.0 : -1.0) * dt / p->upBlendS;
+	s_extCamMod.tUp = (s_extCamMod.tUp < 0.0) ? 0.0 : ((s_extCamMod.tUp > 1.0) ? 1.0 : s_extCamMod.tUp);
 	{
-		const double a = ExtCam_Dot(course, n2);
+		double uN[3] = {n2[0], n2[1] + 1.0, n2[2]};
+
+		if (ExtCam_Norm(uN) < 1e-6)
+		{
+			memcpy(uN, n2, sizeof(uN));
+		}
+		for (i = 0; i < 3; i++)
+		{
+			uT[i] = (1.0 - s_extCamMod.tUp) * uN[i] + s_extCamMod.tUp * n2[i];
+		}
+		if (ExtCam_Norm(uT) < 1e-6)
+		{
+			memcpy(uT, n2, sizeof(uT));
+		}
+	}
+	// the course: the kart's moving direction (matrixMovingDir), across the target up
+	course[0] = d->matrixMovingDir.m[0][2] / 4096.0;
+	course[1] = d->matrixMovingDir.m[1][2] / 4096.0;
+	course[2] = d->matrixMovingDir.m[2][2] / 4096.0;
+	{
+		const double a = ExtCam_Dot(course, uT);
 
 		for (i = 0; i < 3; i++)
 		{
-			fT[i] = course[i] - a * n2[i];
+			fT[i] = course[i] - a * uT[i];
 		}
 	}
 	if (ExtCam_Norm(fT) < 1e-6)
 	{
 		// the course along the up: any direction across it
-		const double t[3] = {(fabs(n2[0]) < 0.9) ? 1.0 : 0.0, (fabs(n2[0]) < 0.9) ? 0.0 : 1.0, 0.0};
+		const double t[3] = {(fabs(uT[0]) < 0.9) ? 1.0 : 0.0, (fabs(uT[0]) < 0.9) ? 0.0 : 1.0, 0.0};
 
-		ExtCam_Cross(t, n2, fT);
+		ExtCam_Cross(t, uT, fT);
 		ExtCam_Norm(fT);
 	}
-	memcpy(uT, n2, sizeof(uT));
-	// 1. the smoothed orientation: quaternion spring (dt from the frame's milliseconds)
-	dt = (double)gGT->elapsedTimeMS * 0.001;
-	dt = (dt < 1.0 / 120.0) ? (1.0 / 120.0) : ((dt > 0.1) ? 0.1 : dt);
-	if (s_extCamMod.q.w == 0.0 && s_extCamMod.q.x == 0.0 && s_extCamMod.q.y == 0.0 && s_extCamMod.q.z == 0.0)
+	// 1. the smoothed orientation: quaternion spring with the target's turn fed forward
 	{
-		s_extCamMod.q = ExtCamQ_FromFrame(fT, uT);
-	}
-	else
-	{
-		ExtCamQ_SpringStep(&s_extCamMod.q, s_extCamMod.omega, ExtCamQ_FromFrame(fT, uT), p->orientTau, dt);
+		const ExtCamQuat qt = ExtCamQ_FromFrame(fT, uT);
+
+		if ((s_extCamMod.q.w == 0.0 && s_extCamMod.q.x == 0.0 && s_extCamMod.q.y == 0.0 && s_extCamMod.q.z == 0.0) || !s_extCamMod.haveQt)
+		{
+			s_extCamMod.q = qt;
+			s_extCamMod.omega[0] = s_extCamMod.omega[1] = s_extCamMod.omega[2] = 0.0;
+		}
+		else
+		{
+			ExtCamQ_SpringStepFF(&s_extCamMod.q, s_extCamMod.omega, qt, s_extCamMod.qtPrev, p->orientTau, dt, p->substeps);
+		}
+		s_extCamMod.qtPrev = qt;
+		s_extCamMod.haveQt = 1;
 	}
 	ExtCamQ_Frame(s_extCamMod.q, fS, uS);
 	ExtCam_Cross(uS, fS, rS);
@@ -561,7 +644,13 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		eyeWant[i] = pivot[i] + rel[i];
 		off[i] = eyeWant[i] - mid[i];
 	}
-	// 3. occlusion: the largest free share now and occlAhead frames ahead, at most maxPullL a frame inwards
+	havePrev = (s_extCam.prevFollowFrame == gGT->timer - 1);
+	for (i = 0; i < 3; i++)
+	{
+		prevEye[i] = (double)pb->matrix_Camera.t[i];
+	}
+	// 3. occlusion: the largest free share now and 3..15 frames ahead (so the pull-in starts early), moved inwards by
+	//    at most what the eye's step leaves beside the kart's own move (G1: eye step <= 1 L)
 	if (grab)
 	{
 		for (i = 0; i < 3; i++)
@@ -575,26 +664,43 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		const int tube = ExtCamMod_InTube(mid, rS, p->tubeRayL * p->kartLength);
 		const double minEye = (tube ? p->minEyeTubeL : p->minEyeL) * p->kartLength;
 		const double offLen = sqrt(ExtCam_Dot(off, off));
-		double aheadV[3], sFree = -1.0, sNow = -1.0, sNew;
-		int sIdx;
+		static const int horizons[4] = {3, 6, 10, 15};
+		double sFree = -1.0, sNow = -1.0, sNew;
+		int sIdx, hIdx;
 
-		for (i = 0; i < 3; i++)
-		{
-			aheadV[i] = vel[i] * (double)p->occlAhead;
-		}
 		s_extCamMod.tubeFrames += tube ? 1u : 0u;
 		for (sIdx = 0; sIdx < 8; sIdx++)
 		{
-			if ((sNow < 0.0) && ExtCamMod_EyeFree(mid, off, scales[sIdx], 0.0, uS, minEye, NULL, eye))
+			if (ExtCamMod_EyeFree(mid, off, scales[sIdx], 0.0, uS, minEye, NULL, eye))
 			{
 				sNow = scales[sIdx];
-			}
-			if ((sFree < 0.0) && ExtCamMod_EyeFree(mid, off, scales[sIdx], 0.0, uS, minEye, aheadV, eye))
-			{
-				sFree = scales[sIdx];
+				break;
 			}
 		}
-		sFree = (sFree < 0.0) ? sNow : ((sNow >= 0.0) && (sNow < sFree) ? sNow : sFree);
+		// the largest share free now and at every horizon ahead (occl_ahead scales the horizons: 6 = as listed)
+		sFree = sNow;
+		for (hIdx = 0; (hIdx < 4) && (sFree > 0.0); hIdx++)
+		{
+			double aheadV[3];
+			double sH = -1.0;
+
+			for (i = 0; i < 3; i++)
+			{
+				aheadV[i] = vel[i] * (double)horizons[hIdx] * (double)p->occlAhead / 6.0;
+			}
+			for (sIdx = 0; sIdx < 8; sIdx++)
+			{
+				if ((scales[sIdx] <= sFree + 1e-9) && ExtCamMod_EyeFree(mid, off, scales[sIdx], 0.0, uS, minEye, aheadV, eye))
+				{
+					sH = scales[sIdx];
+					break;
+				}
+			}
+			if (sH > 0.0)
+			{
+				sFree = sH;
+			}
+		}
 		if (sNow < 0.0)
 		{
 			// nothing free on the line: lifted along up, else the closest place (counted)
@@ -618,7 +724,10 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		}
 		else
 		{
-			const double maxStep = (offLen > 1e-6) ? (p->maxPullL * p->kartLength / offLen) : 1.0;
+			// inwards the eye moves with the kart: the step left beside the kart's move, at most maxPullL
+			const double budget = p->jumpMaxL * p->kartLength * 0.95 - sqrt(ExtCam_Dot(vel, vel));
+			const double cap = p->maxPullL * p->kartLength;
+			const double maxStep = (offLen > 1e-6) ? (((budget < 0.0) ? 0.0 : ((budget > cap) ? cap : budget)) / offLen) : 1.0;
 
 			sNew = s_extCamMod.sigma;
 			if (sNew > sFree)
@@ -662,13 +771,40 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		E[i] = (double)(&pb->pos.x)[i] + s_extCamMod.weight * (eye[i] - (double)(&pb->pos.x)[i]);
 		T[i] = mid[i] + p->lookAhead * fS[i];
 	}
+	// the eye's step against the eye drawn in the frame before: at most jumpMaxL; the shortened eye only when nothing
+	// lies between it and the kart's middle (0 occluded frames come first)
+	if (havePrev && !grab)
+	{
+		const double dv[3] = {E[0] - prevEye[0], E[1] - prevEye[1], E[2] - prevEye[2]};
+		const double dl = sqrt(ExtCam_Dot(dv, dv));
+		const double lim = p->jumpMaxL * p->kartLength;
+
+		if (dl > lim)
+		{
+			double e2[3], at, len, mv[3];
+
+			for (i = 0; i < 3; i++)
+			{
+				e2[i] = (double)lround(prevEye[i] + dv[i] * (lim - 0.5) / dl);
+				mv[i] = e2[i] - mid[i];
+			}
+			if (!ExtCam_MeasureOccluded(e2, mid, 0.5 * EXT_CAM_KART_H, &at, &len) && (sqrt(ExtCam_Dot(mv, mv)) >= 0.5 * EXT_CAM_KART_H))
+			{
+				memcpy(E, e2, sizeof(e2));
+				s_extCamMod.eyeClamped++;
+			}
+			else
+			{
+				s_extCamMod.eyeJumpKept++;
+			}
+		}
+	}
 	{
 		MATRIX m;
 
 		ConvertRotToMatrix(&m, &pb->rot);
 		ExtCam_OrientOfMatrix(&m, &retailO);
 	}
-	havePrev = (s_extCam.prevFollowFrame == gGT->timer - 1);
 	prevO = retailO;
 	if (havePrev)
 	{
@@ -829,6 +965,60 @@ internal int ExtCamMod_Selftest(int *n, int *failures)
 		{
 			(*failures)++;
 			printf("ext selftest cam module: over the top the up stepped %.2f deg at most and ended %.2f deg off\n", worst, ExtCam_AngleDeg(prevU, u0));
+		}
+	}
+	// the spring with the target's turn fed forward: a target turning 3 degrees a frame about the side (a loop) is
+	// followed within 1 degree after 20 frames (a plain spring of the same tau lags ~2 tau x rate), and a 90-degree
+	// jump still settles (not fed forward)
+	{
+		const double side[3] = {1.0, 0.0, 0.0};
+		const double f0[3] = {0.0, 0.0, 1.0}, u0[3] = {0.0, 1.0, 0.0};
+		ExtCamQuat q = ExtCamQ_FromFrame(f0, u0), prevT = q;
+		double omega[3] = {0.0, 0.0, 0.0}, worstLate = 0.0;
+		int k;
+
+		for (k = 1; k <= 80; k++)
+		{
+			const double ang = 3.0 * (double)k * 3.14159265358979323846 / 180.0;
+			double f[3], u[3], fs[3], us[3];
+			ExtCamQuat t;
+
+			ExtCam_Turn(f0, side, ang, f);
+			ExtCam_Turn(u0, side, ang, u);
+			t = ExtCamQ_FromFrame(f, u);
+			ExtCamQ_SpringStepFF(&q, omega, t, prevT, 0.06, 1.0 / 30.0, 4);
+			prevT = t;
+			ExtCamQ_Frame(q, fs, us);
+			if ((k > 20) && (ExtCam_AngleDeg(us, u) > worstLate))
+			{
+				worstLate = ExtCam_AngleDeg(us, u);
+			}
+		}
+		(*n)++;
+		if (worstLate > 1.0)
+		{
+			(*failures)++;
+			printf("ext selftest cam module: fed-forward spring lags %.2f deg behind a 3 deg/frame turn\n", worstLate);
+		}
+	}
+	{
+		const double f0[3] = {0.0, 0.0, 1.0}, u0[3] = {0.0, 1.0, 0.0}, u90[3] = {1.0, 0.0, 0.0};
+		const ExtCamQuat start = ExtCamQ_FromFrame(f0, u0), t = ExtCamQ_FromFrame(f0, u90);
+		ExtCamQuat q = start;
+		double omega[3] = {0.0, 0.0, 0.0}, fs[3], us[3];
+		int k;
+
+		ExtCamQ_SpringStepFF(&q, omega, t, start, 0.06, 1.0 / 30.0, 4);
+		for (k = 0; k < 30; k++)
+		{
+			ExtCamQ_SpringStepFF(&q, omega, t, t, 0.06, 1.0 / 30.0, 4);
+		}
+		ExtCamQ_Frame(q, fs, us);
+		(*n)++;
+		if (ExtCam_AngleDeg(us, u90) > 0.5)
+		{
+			(*failures)++;
+			printf("ext selftest cam module: fed-forward spring does not settle after a jump (%.2f deg left)\n", ExtCam_AngleDeg(us, u90));
 		}
 	}
 	return *failures - before;
