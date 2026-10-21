@@ -4,7 +4,7 @@ CTR Reload Edition has two container types. Both share one envelope:
 
 | Extension | Content | Written by | Read by |
 |---|---|---|---|
-| `.rldtrack` | a custom track, format 4.2 (frozen); since 4.4 also an engine track without LEV and VRM (provisional, section 2a) | `rldpack build`, `rldpack make`; engine tracks: a development packer outside this tree | the game, `rldpack info`, `rldpack verify` |
+| `.rldtrack` | a custom track, format 4.2 (frozen); since 4.4 also an engine track without LEV and VRM (provisional, section 2a) | `rldpack build`, `rldpack make`; engine tracks: `rldpack make-engine` | the game, `rldpack info`, `rldpack verify` |
 | `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` (also through Reload Studio's Character page) | the game (`characters` folder), `rldpack info`, `rldpack verify` |
 
 The game reads every `.rldchar` of its `characters` folder at start; see
@@ -358,6 +358,10 @@ A track the engine draws from its own data, without LEV and VRM. Major 4, minor 
 with bit 0x2 and neither LEVD nor VRMD the file is an engine track, otherwise classic (and needs LEVD and VRMD as
 always). An older reader (4.0 to 4.3) refuses an engine track with NEEDS NEWER at step 8, before it misses LEVD. A
 classic track is written exactly as before.
+
+`rldpack make-engine <folder> <out.rldtrack>` packs a folder of the external track (`exttrack.json` and the files its
+sections name: `render.glb`, `sky.glb`, `collision.glb`, `music.file`). Each section goes into its section chunk with its
+source bytes; `physics` is split between PHYS and ZONE; the packer checks the written file with the game's reader.
 
 | Chunk | Required | Limit | Content |
 |---|---|---|---|
