@@ -561,6 +561,13 @@ int ExtZc_Answer(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResu
 		}
 		if ((in->func == 0x0033C3B0u) || (in->func == 0x004BA240u))
 			return 1;
+		// the subspace's virtual function +0x20 (asked by the contact solver 0x3B1960): the detector's tolerance,
+		// in the source 0x3B2600 -> 0x380F80 = f32 [[[sub + 0x70] + 0x14] + 0x14] (0 without a detector); the port's own
+		if (in->func == 0x003B2600u)
+		{
+			out->f0 = ExtZp_Step_3b2600(c, in->a[0]);
+			return 1;
+		}
 		return 0;
 	}
 	if (kind != EXT_ZP_Q_COLLIDE)
