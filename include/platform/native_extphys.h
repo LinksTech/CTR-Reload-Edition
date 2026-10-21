@@ -98,6 +98,11 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3]);
 // part; 1 = in a zone with maglev_forces and kartState KS_NORMAL (*outX = the side
 // velocity the game then keeps instead of its own side friction), 0 = untouched.
 int ExtPhys_ZoneSideGrip(const struct Driver *d, int x, int y, int z, int gravityX, int *outX);
+// "maglev_boxes_win": 1 (with maglev_volumes): while a driver is inside the
+// maglev box that switched its zone, the box decides and the surface does not
+// switch it back; out of every box of that kind the surface rule holds again.
+// Without the key (0) the frame's surface has the last word as before.
+//   [CTR ExtZone] seat S out of the on|off box frame F
 // Z-e: speed <-> velocity in the surface frame of AxisAngle1 (right, normal,
 // forward at heading 0, the convention of VehPhysForce_RotAxisAngle); 1 = in a
 // zone (converted), 0 = untouched.

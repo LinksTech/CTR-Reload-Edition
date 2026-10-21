@@ -149,6 +149,10 @@ typedef struct
 	// the source game's force sizes in a zone (physics.maglev_forces, fixup
 	// round 2): all keys or none
 	int forcesSet;
+	// physics.maglev_boxes_win: 1 = inside the maglev box that switched it the
+	// box decides the zone, not the surface (the source game's box test comes
+	// before the force in the same update, 0x33AFA0 -> 0x190670)
+	int boxesWin;
 	double fGravity;     // |g| m/s^2 (0x336360 / 0x336640)
 	double fDown;        // m_DownforceMagLev, times |g| (0x195E50 K2)
 	double fDownAir;     // m_DownforceInAirMagLev
@@ -354,6 +358,15 @@ internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int 
 				p->badValues++;
 			}
 			p->splineCount++;
+		}
+	}
+	else if (strcmp(name, "maglev_boxes_win") == 0)
+	{
+		int v = 0;
+
+		if (ExtPhys_ReadInt(doc, key, 0, 1, &v, p) == 1)
+		{
+			p->boxesWin = v;
 		}
 	}
 	else if (strcmp(name, "maglev_forces") == 0)
@@ -625,7 +638,7 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 			}
 		}
 		else if ((strcmp(name, "maglev_volumes") == 0) || (strcmp(name, "maggrav_volumes") == 0) || (strcmp(name, "maggrav_splines") == 0) ||
-		         (strcmp(name, "maglev_low_speed") == 0) || (strcmp(name, "maglev_forces") == 0))
+		         (strcmp(name, "maglev_low_speed") == 0) || (strcmp(name, "maglev_forces") == 0) || (strcmp(name, "maglev_boxes_win") == 0))
 		{
 			ExtPhys_ReadAntigrav(doc, name, key, p);
 		}
@@ -781,8 +794,9 @@ void ExtPhys_OnLevelLoaded(void)
 		{
 			on += p->maglev[v].on;
 		}
-		Platform_Log("[CTR ExtPhys] maglev volumes %d (on %d, off %d), maggrav volumes %d, splines %d (%d nodes), low speed %d%s\n", p->maglevCount, on,
-		             p->maglevCount - on, p->maggravCount, p->splineCount, p->nodeCount, p->lowSpeedSet ? p->lowSpeed : 0, p->lowSpeedSet ? "" : " (not set)");
+		Platform_Log("[CTR ExtPhys] maglev volumes %d (on %d, off %d), maggrav volumes %d, splines %d (%d nodes), low speed %d%s, %s\n", p->maglevCount, on,
+		             p->maglevCount - on, p->maggravCount, p->splineCount, p->nodeCount, p->lowSpeedSet ? p->lowSpeed : 0, p->lowSpeedSet ? "" : " (not set)",
+		             p->boxesWin ? "boxes win" : "the surface has the last word");
 		for (int s = 0; s < p->splineCount; s++)
 		{
 			Platform_Log("[CTR ExtPhys] maggrav spline %d: type %d, %d node(s)\n", s, p->splines[s].type, p->splines[s].count);
@@ -909,6 +923,7 @@ typedef struct
 	int leftFrame; // the frame the driver left a zone (for the "after zone" line), 0 none
 	int leftZone;
 	int logged;    // the "after zone" line is written
+	int boxHold;   // physics.maglev_boxes_win: +1 held in the zone by an "on" box, -1 held out by an "off" box, 0 none
 } ExtPhysSeatZone;
 
 global_variable ExtPhysSeatZone s_extPhysZone[EXT_PHYS_SEATS];
@@ -1018,7 +1033,7 @@ internal void ExtPhys_ZoneStep(int seat, const struct Driver *d, int grounded, i
 	ExtPhysSeatZone *s = &s_extPhysZone[seat];
 	const int z = (id > 0) ? ExtPhys_ZoneIndex(id) : -1;
 
-	if (grounded && (z >= 0))
+	if (grounded && (z >= 0) && !(s->boxHold < 0))
 	{
 		if (!s->inZone || (s->zone != z + 1))
 		{
@@ -1039,10 +1054,20 @@ internal void ExtPhys_ZoneStep(int seat, const struct Driver *d, int grounded, i
 	{
 		return;
 	}
-	if (grounded)
+	if (grounded && (s->boxHold > 0))
+	{
+		// held in the zone by its "on" box: the zone's up stays
+		s->airMs = 0;
+		return;
+	}
+	if (grounded && (z < 0))
 	{
 		ExtPhys_LeaveZone(seat, s, d, "ground without a zone");
 		return;
+	}
+	if (grounded)
+	{
+		return; // held out of the zone by its "off" box
 	}
 	s->airMs += ms;
 	if (s->airMs > s_extPhys.p.zones[s->zone - 1].airHoldMs)
@@ -1352,13 +1377,41 @@ internal int ExtPhys_SideGripWith(const ExtPhysParams *p, int ground, int brakin
 // "on" box over a road without a zone gives no zone, an "off" box over the
 // zone's own surface does not take the driver out. Only the player physics
 // (ExtPhys_AfterGroundSearch); without boxes nothing of this runs.
+// With physics.maglev_boxes_win the box decides instead, as the source game's
+// update tests its boxes right before it computes the frame's force (0x1911F0
+// before 0x195E50 in 0x190670, one call of the Havok action 0x33AFA0): while
+// the driver is inside the box that switched it, the surface does not switch
+// it back (ExtPhys_ZoneStep, boxHold); once it is out of every box of that
+// kind the surface rule holds again (the source game's contact switch, Z9).
 // grounded / zoneGround: the driver stands on a record / on one of a zone.
 internal void ExtPhys_MaglevBoxes(int seat, const struct Driver *d, int grounded, int zoneGround)
 {
 	ExtPhysSeatZone *s = &s_extPhysZone[seat];
 	const double pos[3] = {d->posCurr.x / 256.0, d->posCurr.y / 256.0, d->posCurr.z / 256.0};
 
-	if ((s_extPhys.p.maglevCount == 0) || (s_extPhys.p.zoneCount == 0) || (s->inZone ? zoneGround : (grounded && !zoneGround)))
+	if ((s_extPhys.p.maglevCount == 0) || (s_extPhys.p.zoneCount == 0))
+	{
+		return;
+	}
+	if (s_extPhys.p.boxesWin)
+	{
+		if (s->boxHold != 0)
+		{
+			int inside = 0;
+
+			for (int v = 0; v < s_extPhys.p.maglevCount; v++)
+			{
+				inside |= (s_extPhys.p.maglev[v].on == ((s->boxHold > 0) ? 1 : 0)) && ExtPhys_InBox(&s_extPhys.p.maglev[v].box, pos);
+			}
+			if (inside)
+			{
+				return;
+			}
+			Platform_Log("[CTR ExtZone] seat %d out of the %s box frame %d\n", seat, (s->boxHold > 0) ? "on" : "off", s_extPhysRun.tick + 2);
+			s->boxHold = 0;
+		}
+	}
+	else if (s->inZone ? zoneGround : (grounded && !zoneGround))
 	{
 		return;
 	}
@@ -1373,8 +1426,10 @@ internal void ExtPhys_MaglevBoxes(int seat, const struct Driver *d, int grounded
 		if (s->inZone)
 		{
 			ExtPhys_LeaveZone(seat, s, d, "maglev-off box");
+			s->boxHold = s_extPhys.p.boxesWin ? -1 : 0;
 			return;
 		}
+		s->boxHold = s_extPhys.p.boxesWin ? 1 : 0;
 		s->inZone = 1;
 		s->zone = 1;
 		s->up = (SVec3){0, 4096, 0};
@@ -1434,6 +1489,7 @@ void ExtPhys_SeedDriver(struct Driver *d, const SVec3 *up, int zone)
 	s->zone = z + 1;
 	s->airMs = 0;
 	s->leftFrame = 0;
+	s->boxHold = 0;
 	s->up = ExtPhys_Normalize(up->x, up->y, up->z);
 	d->normalVecUP = s->up;
 	d->AxisAngle1_normalVec = s->up;
@@ -2279,6 +2335,45 @@ int ExtPhys_Selftest(void)
 		s->zone = 1;
 		ExtPhys_MaglevBoxes(0, &tb, 0, 0);
 		ExtPhys_TestCheck(s->inZone, "in a zone an on box changes nothing (hysteresis)", &checks, &failures);
+		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+	}
+	{
+		// physics.maglev_boxes_win: inside the box that switched it the box
+		// decides, the surface again once out of every box of that kind
+		static struct Driver tw;
+		ExtPhysSeatZone *s = &s_extPhysZone[0];
+		const SVec3 n = {0, 4096, 0};
+
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		ExtPhys_TestRead("{\"physics\": {\"zones\": [{\"id\": 5}], \"maglev_boxes_win\": 1, \"maglev_volumes\": [{\"name\": \"on\", \"kind\": \"on\", "
+		                 "\"center\": [0, 0, 0], \"axes\": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], \"half\": [100, 100, 100]}, {\"name\": \"off\", \"kind\": "
+		                 "\"off\", \"center\": [1000, 0, 0], \"axes\": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], \"half\": [100, 100, 100]}]}}",
+		                 &s_extPhys.p);
+		ExtPhys_TestCheck(s_extPhys.p.boxesWin == 1, "maglev_boxes_win read", &checks, &failures);
+		memset(&tw, 0, sizeof(tw));
+		tw.posCurr.x = 1000 << 8;
+		s->inZone = 1;
+		s->zone = 1;
+		ExtPhys_MaglevBoxes(0, &tw, 1, 1);
+		ExtPhys_ZoneStep(0, &tw, 1, 5, n, 33);
+		ExtPhys_TestCheck(!s->inZone && (s->boxHold < 0), "boxes win: an off box over the zone's surface takes the driver out and holds it out", &checks,
+		                  &failures);
+		tw.posCurr.x = 1200 << 8;
+		ExtPhys_MaglevBoxes(0, &tw, 1, 1);
+		ExtPhys_ZoneStep(0, &tw, 1, 5, n, 33);
+		ExtPhys_TestCheck(s->inZone && (s->boxHold == 0), "boxes win: out of the off box the zone's surface takes it in again", &checks, &failures);
+		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		tw.posCurr.x = 50 << 8;
+		ExtPhys_MaglevBoxes(0, &tw, 1, 0);
+		ExtPhys_ZoneStep(0, &tw, 1, 0, n, 33);
+		ExtPhys_TestCheck(s->inZone && (s->boxHold > 0), "boxes win: an on box over a road without a zone puts the driver in and holds it", &checks,
+		                  &failures);
+		tw.posCurr.x = 500 << 8;
+		ExtPhys_MaglevBoxes(0, &tw, 1, 0);
+		ExtPhys_ZoneStep(0, &tw, 1, 0, n, 33);
+		ExtPhys_TestCheck(!s->inZone && (s->boxHold == 0), "boxes win: out of the on box a road without a zone takes it out", &checks, &failures);
 		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
 		memset(&s_extPhys, 0, sizeof(s_extPhys));
 	}
