@@ -396,6 +396,14 @@ void ExtPortal_OnLogicFrame(void)
 			d->AxisAngle3_normalVec = up;
 			d->AxisAngle4_normalVec = up;
 			VehPhysForce_RotAxisAngle(&d->matrixFacingDir, CTR_VECTOR_DATA(&(d->AxisAngle2_normalVec)), d->rotCurr.y);
+			// The way on in the game's own terms: the next frame rebuilds the velocity
+			// from d->speed and axisRotationX/Y (VehPhysForce_ConvertSpeedToVecOut), so
+			// those come from the new velocity - as the game derives them after its
+			// collision (VehPhysCrash_ConvertVecToSpeed, against the new moving frame);
+			// with the old ones the kart flew on in the gate's heading (run fr2/b3-v1:
+			// sideways out of exit 1 into a kill face, grabbed 14 frames later).
+			VehPhysForce_RotAxisAngle(&d->matrixMovingDir, CTR_VECTOR_DATA(&(d->AxisAngle1_normalVec)), d->angle);
+			VehPhysCrash_ConvertVecToSpeed(d, &d->velocity);
 			if (d->instSelf != NULL)
 			{
 				memcpy(d->instSelf->matrix.m, d->matrixFacingDir.m, sizeof(d->instSelf->matrix.m));
