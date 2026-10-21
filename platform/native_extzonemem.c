@@ -15,6 +15,7 @@ struct ExtZpMem
 	uint32_t *present; // the indices of the present pages, in the order they came
 	uint32_t count, cap;
 	uint32_t faults;
+	uint32_t lastFault; // the address of the last read of an absent page
 };
 
 static int ExtZpMem_CmpIndex(const void *a, const void *b)
@@ -47,6 +48,7 @@ void ExtZpMem_Clear(ExtZpMem *m)
 	}
 	m->count = 0;
 	m->faults = 0;
+	m->lastFault = 0;
 }
 
 void ExtZpMem_Destroy(ExtZpMem *m)
@@ -57,6 +59,11 @@ void ExtZpMem_Destroy(ExtZpMem *m)
 	free(m->pages);
 	free(m->present);
 	free(m);
+}
+
+uint32_t ExtZpMem_LastFault(const ExtZpMem *m)
+{
+	return m->lastFault;
 }
 
 uint32_t ExtZpMem_Faults(const ExtZpMem *m)
@@ -123,6 +130,7 @@ void ExtZpMem_Read(ExtZpMem *m, uint32_t addr, void *dst, uint32_t n)
 		{
 			memset(d, 0, k);
 			m->faults++;
+			m->lastFault = addr;
 		}
 		addr += k;
 		d += k;

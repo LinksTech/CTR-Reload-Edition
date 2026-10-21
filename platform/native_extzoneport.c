@@ -510,8 +510,10 @@ internal void ExtZp_AnswerRay(ExtZpCtx *c, const ExtZpQueryArgs *in, ExtZpQueryR
 
 // The query callback of the port inside Reload (ExtZp_CtxInit with it). Every
 // query goes to the step log when it is on.
+global_variable u64 s_extZpQueryTicks[8]; // time in Reload's answers by kind (performance counter), the coupling's tick line
 void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResult *out)
 {
+	const u64 queryStart = SDL_GetPerformanceCounter();
 	s_extZpAnsLen = 0;
 	s_extZpAnsWrites = 0;
 	memset(out, 0, sizeof(*out));
@@ -550,6 +552,7 @@ void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQue
 			ExtZp_LogBlob(EXT_ZP_TAG('Q', 'R', 'Y', ' '), blob, (uint32_t)sizeof(head) + s_extZpAnsLen);
 		}
 	}
+	s_extZpQueryTicks[(kind > 0 && kind < 7) ? kind : 7] += SDL_GetPerformanceCounter() - queryStart;
 }
 
 // ------------------------------------------------------------------ selftest
@@ -1003,16 +1006,19 @@ internal void ExtZpc_Inputs(const struct Driver *d)
 	double steer = 0.0;
 	const uint32_t in = s_extZpc.input;
 
-	if ((held & BTN_LEFT) != 0)
-		steer = 1.0; // the source turns left on +1 (probe, slot7: +1 -> counter-clockwise about up)
-	else if ((held & BTN_RIGHT) != 0)
+	// +1 turns the source's kart counter-clockwise about its up (probe on slot 7), which in Reload's
+	// world (as the track is converted and drawn) is a turn to the right: run nl2/m3-kopplung2 had
+	// RIGHT = -1 and the kart turned away from the autopilot's aim for 54 ticks in a row
+	if ((held & BTN_RIGHT) != 0)
+		steer = 1.0;
+	else if ((held & BTN_LEFT) != 0)
 		steer = -1.0;
 	else
 	{
 		const int x = (int)pad->stickLX - 0x80;
 		if ((x > 8) || (x < -8))
 		{
-			steer = -(double)x / 127.0;
+			steer = (double)x / 127.0;
 			steer = (steer > 1.0) ? 1.0 : ((steer < -1.0) ? -1.0 : steer);
 		}
 	}
@@ -1136,9 +1142,12 @@ internal void ExtZpc_LogPage(uint32_t pageAddr, uint8_t *bytes, void *user)
 	ExtZp_LogBlob(*(const uint32_t *)user, blob, sizeof(blob));
 }
 
+global_variable u64 s_extZpcTickTicks[3]; // step, log, write-back (performance counter) since the last tick line
 internal void ExtZpc_Tick(struct Driver *d)
 {
 	const int log = ExtZp_LogOn();
+	const u64 t0 = SDL_GetPerformanceCounter();
+	u64 t1, t2;
 
 	ExtZpc_Inputs(d);
 	if (log)
@@ -1156,8 +1165,12 @@ internal void ExtZpc_Tick(struct Driver *d)
 		ExtZp_LogBlob(EXT_ZP_TAG('A', 'R', 'G', 'S'), args, sizeof(args));
 		ExtZpMem_ForEachPage(s_extZpc.m, ExtZpc_LogPage, (void *)&pre);
 	}
+	t1 = SDL_GetPerformanceCounter();
 	ExtZp_Step_336b60(&s_extZpc.c, s_extZpc.world, s_extZpc.dt);
+	t2 = SDL_GetPerformanceCounter();
 	s_extZpc.steps++;
+	s_extZpcTickTicks[1] += t1 - t0; // the log before the step (pages)
+	s_extZpcTickTicks[0] += t2 - t1; // the step with its queries
 	if (log)
 	{
 		const uint32_t post = EXT_ZP_TAG('P', 'O', 'S', 'T');
@@ -1168,8 +1181,17 @@ internal void ExtZpc_Tick(struct Driver *d)
 		s_extZpcDelta = 1;
 	}
 	ExtZpc_WriteBack(d);
+	s_extZpcTickTicks[2] += SDL_GetPerformanceCounter() - t2; // the log after the step and the write-back
 	if ((s_extZpc.steps % 30u) == 1u)
 	{
+		const double ms = 1000.0 / (double)SDL_GetPerformanceFrequency();
+		const double n = (s_extZpc.steps > 1u) ? 30.0 : 1.0;
+		Platform_Log("[CTR ExtZp] port time per tick (ms, mean of %d): step %.3f (collide %.3f, ray %.3f, material %.3f, other %.3f), log+write-back %.3f; last fault 0x%08x\n",
+		             (int)n, s_extZpcTickTicks[0] * ms / n, s_extZpQueryTicks[EXT_ZP_Q_COLLIDE] * ms / n, s_extZpQueryTicks[EXT_ZP_Q_RAY] * ms / n,
+		             s_extZpQueryTicks[EXT_ZP_Q_MATERIAL] * ms / n, s_extZpQueryTicks[7] * ms / n,
+		             (s_extZpcTickTicks[1] + s_extZpcTickTicks[2]) * ms / n, (unsigned)ExtZpMem_LastFault(s_extZpc.m));
+		memset(s_extZpcTickTicks, 0, sizeof(s_extZpcTickTicks));
+		memset(s_extZpQueryTicks, 0, sizeof(s_extZpQueryTicks));
 		const ExtZpMem *m = s_extZpc.m;
 		Platform_Log("[CTR ExtZp] port tick %u frame %d pos %d %d %d vel %d %d %d state %u ground %u maglev %u spline %d speed %.2f faults %u leaves %d\n",
 		             (unsigned)s_extZpc.steps, (int)sdata->gGT->timer, d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8, d->velocity.x, d->velocity.y,

@@ -24,6 +24,7 @@ ExtZpMem *ExtZpMem_Create(void);
 void ExtZpMem_Destroy(ExtZpMem *m);
 void ExtZpMem_Clear(ExtZpMem *m);                 // every page away
 uint32_t ExtZpMem_Faults(const ExtZpMem *m);
+uint32_t ExtZpMem_LastFault(const ExtZpMem *m); // the address of the last fault (0 none)
 // The page holding addr (4 KB, NULL if absent and create is 0).
 uint8_t *ExtZpMem_Page(ExtZpMem *m, uint32_t addr, int create);
 // Calls fn for every page present (ascending addresses).
