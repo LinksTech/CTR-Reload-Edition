@@ -969,7 +969,6 @@ void ExtTrack_OnRaceStart(void)
 		return;
 	}
 	ExtCrates_OnRaceStart();
-	ExtPhys_OnRaceStart();
 }
 
 void ExtTrack_OnRestart(void)
