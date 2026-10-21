@@ -146,6 +146,17 @@ typedef struct
 	double nodes[EXT_PHYS_SPLINE_NODES_MAX][6]; // position (Reload units), direction
 	int lowSpeedSet;
 	int lowSpeed; // the game's speed units (d->speed)
+	// the source game's force sizes in a zone (physics.maglev_forces, fixup
+	// round 2): all keys or none
+	int forcesSet;
+	double fGravity;     // |g| m/s^2 (0x336360 / 0x336640)
+	double fDown;        // m_DownforceMagLev, times |g| (0x195E50 K2)
+	double fDownAir;     // m_DownforceInAirMagLev
+	double fDownAirTime; // m_DownforceMagLevAirTime s (after a jump)
+	double fLat;         // m_NormalFriction lat m/s^2 (0x195CE0 -> 0x195900)
+	double fLatHiTurn;   // m_HiTurnLatFriction lat
+	double fHiTurnCos;   // cos m_HiTurnStartAngle (the loader's table, 0x19A9E0)
+	double fLatAir;      // m_InAirFriction lat (0x1936B0 -> 0x195900)
 } ExtPhysParams;
 
 global_variable struct
@@ -344,6 +355,57 @@ internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int 
 			}
 			p->splineCount++;
 		}
+	}
+	else if (strcmp(name, "maglev_forces") == 0)
+	{
+		// {"gravity", "downforce", "downforce_air", "downforce_air_time", "lat_friction",
+		//  "lat_friction_hi_turn", "hi_turn_cos", "lat_friction_air"}: every key a number
+		// in its range, else none is taken
+		static const struct
+		{
+			const char *key;
+			double lo, hi;
+		} k_keys[] = {{"gravity", 0.1, 100.0},       {"downforce", 0.0, 100.0},           {"downforce_air", 0.0, 100.0},
+		              {"downforce_air_time", 0.0, 10.0}, {"lat_friction", 0.0, 1000.0},  {"lat_friction_hi_turn", 0.0, 1000.0},
+		              {"hi_turn_cos", -1.0, 1.0},     {"lat_friction_air", 0.0, 1000.0}};
+		double v[8];
+		int ok = ExtJson_Type(doc, key) == EXT_JSON_OBJECT;
+
+		for (int k = 0; ok && (k < 8); k++)
+		{
+			const int n = ExtJson_Get(doc, key, k_keys[k].key);
+
+			ok = (n >= 0) && (ExtJson_Type(doc, n) == EXT_JSON_NUMBER);
+			v[k] = ok ? ExtJson_Number(doc, n, 0.0) : 0.0;
+			ok = ok && (v[k] >= k_keys[k].lo) && (v[k] <= k_keys[k].hi);
+		}
+		for (int k = ok ? ExtJson_First(doc, key) : -1; k >= 0; k = ExtJson_Next(doc, k))
+		{
+			int known = 0;
+
+			for (int j = 0; j < 8; j++)
+			{
+				known |= (doc->nodes[k].key != NULL) && (strcmp(doc->nodes[k].key, k_keys[j].key) == 0);
+			}
+			if (!known)
+			{
+				p->unknownKeys++;
+			}
+		}
+		if (!ok)
+		{
+			p->badValues++;
+			return;
+		}
+		p->forcesSet = 1;
+		p->fGravity = v[0];
+		p->fDown = v[1];
+		p->fDownAir = v[2];
+		p->fDownAirTime = v[3];
+		p->fLat = v[4];
+		p->fLatHiTurn = v[5];
+		p->fHiTurnCos = v[6];
+		p->fLatAir = v[7];
 	}
 	else
 	{
@@ -563,7 +625,7 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 			}
 		}
 		else if ((strcmp(name, "maglev_volumes") == 0) || (strcmp(name, "maggrav_volumes") == 0) || (strcmp(name, "maggrav_splines") == 0) ||
-		         (strcmp(name, "maglev_low_speed") == 0))
+		         (strcmp(name, "maglev_low_speed") == 0) || (strcmp(name, "maglev_forces") == 0))
 		{
 			ExtPhys_ReadAntigrav(doc, name, key, p);
 		}
@@ -725,6 +787,12 @@ void ExtPhys_OnLevelLoaded(void)
 		{
 			Platform_Log("[CTR ExtPhys] maggrav spline %d: type %d, %d node(s)\n", s, p->splines[s].type, p->splines[s].count);
 		}
+	}
+	if (p->forcesSet)
+	{
+		Platform_Log("[CTR ExtPhys] maglev forces: gravity %.3f m/s2, downforce %.2f (air %.2f after %.2f s), lat friction %.1f (hi turn %.1f below cos %.6f, "
+		             "air %.1f) m/s2\n",
+		             p->fGravity, p->fDown, p->fDownAir, p->fDownAirTime, p->fLat, p->fLatHiTurn, p->fHiTurnCos, p->fLatAir);
 	}
 	for (int v = 0; v < p->volumeCount; v++)
 	{
@@ -1000,6 +1068,11 @@ typedef struct
 	int fromSpline; // the last frame's gravity came from the spline (log only)
 	int gravFrame;  // the frame of the last zone gravity (log frame; read by ExtPhys_ProbeState only)
 	SVec3 gravDir;  // its direction (4096, "down")
+	// physics.maglev_forces: the time in the air (ms, 0 on the ground) and whether
+	// the air began with a jump (the source game's +0x498 and +0x490 > 0, K2)
+	int airMs;
+	int jumped;
+	int gravUnits;  // the last zone gravity per frame of maglev_forces (log only)
 } ExtPhysMag;
 
 global_variable ExtPhysMag s_extPhysMag[EXT_PHYS_SEATS];
@@ -1194,6 +1267,82 @@ internal int ExtPhys_SplineGravityWith(const ExtPhysParams *p, const ExtPhysMag 
 	return 1;
 }
 
+// THE SOURCE GAME'S FORCE SIZES IN A ZONE (fixup round 2, physics.maglev_forces).
+// The game's units: a velocity unit is
+// 1000 / 8192 units per second (posCurr << 8 moves by v * ms / 32 a frame), 64
+// units a metre, so a m/s^2 changes the velocity by 0.524288 units per ms.
+#define EXT_PHYS_MPS2_PER_MS (64.0 * 8192.0 / 1000000.0)
+
+// K2/K3/K6 (0x195E50): the zone gravity of a frame, the game's velocity units
+// (negative = along "down"): s * |g| with s = downforce on the ground; in the air
+// downforce_air, but downforce again once a jump is older than
+// downforce_air_time; in the air times the gravity volume's share (K3).
+internal int ExtPhys_MaglevGravityWith(const ExtPhysParams *p, ExtPhysMag *m, int ground, int jumpStart, int volumePercent, int ms)
+{
+	double s;
+
+	if (ground)
+	{
+		m->airMs = 0;
+		m->jumped = 0;
+		s = p->fDown;
+	}
+	else
+	{
+		if (m->airMs == 0)
+		{
+			m->jumped = jumpStart; // the first frame in the air
+		}
+		m->airMs += ms;
+		s = (m->jumped && ((double)m->airMs > p->fDownAirTime * 1000.0)) ? p->fDown : p->fDownAir;
+		s *= (double)volumePercent / (double)EXT_PHYS_GRAVITY_NEUTRAL;
+	}
+	m->gravUnits = -(int)floor(s * p->fGravity * EXT_PHYS_MPS2_PER_MS * (double)ms + 0.5);
+	return m->gravUnits;
+}
+
+// 0x195900 with the parameters of 0x195CE0 (ground) / 0x1936B0 (air): the
+// sideways velocity (along the kart's right) after the frame. The source game
+// takes its grip from the velocity before the frame - the force that would
+// cancel it, held within +-lat - and adds the gravity of the frame on top:
+//   x' = x - clampTowardsZero(x, lat * dt) + gravityX
+// lat: on the ground lat_friction, lat_friction_hi_turn when forward . unit
+// velocity <= hi_turn_cos, 0 while braking (times 1 - brake); in the air
+// lat_friction_air. x, y, z the velocity in the kart's frame (game units).
+internal int ExtPhys_SideGripWith(const ExtPhysParams *p, int ground, int braking, int x, int y, int z, int gravityX, int ms)
+{
+	const double len = sqrt((double)x * x + (double)y * y + (double)z * z);
+	double lat;
+	int f;
+
+	if (!ground)
+	{
+		lat = p->fLatAir;
+	}
+	else if (braking)
+	{
+		lat = 0.0;
+	}
+	else
+	{
+		lat = ((len > 0.0) && ((double)z / len <= p->fHiTurnCos)) ? p->fLatHiTurn : p->fLat;
+	}
+	f = (int)floor(lat * EXT_PHYS_MPS2_PER_MS * (double)ms + 0.5);
+	if (x > f)
+	{
+		x -= f;
+	}
+	else if (x < -f)
+	{
+		x += f;
+	}
+	else
+	{
+		x = 0;
+	}
+	return x + gravityX;
+}
+
 // THE MAGLEV BOXES (night run 1, NL1_M1_SPEZ.md Z2). The source game switches
 // its anti-gravity state also by boxes: a driver outside a zone that is in a
 // "maglev-on" box enters the track's first zone (its up stays world up until
@@ -1334,6 +1483,16 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3])
 		return 0;
 	}
 	g = CTR_MipsDiv(CTR_MipsMulLo(gravity, s_extPhys.p.zones[s->zone - 1].gravityPercent), EXT_PHYS_GRAVITY_NEUTRAL);
+	if (s_extPhys.p.forcesSet)
+	{
+		// the source game's size instead of the game's own gravity (fixup round 2)
+		const int seat = d->driverID;
+		const int vol = s_extPhysVolumeSeat[seat];
+
+		g = ExtPhys_MaglevGravityWith(&s_extPhys.p, &s_extPhysMag[seat], (d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0,
+		                              (d->actionsFlagSet & ACTION_JUMP_STARTED) != 0,
+		                              (vol != 0) ? s_extPhys.p.volumes[vol - 1].gravityPercent : EXT_PHYS_GRAVITY_NEUTRAL, sdata->gGT->elapsedTimeMS);
+	}
 	{
 		// the maggrav spline's direction, where the track gives one (A3): the
 		// same share, along the spline's "down" instead of against the zone's up
@@ -1368,6 +1527,19 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3])
 	out[0] = (s16)((g * s->up.x) >> 12);
 	out[1] = (s16)((g * s->up.y) >> 12);
 	out[2] = (s16)((g * s->up.z) >> 12);
+	return 1;
+}
+
+int ExtPhys_ZoneSideGrip(const struct Driver *d, int x, int y, int z, int gravityX, int *outX)
+{
+	const ExtPhysSeatZone *s = ExtPhys_SeatZone(d);
+
+	if ((s == NULL) || !s->inZone || !s_extPhys.p.forcesSet || (d->kartState != KS_NORMAL))
+	{
+		return 0;
+	}
+	*outX = ExtPhys_SideGripWith(&s_extPhys.p, (d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0, (d->actionsFlagSet & ACTION_ACCEL_PREVENTION) != 0, x, y, z,
+	                             gravityX, sdata->gGT->elapsedTimeMS);
 	return 1;
 }
 
@@ -2266,6 +2438,48 @@ int ExtPhys_Selftest(void)
 			                      !ExtPhys_GroundProbe(&td2, at, &hint, &h, &probeUp) && (probeUp.z == 4096) && (probeUp.y == 0),
 			                  "ground probe: none without driver, position or built collision; outside a zone along the hint", &checks, &failures);
 		}
+		{
+			// without maglev_forces (the test driver in no zone) the side grip leaves the game's own way
+			int x = 77;
+
+			ExtPhys_TestCheck(!ExtPhys_ZoneSideGrip(&td2, 100, 0, 1000, 5, &x) && (x == 77), "side grip: untouched outside a zone with maglev_forces",
+			                  &checks, &failures);
+		}
+	}
+
+	// fixup round 2: physics.maglev_forces (all keys or none) and the force sizes
+	{
+		ExtPhysParams fp, fbad;
+		ExtPhysMag fm;
+		const char *forces = "{\"physics\": {\"maglev_forces\": {\"gravity\": 9.81, \"downforce\": 4.5, \"downforce_air\": 11, \"downforce_air_time\": 0.1, "
+		                     "\"lat_friction\": 55, \"lat_friction_hi_turn\": 60, \"hi_turn_cos\": 0.966976, \"lat_friction_air\": 60}}}";
+		const char *partial = "{\"physics\": {\"maglev_forces\": {\"gravity\": 9.81, \"downforce\": 4.5}}}";
+
+		ExtPhys_TestCheck(ExtPhys_TestRead(forces, &fp) && fp.forcesSet && (fp.fGravity == 9.81) && (fp.fDownAir == 11.0) && (fp.fHiTurnCos == 0.966976) &&
+		                      (fp.badValues == 0) && (fp.unknownKeys == 0),
+		                  "maglev_forces: all eight keys read", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead(partial, &fbad) && !fbad.forcesSet && (fbad.badValues == 1), "maglev_forces: a missing key takes none",
+		                  &checks, &failures);
+		memset(&fm, 0, sizeof(fm));
+		// ground: 4.5 * 9.81 m/s^2 over 33 ms = 4.5 * 9.81 * 0.524288 * 33 = 763.8 -> 764 units
+		snprintf(what, sizeof(what), "maglev gravity on the ground: %d units per 33 ms (want -764)", ExtPhys_MaglevGravityWith(&fp, &fm, 1, 0, 100, 33));
+		ExtPhys_TestCheck(fm.gravUnits == -764, what, &checks, &failures);
+		// air without a jump: 11 at once, times a 200 % volume; after a jump 11 for 0.1 s, then 4.5
+		ExtPhys_TestCheck((ExtPhys_MaglevGravityWith(&fp, &fm, 0, 0, 200, 33) == -(int)floor(11.0 * 9.81 * EXT_PHYS_MPS2_PER_MS * 33 * 2.0 + 0.5)) &&
+		                      (ExtPhys_MaglevGravityWith(&fp, &fm, 0, 1, 100, 33) == -(int)floor(11.0 * 9.81 * EXT_PHYS_MPS2_PER_MS * 33 + 0.5)),
+		                  "maglev gravity in the air without a jump: downforce_air (and the volume's share)", &checks, &failures);
+		ExtPhys_MaglevGravityWith(&fp, &fm, 1, 0, 100, 33);
+		ExtPhys_TestCheck((ExtPhys_MaglevGravityWith(&fp, &fm, 0, 1, 100, 33) == -1867) && (ExtPhys_MaglevGravityWith(&fp, &fm, 0, 0, 100, 33) == -1867) &&
+		                      (ExtPhys_MaglevGravityWith(&fp, &fm, 0, 0, 100, 40) == -(int)floor(4.5 * 9.81 * EXT_PHYS_MPS2_PER_MS * 40 + 0.5)),
+		                  "maglev gravity after a jump: downforce_air up to 0.1 s, then downforce", &checks, &failures);
+		// side grip: 55 m/s^2 over 33 ms = 951.6 -> 952 units; a smaller side velocity is cancelled, the gravity comes on top
+		ExtPhys_TestCheck((ExtPhys_SideGripWith(&fp, 1, 0, 500, 0, 8000, 300, 33) == 300) && (ExtPhys_SideGripWith(&fp, 1, 0, 2000, 0, 8000, 0, 33) == 2000 - 952) &&
+		                      (ExtPhys_SideGripWith(&fp, 1, 0, -2000, 0, 8000, -10, 33) == -2000 + 952 - 10),
+		                  "side grip on the ground: lat_friction from the velocity before, gravity after", &checks, &failures);
+		// hi turn (forward . unit velocity <= 0.966976, ~15 deg): 60 -> 1038; braking: no grip; air: 60
+		ExtPhys_TestCheck((ExtPhys_SideGripWith(&fp, 1, 0, 3000, 0, 8000, 0, 33) == 3000 - 1038) && (ExtPhys_SideGripWith(&fp, 1, 1, 3000, 0, 8000, 7, 33) == 3007) &&
+		                      (ExtPhys_SideGripWith(&fp, 0, 0, 100, 0, 8000, 0, 33) == 0) && (ExtPhys_SideGripWith(&fp, 0, 1, 2000, 0, 0, 0, 33) == 2000 - 1038),
+		                  "side grip: hi turn, braking, air", &checks, &failures);
 	}
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));

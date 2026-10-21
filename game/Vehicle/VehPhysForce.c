@@ -193,6 +193,9 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	{
 		localGravity.z = 0;
 	}
+	// (the side part before the game clears it: the external track's zone grip
+	// below takes the source game's way, which never clears it)
+	const int zoneGravitySide = localGravity.x;
 
 	u32 actionsFlagSet = driver->actionsFlagSet;
 	int speedApprox = driver->speedApprox;
@@ -208,6 +211,13 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	int localX = CTR_MipsAddLo(originalLocalX, localGravity.x);
 	int localY = CTR_MipsAddLo(originalLocalY, localGravity.y);
 	int localZ = CTR_MipsAddLo(originalLocalZ, localGravity.z);
+
+	// In the external track's anti-gravity zone with the section maglev_forces
+	// the side velocity is the source game's (platform/native_extphys.c): its
+	// grip from the velocity before the frame, the gravity on top; the game's own
+	// side friction is then left out. Outside such a zone nothing changes.
+	int zoneSideX = 0;
+	const int zoneSide = ExtPhys_ZoneSideGrip(driver, originalLocalX, originalLocalY, originalLocalZ, zoneGravitySide, &zoneSideX);
 
 	int maxForwardSpeed = CTR_MipsAddLo(driver->fireSpeed, driver->const_SlopeForwardSpeedBonus);
 	if (localZ > maxForwardSpeed)
@@ -477,9 +487,17 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 			}
 		}
 
-		localX = VehCalc_InterpBySpeed(localX, xFriction, 0);
+		if (!zoneSide)
+		{
+			localX = VehCalc_InterpBySpeed(localX, xFriction, 0);
+		}
 		localZ = VehCalc_InterpBySpeed(localZ, forwardFriction, 0);
 	}
+	}
+
+	if (zoneSide)
+	{
+		localX = zoneSideX;
 	}
 
 	*velocity = VehPhysForce_OnGravity_RotateVector(&driver->matrixMovingDir, (s16)localX, (s16)localY, (s16)localZ);

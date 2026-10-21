@@ -86,6 +86,18 @@ int ExtPhys_DriverForward(const struct Driver *d, SVec3 *fwd);
 // (times the frame time, negative = down) as a world vector against the zone's
 // up; 1 = in a zone (out set), 0 = the game's own world -Y.
 int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3]);
+// Fixup round 2: with the section
+//   "maglev_forces": {"gravity": 9.81, "downforce": 4.5, "downforce_air": 11,
+//     "downforce_air_time": 0.1, "lat_friction": 55, "lat_friction_hi_turn": 60,
+//     "hi_turn_cos": 0.966976, "lat_friction_air": 60}      (m/s^2, s; all keys or none)
+// the zone gravity of ExtPhys_ZoneGravity has the source game's size (downforce
+// * gravity, in the air downforce_air, its gravity volume's share in the air),
+// and ExtPhys_ZoneSideGrip gives the sideways velocity of a frame the source
+// game's way. game/Vehicle/VehPhysForce.c VehPhysForce_OnGravity: x, y, z the
+// velocity in matrixMovingDir before the gravity, gravityX the gravity's side
+// part; 1 = in a zone with maglev_forces and kartState KS_NORMAL (*outX = the side
+// velocity the game then keeps instead of its own side friction), 0 = untouched.
+int ExtPhys_ZoneSideGrip(const struct Driver *d, int x, int y, int z, int gravityX, int *outX);
 // Z-e: speed <-> velocity in the surface frame of AxisAngle1 (right, normal,
 // forward at heading 0, the convention of VehPhysForce_RotAxisAngle); 1 = in a
 // zone (converted), 0 = untouched.
