@@ -2620,6 +2620,10 @@ int ExtTrack_Selftest(const char *name)
 	{
 		return ExtObstacle_Selftest();
 	}
+	if (strcmp(name, "portal") == 0)
+	{
+		return ExtPortal_Selftest();
+	}
 	return -1;
 }
 

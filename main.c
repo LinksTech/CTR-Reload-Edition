@@ -129,6 +129,8 @@
 #include "platform/native_extcam.c"
 // The telemetry line of seat 0 (night run 1, measuring only): before the dispatcher that calls it.
 #include "platform/native_exttelemetry.c"
+// The teleport portals (night run 1): reader, geometry and selftest; nothing calls them from the frame yet.
+#include "platform/native_extportal.c"
 // The moving obstacles (round of 2026-10-20): their header before the
 // dispatcher (it calls them), the part after it (it reads the draw node list).
 #include <platform/native_extobstacle.h>
@@ -1628,10 +1630,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			}
 			else if ((strcmp(argv[argIndex], "--ext-selftest") == 0) && (strcmp(value, "json") != 0) && (strcmp(value, "coll") != 0) &&
 			         (strcmp(value, "race") != 0) && (strcmp(value, "nav") != 0) && (strcmp(value, "crates") != 0) && (strcmp(value, "music") != 0) &&
-			         (strcmp(value, "phys") != 0) && (strcmp(value, "obstacle") != 0))
+			         (strcmp(value, "phys") != 0) && (strcmp(value, "obstacle") != 0) && (strcmp(value, "portal") != 0))
 			{
 				fflush(stdout);
-				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates, music, phys or obstacle, not '%s'\n", value);
+				fprintf(stderr, "switch --ext-selftest expects json, coll, race, nav, crates, music, phys, obstacle or portal, not '%s'\n", value);
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
 			}
