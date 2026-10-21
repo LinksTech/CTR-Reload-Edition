@@ -730,7 +730,41 @@ static int BOTS_ExtAirPitch(const struct Driver *d)
 enum
 {
 	BOTS_EXT_KEEP_REACH = 128,
+	BOTS_EXT_SEATS = 8,
 };
+
+// The same tracks (fixround 2, B3): a portal pass of a CPU kart is its rail
+// stepping over a jump frame (distances 1/1, the converter's mark of a portal
+// gap). From that tick on, until its ground probe finds ground again, the bot
+// rides the rail's height (the exit's arc; 1 = ride it this tick), and at the
+// pass it leaves the zone state of its physics (the exits lie outside zones;
+// ExtPhys_SeedDriver as at a mask grab), so its drawn frame is the rail's.
+static const struct NavFrame *s_botsExtLastFrame[BOTS_EXT_SEATS];
+static int s_botsExtOnArc[BOTS_EXT_SEATS];
+
+static int BOTS_ExtPortalArc(struct Driver *d, const struct NavFrame *curr, int groundUnder)
+{
+	const struct NavFrame *last;
+	int id;
+
+	if (!BOTS_ExtAirPitch(d) || (curr == NULL))
+	{
+		return 0;
+	}
+	id = (int)d->driverID & (BOTS_EXT_SEATS - 1);
+	last = s_botsExtLastFrame[id];
+	s_botsExtLastFrame[id] = curr;
+	if ((last != NULL) && (last != curr) && (last->distToNextNavXYZ == 1) && (last->distToNextNavXZ == 1))
+	{
+		s_botsExtOnArc[id] = 1;
+		ExtPhys_SeedDriver(d, NULL, 0);
+	}
+	if (s_botsExtOnArc[id] && groundUnder)
+	{
+		s_botsExtOnArc[id] = 0;
+	}
+	return s_botsExtOnArc[id];
+}
 
 static void BOTS_ExtKeepOverGround(struct Driver *d)
 {
@@ -2255,6 +2289,13 @@ UpdateTireColorTimer:
 	// frames' height every tick (the landing branch below sets it), no air phase
 	// in world y on a wall or under a ceiling.
 	if (ExtNav_FrameZone(navFrameCurr) != 0)
+	{
+		botDriver->botData.positionBackup.y = CTR_MipsSubLo(botDriver->quadBlockHeight, 1);
+	}
+	// External track with portals: out of a portal the bot rides its rail (the
+	// exit's arc) until the ground is under it again - else, put down 85 .. 440 m
+	// lower by the teleport, it would keep the old height (fixround 2 run 1).
+	if (BOTS_ExtPortalArc(botDriver, navFrameCurr, extHitOk))
 	{
 		botDriver->botData.positionBackup.y = CTR_MipsSubLo(botDriver->quadBlockHeight, 1);
 	}
