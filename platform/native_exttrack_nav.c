@@ -1,4 +1,5 @@
 #include <platform/native_exttrack_nav.h>
+#include <platform/native_extportal.h>
 
 // THE EXTERNAL TRACK'S CPU PATHS - see include/platform/native_exttrack_nav.h.
 //
@@ -680,6 +681,22 @@ enum
 global_variable int s_extNavKartFrame;
 global_variable int s_extNavDmgState[EXT_NAV_KART_SEATS]; // last logged blast | gnd << 1, -1 = not yet
 
+// Only on a track with portals (ExtPortal_Count), beside the kart line: after a
+// frame J in which a kart's place jumped by more than EXT_NAV_POSE_JUMP (a
+// portal pass, a respawn), for the frames J, J + 1, J + 2 the drawn kart frame:
+//   [CTR ExtPose] f F s S fwd FX FY FZ up UX UY UZ vel VX VY VZ
+// fwd / up = columns 2 / 1 of the kart instance's matrix (4096 = 1), vel =
+// velocity / 256. For gate B3a (the kart's forward after a portal).
+enum
+{
+	EXT_NAV_POSE_JUMP = 1920, // 30 m in one frame
+	EXT_NAV_POSE_FRAMES = 3,
+};
+
+global_variable double s_extNavPosePrev[EXT_NAV_KART_SEATS][3];
+global_variable int s_extNavPoseHave[EXT_NAV_KART_SEATS];
+global_variable int s_extNavPoseLeft[EXT_NAV_KART_SEATS];
+
 void ExtNav_OnLogicFrame(void)
 {
 	const struct GameTracker *gGT = sdata->gGT;
@@ -695,6 +712,8 @@ void ExtNav_OnLogicFrame(void)
 		for (int seat = 0; seat < EXT_NAV_KART_SEATS; seat++)
 		{
 			s_extNavDmgState[seat] = -1;
+			s_extNavPoseHave[seat] = 0;
+			s_extNavPoseLeft[seat] = 0;
 		}
 		return;
 	}
@@ -756,6 +775,28 @@ void ExtNav_OnLogicFrame(void)
 		else
 		{
 			Platform_Log("%s none\n", head);
+		}
+		if (ExtPortal_Count() > 0)
+		{
+			const double jx = pos[0] - s_extNavPosePrev[seat][0], jy = pos[1] - s_extNavPosePrev[seat][1], jz = pos[2] - s_extNavPosePrev[seat][2];
+
+			if (s_extNavPoseHave[seat] && (((jx * jx) + (jy * jy) + (jz * jz)) > ((double)EXT_NAV_POSE_JUMP * EXT_NAV_POSE_JUMP)))
+			{
+				s_extNavPoseLeft[seat] = EXT_NAV_POSE_FRAMES;
+			}
+			s_extNavPosePrev[seat][0] = pos[0];
+			s_extNavPosePrev[seat][1] = pos[1];
+			s_extNavPosePrev[seat][2] = pos[2];
+			s_extNavPoseHave[seat] = 1;
+			if ((s_extNavPoseLeft[seat] > 0) && (d->instSelf != NULL))
+			{
+				const MATRIX *m = &d->instSelf->matrix;
+
+				s_extNavPoseLeft[seat]--;
+				Platform_Log("[CTR ExtPose] f %d s %d fwd %d %d %d up %d %d %d vel %.1f %.1f %.1f\n", s_extNavKartFrame, seat, (int)m->m[0][2], (int)m->m[1][2],
+				             (int)m->m[2][2], (int)m->m[0][1], (int)m->m[1][1], (int)m->m[2][1], d->velocity.x / 256.0, d->velocity.y / 256.0,
+				             d->velocity.z / 256.0);
+			}
 		}
 	}
 }
