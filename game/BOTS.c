@@ -3,6 +3,7 @@
 #include <platform/native_extcoll.h>
 #include <platform/native_extphys.h>
 #include <platform/native_exttrack_nav.h>
+#include <platform/native_extportal.h>
 
 // From game/native_trackmod.c, which comes after this file in game_unity.h.
 // The answer is the bits the MaskGrab recovery should leave in place;
@@ -704,6 +705,17 @@ void BOTS_ThTick_RevEngine(struct Thread *botThread)
 static int BOTS_ExtFixupFor(const struct Driver *d)
 {
 	return ExtNav_Active() && (d != NULL) && ((int)d->driverID >= (int)sdata->gGT->numPlyrCurrGame);
+}
+
+// An external track with teleport portals (fixround 2, B3): a CPU kart takes
+// its pitch and roll from the frames also in the air - out of a portal it
+// leaves turned as the exit (platform/native_extportal.c ExtPortal_Exit: the
+// original puts the kart into the exit's rotation), and the frames of the
+// exit's arc carry that pitch; without this the pitch of the ground before the
+// gate would stay. Every other track: only on the ground, as before.
+static int BOTS_ExtAirPitch(const struct Driver *d)
+{
+	return BOTS_ExtFixupFor(d) && (ExtPortal_Count() > 0);
 }
 
 void BOTS_MaskGrab(struct Thread *botThread)
@@ -2586,7 +2598,8 @@ UpdateTireColorTimer:
 
 	if ((0x9e < cmp1) && (0x9e < cmp2))
 	{
-		if (((botDriver->botData.botFlags & BOT_FLAG_ESTIMATE_NAV) == 0) && ((botDriver->actionsFlagSet & ACTION_TOUCH_GROUND) != 0))
+		if (((botDriver->botData.botFlags & BOT_FLAG_ESTIMATE_NAV) == 0) &&
+		    (((botDriver->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) || BOTS_ExtAirPitch(botDriver)))
 		{
 			// Lerp nav-frame rotation through the shortest signed 12-bit delta.
 			int uVar8 = CTR_MipsSubLo(CTR_MipsSll(navFrameNext->rot[0], 4), CTR_MipsSll(navFrameCurr->rot[0], 4)) & 0xfff;
