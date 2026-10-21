@@ -942,6 +942,7 @@ void ExtPhys_OnLevelLoaded(void)
 		             s_extPhys.rows[t].turnLeanScale, s_extPhys.rows[t].groundFrictionScale, s_extPhys.rows[t].turnAngleScale,
 		             s_extPhys.rows[t].turnResponseScale);
 	}
+	ExtZp_CoupleLevel(); // the zone port (--dev-ext-zone-port only)
 }
 
 // ---------------------------------------------------------------------------
@@ -1728,6 +1729,25 @@ void ExtPhys_SeedDriver(struct Driver *d, const SVec3 *up, int zone)
 	d->AxisAngle3_normalVec = s->up;
 	d->AxisAngle4_normalVec = s->up;
 	Platform_Log("[CTR ExtZone] seat %d seeded in zone %d frame %d up %d %d %d\n", d->driverID, zone, s_extPhysRun.tick + 2, s->up.x, s->up.y, s->up.z);
+}
+
+// The zone port (platform/native_extzoneport.c) drives the kart: its up becomes
+// the zone's up and the kart's up vectors, so Reload goes on from it when the
+// kart leaves the zone.
+void ExtPhys_PortUp(struct Driver *d, const SVec3 *up)
+{
+	ExtPhysSeatZone *s = ExtPhys_SeatZone(d);
+	const SVec3 u = ExtPhys_Normalize(up->x, up->y, up->z);
+
+	if ((s != NULL) && s->inZone)
+	{
+		s->up = u;
+	}
+	d->normalVecUP = u;
+	d->AxisAngle1_normalVec = u;
+	d->AxisAngle2_normalVec = u;
+	d->AxisAngle3_normalVec = u;
+	d->AxisAngle4_normalVec = u;
 }
 
 int ExtPhys_DriverZone(const struct Driver *d)
@@ -2909,6 +2929,7 @@ int ExtPhys_Selftest(void)
 	ExtZp_Selftest(&checks, &failures, ExtPhys_TestLog);
 	// The zone port's start world (platform/native_extzoneworld.c).
 	ExtZp_WorldSelftest(&checks, &failures, ExtPhys_TestLog);
+	ExtZp_CoupleSelftest(&checks, &failures, ExtPhys_TestLog);
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));
 	if (failures)

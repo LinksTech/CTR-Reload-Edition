@@ -487,6 +487,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-ext-kart-log", "", "with --ext-track, measuring only: one [CTR ExtKart] log line per kart and logic frame - the distance of the kart to the ground along the local up (the nearest nav frame's up), its lap, finish, kart and mask state; a log only"},
     {"--dev-ext-obstacle-place", "<timer>", "with --ext-track, measuring only: at the first logic frame with the game timer at or past <timer> (0..1000000) seat 0 is put onto the path of the track's first moving obstacle, where its front part is 1 s later, stopped; one log line"},
     {"--dev-ext-crate-log", "", "with --ext-track, measuring only: [CTR ExtCrateLog] lines - each crate at the race start with the ground under it along the local up, each contact with the kart's ground contact and the jump input before it, each crate back at full size with its delay; a log only"},
+    {"--dev-ext-zone-port", "", "with --ext-track, measuring only: on a track whose physics.source asks for the zone port and brings its start world, the port computes seat 0's kart while it is in an anti-gravity zone (the source's world step, dt 1/30 s); entries, exits and every 30th tick logged"},
+    {"--dev-ext-step-log", "<file>", "with --dev-ext-zone-port, measuring only: every tick of the zone port into <file> (binary, the port's memory before and after, the queries Reload answered; format in include/platform/native_extzoneport.h) for the offline bench"},
     {"--dev-ext-telemetry", "", "with --ext-track, measuring only: one [CTR ExtTel] line per logic frame of seat 0 - position, velocity, the kart's rotation matrix and up, ground contact and normal, zone and its up, kart state, the camera this frame's logic set and the matrix last drawn; a log only"},
     {"--dev-ext-cam-log", "<H>", "with --ext-track, measuring only: one [CTR ExtCam] measure line per frame of seat 0 - the camera as drawn (eye, its up), where the kart lies in the picture and whether ground or a wall lies between the eye and the kart's middle (0.5 H along its up), the last H/2 units before it left out; H = the kart's height in world units, 1..1000 (decimals allowed, e.g. 66.2); a log only"},
     {"--ext-selftest", "<json|coll|race|nav|crates|music|phys|obstacle>", "one part of the external track without a window or data: the JSON reader, the collision, the race logic, the CPU paths, the crates, the music, the physics values or the moving obstacles, then end (ctest ext_selftest_<name>)"},
@@ -645,6 +647,7 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--engine-hires-dir", sizeof(g_cfg_engineHiresDir), 0},
     {"--engine-static-model", sizeof(g_cfg_engineStaticModel), 0},
     {"--ext-track", sizeof(g_cfg_extTrackDir), 0},
+    {"--dev-ext-step-log", PLATFORM_ARG_PATH_MAX, 0},
     {"--engine-flycam-path", sizeof(g_cfg_engineFlycamPath), 0},
     {"--engine-oracle", sizeof(g_cfg_engineOracle), 0},
 };
@@ -1607,6 +1610,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int crateLogGiven = 0;
 		int telemetryGiven = 0;
 		const char *camLogValue = NULL;
+		int zonePortGiven = 0;
+		const char *stepLogValue = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
 		{
@@ -1644,6 +1649,14 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--dev-ext-telemetry") == 0)
 			{
 				telemetryGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-ext-zone-port") == 0)
+			{
+				zonePortGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-ext-step-log") == 0)
+			{
+				stepLogValue = value;
 			}
 			else if (strcmp(argv[argIndex], "--dev-ext-cam-log") == 0)
 			{
@@ -1689,6 +1702,18 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (telemetryGiven && !extGiven)
 			{
 				refusal = "switch --dev-ext-telemetry requires --ext-track";
+			}
+			else if (zonePortGiven && !extGiven)
+			{
+				refusal = "switch --dev-ext-zone-port requires --ext-track";
+			}
+			else if ((stepLogValue != NULL) && !zonePortGiven)
+			{
+				refusal = "switch --dev-ext-step-log requires --dev-ext-zone-port";
+			}
+			else if ((stepLogValue != NULL) && ((stepLogValue[0] == '\0') || (stepLogValue[0] == '-')))
+			{
+				refusal = "switch --dev-ext-step-log expects a file";
 			}
 			else if ((camLogValue != NULL) && !extGiven)
 			{
@@ -1990,6 +2015,16 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		{
 			// Checked before any window (needs --ext-track); a log only (platform/native_extcrates.c).
 			g_cfg_extCrateLog = 1;
+		}
+		else if (strcmp(argv[argIndex], "--dev-ext-zone-port") == 0)
+		{
+			// Checked before any window (needs --ext-track); platform/native_extzoneport.c.
+			g_cfg_extZonePort = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--dev-ext-step-log") == 0) && ((argIndex + 1) < argc))
+		{
+			// Checked before any window (needs --dev-ext-zone-port); the path as given (relative: the game folder's working directory).
+			g_cfg_extStepLog = argv[++argIndex];
 		}
 		else if (strcmp(argv[argIndex], "--dev-ext-telemetry") == 0)
 		{

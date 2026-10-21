@@ -1,6 +1,7 @@
 #include <platform/native_extzoneport.h>
 #include <platform/native_extzonephys.h>
 #include <platform/native_extcoll.h>
+#include <platform/native_extphys.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -628,4 +629,661 @@ void ExtZp_Selftest(int *checks, int *failures, void (*log)(const char *line))
 		s_extZpRecLen = 0;
 	}
 	ExtZp_ClearSource();
+}
+
+// ------------------------------------------------------------------ THE COUPLING (--dev-ext-zone-port)
+//
+// On a track whose physics.source asks for the port and brings a start world,
+// --dev-ext-zone-port lets the port compute seat 0's kart while Reload has it in
+// an anti-gravity zone:
+//   entry   the start world is loaded anew, the kart's body takes Reload's state
+//           (position + 0.6 m along up, velocity, orientation; spin 0);
+//   a tick  Reload's stages PHYS_LINEAR (input, weapons), PHYS_ANGULAR, AUDIO,
+//           COLL_FIXED (ground search, lap and zone bookkeeping), TRANSLATE_MATRIX,
+//           ANIMATE and PARTICLES run; APPLY_FORCES is replaced by the port's
+//           world step (dt = 1/30 s, the original's own two substeps) and
+//           COLL_MOVED, COLLIDE_DRIVERS and JUMP_FRICTION do not run; the
+//           result is written back (position, velocity, the kart matrix, the
+//           zone's up and the heading) and kept against COLL_FIXED;
+//   exit    when Reload's zone logic has the kart out of the zone, Reload
+//           continues from the last written state (no jump).
+// The inputs go into the kart's input block (the source's latch reads it):
+// steer (+1 = left in the source), gas, reverse, brake, button 1 (R1), button 2 (L1).
+
+int g_cfg_extZonePort = 0;
+
+enum
+{
+	EXT_ZC_G_VEHICLE = 0x006F3B10, // the source's global: -> object whose +0x28 is the player's vehicle
+	EXT_ZPC_V_KART = 0x78,         // vehicle -> kart
+	EXT_ZPC_K_SHELL = 0x2C,        // kart -> (-> entity)
+	EXT_ZPC_K_OWNER = 0x38,        // kart -> its owner (input block at +0x5C)
+	EXT_ZPC_OWNER_INPUT = 0x5C,
+	EXT_ZPC_E_FORWARD = 0x10,
+	EXT_ZPC_E_UP = 0x20,
+	EXT_ZPC_E_RIGHT = 0x30,
+	EXT_ZPC_E_VELOCITY = 0x40,
+	EXT_ZPC_E_BODY = 0x94,
+	EXT_ZPC_H_POS = 0x30,
+	EXT_ZPC_H_QUAT_W = 0x40,
+	EXT_ZPC_H_QUAT_XYZ = 0x50,
+	EXT_ZPC_H_VEL = 0x60,
+	EXT_ZPC_H_SPIN = 0x70,
+	EXT_ZPC_K_STATE = 0x3E0,
+	EXT_ZPC_K_GROUND = 0x402,
+	EXT_ZPC_K_MAGLEV = 0x428,
+	EXT_ZPC_K_SPEED = 0x42C,
+	EXT_ZPC_K_SPLINE = 0x464,
+	EXT_ZPC_STEP_FUNC = 0x00336B60,
+};
+#define EXT_ZPC_BODY_UP_E 38.4      // the body point lies 0.6 m (38.4 units) above posCurr along up (ZUORDNUNG 4)
+#define EXT_ZPC_VEL_PER_MS 524.288  // Reload velocity units per m/s (ZUORDNUNG 2)
+
+typedef struct
+{
+	int ready;        // switch on, world present, objects found
+	int active;       // the port has seat 0 now
+	ExtZpMem *m;
+	ExtZpCtx c;
+	uint32_t world, vehicle, kart, entity, body, input;
+	Ps2F dt;
+	uint32_t steps, entries;
+	uint32_t enteredFrame;
+	s32 keepPos[3], keepVel[3]; // the written state, kept against COLL_FIXED
+	double up[3], fwd[3];       // the written orientation (Reload axes, unit)
+} ExtZpCouple;
+
+global_variable ExtZpCouple s_extZpc;
+
+const ExtZpMem *ExtZp_PortMemory(uint32_t *kart, uint32_t *body, uint32_t *entity, uint32_t *world)
+{
+	if (!s_extZpc.ready || !s_extZpc.active)
+	{
+		return NULL;
+	}
+	if (kart)
+		*kart = s_extZpc.kart;
+	if (body)
+		*body = s_extZpc.body;
+	if (entity)
+		*entity = s_extZpc.entity;
+	if (world)
+		*world = s_extZpc.world;
+	return s_extZpc.m;
+}
+
+int ExtZp_PortActive(void)
+{
+	return s_extZpc.ready && s_extZpc.active;
+}
+
+internal int ExtZpc_LoadWorld(void)
+{
+	ExtZpMem *m = s_extZpc.m;
+	uint32_t world = 0, owner;
+	Ps2F dt = 0;
+
+	ExtZpMem_Clear(m);
+	if (!ExtZp_WorldLoad(m, &world, &dt))
+	{
+		return 0;
+	}
+	ExtZp_CtxInit(&s_extZpc.c, m, ExtZp_ReloadQuery, NULL);
+	s_extZpc.world = world;
+	s_extZpc.dt = dt;
+	s_extZpc.vehicle = ZmR32(m, ZmR32(m, EXT_ZC_G_VEHICLE) + 0x28u);
+	s_extZpc.kart = ZmR32(m, s_extZpc.vehicle + EXT_ZPC_V_KART);
+	s_extZpc.entity = ZmR32(m, ZmR32(m, s_extZpc.kart + EXT_ZPC_K_SHELL));
+	s_extZpc.body = ZmR32(m, s_extZpc.entity + EXT_ZPC_E_BODY);
+	owner = ZmR32(m, s_extZpc.kart + EXT_ZPC_K_OWNER);
+	s_extZpc.input = (owner != 0u) ? owner + EXT_ZPC_OWNER_INPUT : 0u;
+	return (s_extZpc.world != 0u) && (s_extZpc.kart != 0u) && (s_extZpc.entity != 0u) && (s_extZpc.body != 0u) && (s_extZpc.input != 0u) &&
+	       (ExtZpMem_Faults(m) == 0u);
+}
+
+// Once per level (ExtPhys_OnLevelLoaded, after physics.source was read).
+void ExtZp_CoupleLevel(void)
+{
+	s_extZpc.ready = 0;
+	s_extZpc.active = 0;
+	if (!g_cfg_extZonePort)
+	{
+		return;
+	}
+	if (!ExtZp_PortWanted() || (ExtZp_WorldPages() == 0))
+	{
+		Platform_Log("[CTR ExtZp] --dev-ext-zone-port: the track has no port world (physics.source port %d, %d page(s)) - off\n", ExtZp_PortWanted(),
+		             ExtZp_WorldPages());
+		return;
+	}
+	if (s_extZpc.m == NULL)
+	{
+		s_extZpc.m = ExtZpMem_Create();
+	}
+	if ((s_extZpc.m == NULL) || !ExtZpc_LoadWorld())
+	{
+		Platform_Log("[CTR ExtZp] --dev-ext-zone-port: the start world lacks the kart objects (W 0x%08x V 0x%08x K 0x%08x E 0x%08x H 0x%08x input 0x%08x, %u fault(s)) - off\n",
+		             s_extZpc.world, s_extZpc.vehicle, s_extZpc.kart, s_extZpc.entity, s_extZpc.body, s_extZpc.input,
+		             (s_extZpc.m != NULL) ? (unsigned)ExtZpMem_Faults(s_extZpc.m) : 0u);
+		return;
+	}
+	s_extZpc.ready = 1;
+	s_extZpc.steps = 0;
+	s_extZpc.entries = 0;
+	Platform_Log("[CTR ExtZp] --dev-ext-zone-port: on - W 0x%08x K 0x%08x E 0x%08x H 0x%08x input 0x%08x dt 0x%08x\n", s_extZpc.world, s_extZpc.kart,
+	             s_extZpc.entity, s_extZpc.body, s_extZpc.input, s_extZpc.dt);
+	if (ExtZp_LogOn())
+	{
+		const uint32_t head[1] = {1};
+		char note[160];
+		snprintf(note, sizeof(note), "zone port coupling; K=0x%08x E=0x%08x H=0x%08x W=0x%08x", s_extZpc.kart, s_extZpc.entity, s_extZpc.body, s_extZpc.world);
+		ExtZp_LogBegin(EXT_ZP_TAG('L', 'E', 'V', 'L'), head, 1);
+		ExtZp_LogBlob(EXT_ZP_TAG('N', 'O', 'T', 'E'), note, (uint32_t)strlen(note));
+		ExtZp_LogEnd();
+	}
+}
+
+// ---- vectors (double, Reload or source axes)
+
+internal void ExtZpc_Norm(double v[3])
+{
+	const double l = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+	if (l > 0.0)
+	{
+		v[0] /= l;
+		v[1] /= l;
+		v[2] /= l;
+	}
+}
+
+internal void ExtZpc_Cross(const double a[3], const double b[3], double out[3])
+{
+	const double x = a[1] * b[2] - a[2] * b[1], y = a[2] * b[0] - a[0] * b[2], z = a[0] * b[1] - a[1] * b[0];
+	out[0] = x;
+	out[1] = y;
+	out[2] = z;
+}
+
+// The rotation with columns right (local x), forward (local y), up (local z) as a
+// unit quaternion (w, x, y, z) - the source body's convention (entity rows
+// +0x30/+0x10/+0x20 are the body rotation's columns, measured on two dumps).
+internal void ExtZpc_QuatFromAxes(const double r[3], const double f[3], const double u[3], double q[4])
+{
+	const double m00 = r[0], m01 = f[0], m02 = u[0];
+	const double m10 = r[1], m11 = f[1], m12 = u[1];
+	const double m20 = r[2], m21 = f[2], m22 = u[2];
+	const double tr = m00 + m11 + m22;
+	double s;
+
+	if (tr > 0.0)
+	{
+		s = sqrt(tr + 1.0) * 2.0;
+		q[0] = 0.25 * s;
+		q[1] = (m21 - m12) / s;
+		q[2] = (m02 - m20) / s;
+		q[3] = (m10 - m01) / s;
+	}
+	else if ((m00 > m11) && (m00 > m22))
+	{
+		s = sqrt(1.0 + m00 - m11 - m22) * 2.0;
+		q[0] = (m21 - m12) / s;
+		q[1] = 0.25 * s;
+		q[2] = (m01 + m10) / s;
+		q[3] = (m02 + m20) / s;
+	}
+	else if (m11 > m22)
+	{
+		s = sqrt(1.0 + m11 - m00 - m22) * 2.0;
+		q[0] = (m02 - m20) / s;
+		q[1] = (m01 + m10) / s;
+		q[2] = 0.25 * s;
+		q[3] = (m12 + m21) / s;
+	}
+	else
+	{
+		s = sqrt(1.0 + m22 - m00 - m11) * 2.0;
+		q[0] = (m10 - m01) / s;
+		q[1] = (m02 + m20) / s;
+		q[2] = (m12 + m21) / s;
+		q[3] = 0.25 * s;
+	}
+}
+
+internal void ExtZpc_AxesFromQuat(const double q[4], double r[3], double f[3], double u[3])
+{
+	const double w = q[0], x = q[1], y = q[2], z = q[3];
+	r[0] = 1.0 - 2.0 * (y * y + z * z);
+	r[1] = 2.0 * (x * y + w * z);
+	r[2] = 2.0 * (x * z - w * y);
+	f[0] = 2.0 * (x * y - w * z);
+	f[1] = 1.0 - 2.0 * (x * x + z * z);
+	f[2] = 2.0 * (y * z + w * x);
+	u[0] = 2.0 * (x * z + w * y);
+	u[1] = 2.0 * (y * z - w * x);
+	u[2] = 1.0 - 2.0 * (x * x + y * y);
+}
+
+internal void ExtZpc_WriteVec(uint32_t a, const double v[3])
+{
+	for (int k = 0; k < 3; k++)
+	{
+		ZmWF(s_extZpc.m, a + 4u * (uint32_t)k, ExtZp_ToPs2(v[k]));
+	}
+}
+
+internal void ExtZpc_ReadVec(uint32_t a, double v[3])
+{
+	for (int k = 0; k < 3; k++)
+	{
+		v[k] = Ps2F_ToDouble(ZmRF(s_extZpc.m, a + 4u * (uint32_t)k));
+	}
+}
+
+// Reload's kart -> the body, the entity rows (entry).
+internal void ExtZpc_Enter(const struct Driver *d)
+{
+	const MATRIX *mt = &d->matrixFacingDir;
+	double upR[3], fwR[3], up[3], fw[3], ri[3], p[3], ps[3], v[3], vs[3], q[4];
+
+	for (int k = 0; k < 3; k++)
+	{
+		upR[k] = mt->m[k][1] / 4096.0;
+		fwR[k] = mt->m[k][2] / 4096.0;
+	}
+	ExtZpc_Norm(upR);
+	{
+		const double dd = fwR[0] * upR[0] + fwR[1] * upR[1] + fwR[2] * upR[2];
+		for (int k = 0; k < 3; k++)
+			fwR[k] -= dd * upR[k];
+	}
+	ExtZpc_Norm(fwR);
+	ExtZp_DirToSource(upR, up);
+	ExtZp_DirToSource(fwR, fw);
+	ExtZpc_Cross(fw, up, ri); // right = forward x up (ZUORDNUNG 3)
+	for (int k = 0; k < 3; k++)
+	{
+		p[k] = ((&d->posCurr.x)[k]) / 256.0 + EXT_ZPC_BODY_UP_E * upR[k];
+		v[k] = ((&d->velocity.x)[k]) / EXT_ZPC_VEL_PER_MS;
+	}
+	ExtZp_PointToSource(p, ps);
+	ExtZp_DirToSource(v, vs);
+	ExtZpc_QuatFromAxes(ri, fw, up, q);
+
+	ExtZpc_WriteVec(s_extZpc.body + EXT_ZPC_H_POS, ps);
+	ExtZpc_WriteVec(s_extZpc.body + EXT_ZPC_H_VEL, vs);
+	{
+		const double zero[3] = {0.0, 0.0, 0.0};
+		ExtZpc_WriteVec(s_extZpc.body + EXT_ZPC_H_SPIN, zero);
+	}
+	ZmWF(s_extZpc.m, s_extZpc.body + EXT_ZPC_H_QUAT_W, ExtZp_ToPs2(q[0]));
+	ExtZpc_WriteVec(s_extZpc.body + EXT_ZPC_H_QUAT_XYZ, &q[1]);
+	ExtZpc_WriteVec(s_extZpc.entity + EXT_ZPC_E_FORWARD, fw);
+	ExtZpc_WriteVec(s_extZpc.entity + EXT_ZPC_E_UP, up);
+	ExtZpc_WriteVec(s_extZpc.entity + EXT_ZPC_E_RIGHT, ri);
+	ExtZpc_WriteVec(s_extZpc.entity + EXT_ZPC_E_VELOCITY, vs);
+}
+
+// The pad -> the kart's input block.
+internal void ExtZpc_Inputs(const struct Driver *d)
+{
+	const struct GamepadBuffer *pad = &sdata->gGamepads->gamepad[d->driverID];
+	const u32 held = ((sdata->gGT->gameMode1 & END_OF_RACE) == 0) ? pad->buttonsHeldCurrFrame : 0u;
+	double steer = 0.0;
+	const uint32_t in = s_extZpc.input;
+
+	if ((held & BTN_LEFT) != 0)
+		steer = 1.0; // the source turns left on +1 (probe, slot7: +1 -> counter-clockwise about up)
+	else if ((held & BTN_RIGHT) != 0)
+		steer = -1.0;
+	else
+	{
+		const int x = (int)pad->stickLX - 0x80;
+		if ((x > 8) || (x < -8))
+		{
+			steer = -(double)x / 127.0;
+			steer = (steer > 1.0) ? 1.0 : ((steer < -1.0) ? -1.0 : steer);
+		}
+	}
+	ZmWF(s_extZpc.m, in + 0x00u, ExtZp_ToPs2(steer));
+	ZmWF(s_extZpc.m, in + 0x04u, ExtZp_ToPs2(steer));
+	ZmWF(s_extZpc.m, in + 0x08u, ((held & BTN_CROSS) != 0) ? PS2F_ONE : 0u);
+	ZmWF(s_extZpc.m, in + 0x0Cu, ((held & BTN_SQUARE) != 0) ? PS2F_ONE : 0u);
+	ZmWF(s_extZpc.m, in + 0x10u, ((held & BTN_SQUARE) != 0) ? PS2F_ONE : 0u);
+	ZmW8(s_extZpc.m, in + 0x14u, ((held & BTN_R1) != 0) ? 1u : 0u);
+	ZmW8(s_extZpc.m, in + 0x15u, ((held & BTN_L1) != 0) ? 1u : 0u);
+}
+
+// The body -> Reload's kart (after every tick).
+internal void ExtZpc_WriteBack(struct Driver *d)
+{
+	double ps[3], vs[3], q[4], ri[3], fw[3], up[3], upR[3], fwR[3], s0[3], p[3], v[3];
+
+	ExtZpc_ReadVec(s_extZpc.body + EXT_ZPC_H_POS, ps);
+	ExtZpc_ReadVec(s_extZpc.body + EXT_ZPC_H_VEL, vs);
+	q[0] = Ps2F_ToDouble(ZmRF(s_extZpc.m, s_extZpc.body + EXT_ZPC_H_QUAT_W));
+	ExtZpc_ReadVec(s_extZpc.body + EXT_ZPC_H_QUAT_XYZ, &q[1]);
+	{
+		const double l = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+		if (l > 0.0)
+			for (int k = 0; k < 4; k++)
+				q[k] /= l;
+	}
+	ExtZpc_AxesFromQuat(q, ri, fw, up);
+	ExtZp_DirFromSource(up, upR);
+	ExtZp_DirFromSource(fw, fwR);
+	ExtZpc_Norm(upR);
+	ExtZpc_Norm(fwR);
+	ExtZp_PointFromSource(ps, p);
+	ExtZp_DirFromSource(vs, v);
+	for (int k = 0; k < 3; k++)
+	{
+		const double pk = (p[k] - EXT_ZPC_BODY_UP_E * upR[k]) * 256.0;
+		const double vk = v[k] * EXT_ZPC_VEL_PER_MS;
+		(&d->posCurr.x)[k] = (s32)floor(pk + 0.5);
+		(&d->velocity.x)[k] = (s32)floor(vk + 0.5);
+		s_extZpc.keepPos[k] = (&d->posCurr.x)[k];
+		s_extZpc.keepVel[k] = (&d->velocity.x)[k];
+		s_extZpc.up[k] = upR[k];
+		s_extZpc.fwd[k] = fwR[k];
+	}
+	ExtZpc_Cross(upR, fwR, s0); // column 0 = up x forward (ZUORDNUNG 3)
+	for (int k = 0; k < 3; k++)
+	{
+		d->matrixFacingDir.m[k][0] = (s16)floor(s0[k] * 4096.0 + 0.5);
+		d->matrixFacingDir.m[k][1] = (s16)floor(upR[k] * 4096.0 + 0.5);
+		d->matrixFacingDir.m[k][2] = (s16)floor(fwR[k] * 4096.0 + 0.5);
+	}
+	d->matrixMovingDir = d->matrixFacingDir;
+	{
+		const SVec3 upS = {(s16)floor(upR[0] * 4096.0 + 0.5), (s16)floor(upR[1] * 4096.0 + 0.5), (s16)floor(upR[2] * 4096.0 + 0.5)};
+		int heading;
+		ExtPhys_PortUp(d, &upS);
+		if (ExtPhys_ZoneHeadingTo(d, (int)(fwR[0] * 4096.0), (int)(fwR[1] * 4096.0), (int)(fwR[2] * 4096.0), &heading))
+		{
+			d->rotCurr.y = (s16)heading;
+			d->angle = (s16)heading;
+		}
+	}
+	VehPhysCrash_ConvertVecToSpeed(d, &d->velocity);
+}
+
+// The step log of one tick: the record head, the objects, the arguments and the
+// pages before the step (queries follow from ExtZp_ReloadQuery), then the pages
+// after it. Within one stay in the zone only the pages that differ from the
+// last logged image are written (head word 4 = 1; the reader keeps the image).
+typedef struct
+{
+	uint32_t addr;
+	uint8_t bytes[4096];
+} ExtZpcPage;
+global_variable ExtZpcPage *s_extZpcImage;
+global_variable int s_extZpcImageCount, s_extZpcImageCap;
+global_variable int s_extZpcDelta; // 1 = an image of the previous step is kept
+
+internal void ExtZpc_LogPage(uint32_t pageAddr, uint8_t *bytes, void *user)
+{
+	static uint8_t blob[4 + 4096];
+	ExtZpcPage *img = NULL;
+
+	for (int i = 0; i < s_extZpcImageCount; i++)
+	{
+		if (s_extZpcImage[i].addr == pageAddr)
+		{
+			img = &s_extZpcImage[i];
+			break;
+		}
+	}
+	if ((img != NULL) && s_extZpcDelta && (memcmp(img->bytes, bytes, 4096) == 0))
+	{
+		return;
+	}
+	if (img == NULL)
+	{
+		if (s_extZpcImageCount == s_extZpcImageCap)
+		{
+			const int cap = s_extZpcImageCap ? 2 * s_extZpcImageCap : 256;
+			ExtZpcPage *grown = (ExtZpcPage *)realloc(s_extZpcImage, (size_t)cap * sizeof(ExtZpcPage));
+			if (grown != NULL)
+			{
+				s_extZpcImage = grown;
+				s_extZpcImageCap = cap;
+			}
+		}
+		if (s_extZpcImageCount < s_extZpcImageCap)
+		{
+			img = &s_extZpcImage[s_extZpcImageCount++];
+			img->addr = pageAddr;
+		}
+	}
+	if (img != NULL)
+	{
+		memcpy(img->bytes, bytes, 4096);
+	}
+	memcpy(blob, &pageAddr, 4);
+	memcpy(blob + 4, bytes, 4096);
+	ExtZp_LogBlob(*(const uint32_t *)user, blob, sizeof(blob));
+}
+
+internal void ExtZpc_Tick(struct Driver *d)
+{
+	const int log = ExtZp_LogOn();
+
+	ExtZpc_Inputs(d);
+	if (log)
+	{
+		const uint32_t head[5] = {(uint32_t)sdata->gGT->timer, (uint32_t)d->driverID, EXT_ZP_LOG_STEP_ZONE, EXT_ZPC_STEP_FUNC, (uint32_t)s_extZpcDelta};
+		uint32_t args[17];
+		char note[160];
+		const uint32_t pre = EXT_ZP_TAG('P', 'R', 'E', ' ');
+		ExtZp_LogBegin(EXT_ZP_TAG('S', 'T', 'E', 'P'), head, 5);
+		snprintf(note, sizeof(note), "K=0x%08x E=0x%08x H=0x%08x W=0x%08x", s_extZpc.kart, s_extZpc.entity, s_extZpc.body, s_extZpc.world);
+		ExtZp_LogBlob(EXT_ZP_TAG('N', 'O', 'T', 'E'), note, (uint32_t)strlen(note));
+		memset(args, 0, sizeof(args));
+		args[0] = s_extZpc.world;
+		args[8] = s_extZpc.dt;
+		ExtZp_LogBlob(EXT_ZP_TAG('A', 'R', 'G', 'S'), args, sizeof(args));
+		ExtZpMem_ForEachPage(s_extZpc.m, ExtZpc_LogPage, (void *)&pre);
+	}
+	ExtZp_Step_336b60(&s_extZpc.c, s_extZpc.world, s_extZpc.dt);
+	s_extZpc.steps++;
+	if (log)
+	{
+		const uint32_t post = EXT_ZP_TAG('P', 'O', 'S', 'T');
+		const uint32_t ret[2] = {0u, 0u};
+		ExtZpMem_ForEachPage(s_extZpc.m, ExtZpc_LogPage, (void *)&post);
+		ExtZp_LogBlob(EXT_ZP_TAG('R', 'E', 'T', ' '), ret, sizeof(ret));
+		ExtZp_LogEnd();
+		s_extZpcDelta = 1;
+	}
+	ExtZpc_WriteBack(d);
+	if ((s_extZpc.steps % 30u) == 1u)
+	{
+		const ExtZpMem *m = s_extZpc.m;
+		Platform_Log("[CTR ExtZp] port tick %u frame %d pos %d %d %d vel %d %d %d state %u ground %u maglev %u spline %d speed %.2f faults %u leaves %d\n",
+		             (unsigned)s_extZpc.steps, (int)sdata->gGT->timer, d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8, d->velocity.x, d->velocity.y,
+		             d->velocity.z, (unsigned)ZmR32((ExtZpMem *)m, s_extZpc.kart + EXT_ZPC_K_STATE), (unsigned)ZmR8((ExtZpMem *)m, s_extZpc.kart + EXT_ZPC_K_GROUND),
+		             (unsigned)ZmR8((ExtZpMem *)m, s_extZpc.kart + EXT_ZPC_K_MAGLEV), (int)ZmR32((ExtZpMem *)m, s_extZpc.kart + EXT_ZPC_K_SPLINE),
+		             Ps2F_ToDouble(ZmRF((ExtZpMem *)m, s_extZpc.kart + EXT_ZPC_K_SPEED)), (unsigned)ExtZpMem_Faults(m), s_extZpc.c.leaves);
+	}
+}
+
+// The driver stage hooks (game/MAIN/MainFrame.c): 1 = Reload does not run this
+// stage for this driver. Without the switch both return at once.
+int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
+{
+	(void)t;
+	if (!s_extZpc.ready || (d->driverID != 0))
+	{
+		return 0;
+	}
+	if (stage == DRIVER_FUNC_PHYS_LINEAR)
+	{
+		const int zone = ExtPhys_DriverZone(d);
+		if (!s_extZpc.active && (zone != 0))
+		{
+			if (!ExtZpc_LoadWorld())
+			{
+				Platform_Log("[CTR ExtZp] port entry frame %d: the world did not load - Reload keeps the kart\n", (int)sdata->gGT->timer);
+				s_extZpc.ready = 0;
+				return 0;
+			}
+			ExtZpc_Enter(d);
+			s_extZpcDelta = 0; // the first step of a stay logs every page
+			s_extZpc.active = 1;
+			s_extZpc.entries++;
+			s_extZpc.enteredFrame = (uint32_t)sdata->gGT->timer;
+			Platform_Log("[CTR ExtZp] port entry %u frame %d zone %d pos %d %d %d\n", (unsigned)s_extZpc.entries, (int)sdata->gGT->timer, zone, d->posCurr.x >> 8,
+			             d->posCurr.y >> 8, d->posCurr.z >> 8);
+		}
+		else if (s_extZpc.active && (zone == 0))
+		{
+			s_extZpc.active = 0;
+			Platform_Log("[CTR ExtZp] port exit frame %d after %u tick(s) pos %d %d %d\n", (int)sdata->gGT->timer, (unsigned)((uint32_t)sdata->gGT->timer - s_extZpc.enteredFrame),
+			             d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8);
+		}
+		return 0;
+	}
+	if (!s_extZpc.active)
+	{
+		return 0;
+	}
+	switch (stage)
+	{
+	case DRIVER_FUNC_APPLY_FORCES:
+		ExtZpc_Tick(d);
+		return 1;
+	case DRIVER_FUNC_COLL_MOVED:
+	case DRIVER_FUNC_COLLIDE_DRIVERS:
+	case DRIVER_FUNC_JUMP_FRICTION:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+void ExtZp_StageDone(struct Thread *t, struct Driver *d, int stage)
+{
+	(void)t;
+	if (!s_extZpc.ready || !s_extZpc.active || (d->driverID != 0))
+	{
+		return;
+	}
+	if (stage == DRIVER_FUNC_COLL_FIXED)
+	{
+		// the ground search keeps its bookkeeping; position and velocity stay the port's
+		for (int k = 0; k < 3; k++)
+		{
+			(&d->posCurr.x)[k] = s_extZpc.keepPos[k];
+			(&d->velocity.x)[k] = s_extZpc.keepVel[k];
+		}
+	}
+	else if (stage == DRIVER_FUNC_TRANSLATE_MATRIX)
+	{
+		// the drawn matrix is the port's orientation (TranslateMatrix built it from up and heading)
+		struct Instance *inst = t->inst;
+		double s0[3];
+		const SVec3 upS = {(s16)floor(s_extZpc.up[0] * 4096.0 + 0.5), (s16)floor(s_extZpc.up[1] * 4096.0 + 0.5), (s16)floor(s_extZpc.up[2] * 4096.0 + 0.5)};
+		ExtZpc_Cross(s_extZpc.up, s_extZpc.fwd, s0);
+		for (int k = 0; k < 3; k++)
+		{
+			d->matrixFacingDir.m[k][0] = (s16)floor(s0[k] * 4096.0 + 0.5);
+			d->matrixFacingDir.m[k][1] = (s16)floor(s_extZpc.up[k] * 4096.0 + 0.5);
+			d->matrixFacingDir.m[k][2] = (s16)floor(s_extZpc.fwd[k] * 4096.0 + 0.5);
+		}
+		if ((inst != NULL) && (d->matrixArray == BAKED_GTE_MATRIX_NONE))
+		{
+			for (int r = 0; r < 3; r++)
+				for (int k = 0; k < 3; k++)
+					inst->matrix.m[r][k] = d->matrixFacingDir.m[r][k];
+		}
+		ExtPhys_PortUp(d, &upS);
+	}
+}
+
+int ExtZp_PortKartState(ExtZpKartView *out)
+{
+	ExtZpMem *m = s_extZpc.m;
+	double q[4];
+
+	memset(out, 0, sizeof(*out));
+	if (!s_extZpc.ready || !s_extZpc.active || (m == NULL))
+	{
+		return 0;
+	}
+	out->active = 1;
+	out->kart = s_extZpc.kart;
+	out->body = s_extZpc.body;
+	out->entity = s_extZpc.entity;
+	out->world = s_extZpc.world;
+	out->state = (int)ZmR32(m, s_extZpc.kart + EXT_ZPC_K_STATE);
+	out->ground = ZmR8(m, s_extZpc.kart + EXT_ZPC_K_GROUND);
+	out->maglev = ZmR8(m, s_extZpc.kart + EXT_ZPC_K_MAGLEV);
+	out->spline = (int)ZmR32(m, s_extZpc.kart + EXT_ZPC_K_SPLINE);
+	out->node = (int)ZmR32(m, s_extZpc.kart + 0x468u);
+	out->speed = Ps2F_ToDouble(ZmRF(m, s_extZpc.kart + EXT_ZPC_K_SPEED));
+	out->airTime = Ps2F_ToDouble(ZmRF(m, s_extZpc.kart + 0x498u));
+	ExtZpc_ReadVec(s_extZpc.body + EXT_ZPC_H_POS, out->pos);
+	ExtZpc_ReadVec(s_extZpc.body + EXT_ZPC_H_VEL, out->vel);
+	q[0] = Ps2F_ToDouble(ZmRF(m, s_extZpc.body + EXT_ZPC_H_QUAT_W));
+	ExtZpc_ReadVec(s_extZpc.body + EXT_ZPC_H_QUAT_XYZ, &q[1]);
+	{
+		const double l = sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+		if (l > 0.0)
+			for (int k = 0; k < 4; k++)
+				q[k] /= l;
+	}
+	ExtZpc_AxesFromQuat(q, out->right, out->forward, out->up);
+	for (int k = 0; k < 3; k++)
+	{
+		out->posReload[k] = s_extZpc.keepPos[k] / 256.0;
+		out->upReload[k] = s_extZpc.up[k];
+		out->forwardReload[k] = s_extZpc.fwd[k];
+	}
+	return 1;
+}
+
+// The selftest part of the coupling (--ext-selftest phys): the orientation
+// conversions on the two measured dumps (a turn about up; a general one) and
+// their round trip.
+void ExtZp_CoupleSelftest(int *checks, int *failures, void (*log)(const char *line))
+{
+	// slot 6: q (w 0.71396, z 0.70019) -> right (0.01947, 0.99981, 0), forward (-0.99981, 0.01947, 0), up (0, 0, 1)
+	// slot 7: q (0.09573, -0.08436, 0.00832, 0.99179) -> right (-0.96744, 0.18848, -0.16892), forward (-0.19128, -0.98154, 0.00035), up (-0.16573, 0.03264, 0.98563)
+	static const double qs[2][4] = {{0.71396, 0.0, 0.0, 0.70019}, {0.09573, -0.08436, 0.00832, 0.99179}};
+	static const double want[2][3][3] = {{{0.01947, 0.99981, 0.0}, {-0.99981, 0.01947, 0.0}, {0.0, 0.0, 1.0}},
+	                                     {{-0.96744, 0.18848, -0.16892}, {-0.19128, -0.98154, 0.00035}, {-0.16573, 0.03264, 0.98563}}};
+	for (int t = 0; t < 2; t++)
+	{
+		double q[4], r[3], f[3], u[3], q2[4], err = 0.0, err2 = 0.0, l = 0.0;
+		for (int k = 0; k < 4; k++)
+			l += qs[t][k] * qs[t][k];
+		for (int k = 0; k < 4; k++)
+			q[k] = qs[t][k] / sqrt(l);
+		ExtZpc_AxesFromQuat(q, r, f, u);
+		for (int k = 0; k < 3; k++)
+		{
+			err = fmax(err, fabs(r[k] - want[t][0][k]));
+			err = fmax(err, fabs(f[k] - want[t][1][k]));
+			err = fmax(err, fabs(u[k] - want[t][2][k]));
+		}
+		ExtZp_Check(err < 2e-4, "coupling: body quaternion -> entity rows (measured dump)", checks, failures, log);
+		ExtZpc_QuatFromAxes(r, f, u, q2);
+		if (q2[0] * q[0] + q2[1] * q[1] + q2[2] * q[2] + q2[3] * q[3] < 0.0)
+			for (int k = 0; k < 4; k++)
+				q2[k] = -q2[k];
+		for (int k = 0; k < 4; k++)
+			err2 = fmax(err2, fabs(q2[k] - q[k]));
+		ExtZp_Check(err2 < 1e-12, "coupling: entity rows -> quaternion round trip", checks, failures, log);
+	}
+	{
+		// right = forward x up (ZUORDNUNG 3) on slot 6
+		double r[3];
+		ExtZpc_Cross(want[0][1], want[0][2], r);
+		ExtZp_Check(fabs(r[0] - want[0][0][0]) < 1e-4 && fabs(r[1] - want[0][0][1]) < 1e-4 && fabs(r[2]) < 1e-9, "coupling: right = forward x up", checks, failures, log);
+	}
+	{
+		ExtZpKartView v;
+		ExtZp_Check(!ExtZp_PortActive() && (ExtZp_PortMemory(NULL, NULL, NULL, NULL) == NULL) && !ExtZp_PortKartState(&v) && !v.active,
+		            "coupling: off without the switch", checks, failures, log);
+	}
 }

@@ -20,6 +20,8 @@ void Engine_RenderFrameBegin(int bank);
 // From platform/engine_exttrack.c: the external track learns of the pause of
 // the game's audio (returns at once without --ext-track).
 void ExtTrack_OnAudioPause(int paused);
+int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage);
+void ExtZp_StageDone(struct Thread *t, struct Driver *d, int stage);
 
 static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 {
@@ -389,12 +391,23 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 
 							psVar9 = (struct Driver *)psVar12->object;
 
+#if defined(CTR_NATIVE)
+							// the external track's zone port (--dev-ext-zone-port) may take this stage
+							if (ExtZp_StageSkip(psVar12, psVar9, iVar11))
+							{
+								continue;
+							}
+#endif
+
 							pcVar5 = psVar9->funcPtrs[iVar11];
 
 							if (pcVar5 != 0)
 							{
 								pcVar5(psVar12, psVar9);
 							}
+#if defined(CTR_NATIVE)
+							ExtZp_StageDone(psVar12, psVar9, iVar11);
+#endif
 						}
 					}
 				}

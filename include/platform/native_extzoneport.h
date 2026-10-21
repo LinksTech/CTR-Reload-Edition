@@ -121,7 +121,10 @@ Ps2F ExtZp_ToPs2(double v);
 //   record: u32 tag, u32 bytes that follow, then the body
 //     'LEVL' body: u32 layout version, then blobs (the level's port data)
 //     'STEP' body: u32 frame, u32 seat, u32 step kind (1 zone physics, 2 chase
-//            camera), then blobs
+//            camera), u32 func (the source function the step is), u32 delta
+//            (1: 'PRE '/'POST' hold only the pages that differ from the last
+//            logged image of this stay in the zone - the reader keeps the
+//            image; 0: every page), then blobs
 //   blob:   u32 tag, u32 length, bytes (padded to 4)
 //     'PRE ' the port state before the step, 'POST' after, 'QRY ' one query:
 //     u32 query kind, then its input and its answer as the port's structs.
@@ -154,6 +157,39 @@ int ExtZp_WorldPages(void);
 int ExtZp_WorldWords(void);
 int ExtZp_WorldBad(void);
 void ExtZp_WorldSelftest(int *checks, int *failures, void (*log)(const char *line));
+
+// THE COUPLING (--dev-ext-zone-port): the port computes seat 0's kart while
+// Reload has it in an anti-gravity zone (see platform/native_extzoneport.c).
+struct Driver;
+struct Thread;
+extern int g_cfg_extZonePort;
+void ExtZp_CoupleLevel(void);                                      // once per level, after physics.source was read
+int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage); // driver stage hook: 1 = Reload skips the stage
+void ExtZp_StageDone(struct Thread *t, struct Driver *d, int stage); // after a stage ran
+int ExtZp_PortActive(void);                                        // the port has seat 0's kart now
+// The port's memory and seat 0's objects while the port is active (NULL otherwise),
+// for the chase camera's glue: read only.
+const ExtZpMem *ExtZp_PortMemory(uint32_t *kart, uint32_t *body, uint32_t *entity, uint32_t *world);
+// Seat 0's kart as the port has it (for the chase camera's glue). 0 and active 0
+// while the port does not drive the kart (then Reload's own state holds).
+typedef struct ExtZpKartView
+{
+	int active;            // 1 = the port drives seat 0 now (values below valid)
+	uint32_t kart, body, entity, world; // the objects in the port's memory
+	int state;             // K+0x3E0: 2 drive, 3 reverse, 4 air, 5/6 slide, ...
+	int ground;            // K+0x402: 1 = ground contact this step
+	int maglev;            // K+0x428: 1 = maglev (anti-gravity) on
+	int spline;            // K+0x464: maggrav spline index, -1 none
+	int node;              // K+0x468: its node
+	double speed;          // K+0x42C: the kart's speed (m/s)
+	double airTime;        // K+0x498: time in the air (s)
+	double pos[3], vel[3]; // the body (source metres, m/s; z up)
+	double right[3], forward[3], up[3]; // the body's axes (source, unit)
+	double posReload[3];   // Reload world units: the kart point (posCurr / 256, 0.6 m below the body)
+	double upReload[3], forwardReload[3];
+} ExtZpKartView;
+int ExtZp_PortKartState(ExtZpKartView *out);
+void ExtZp_CoupleSelftest(int *checks, int *failures, void (*log)(const char *line)); // part of --ext-selftest phys
 
 // The selftest part (called by --ext-selftest phys): the reader on a made-up
 // section, the mapping, the log record layout.

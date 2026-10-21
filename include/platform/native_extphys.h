@@ -77,6 +77,8 @@ void ExtPhys_BotGround(const struct Driver *bot, const struct QuadBlock *ground,
 // Respawn (M3): put the driver into zone `zone` (the record's zone,
 // ExtColl_ProbeSurface) with this up, its normals set to it; zone 0 = world.
 void ExtPhys_SeedDriver(struct Driver *d, const SVec3 *up, int zone);
+// The zone port drives the kart: its up becomes the zone's and the kart's up.
+void ExtPhys_PortUp(struct Driver *d, const SVec3 *up);
 // The driver's zone id (0 none); its up (1 in a zone, else 0 and world up);
 // its forward (the drawn frame's forward; returns 1 in a zone).
 int ExtPhys_DriverZone(const struct Driver *d);
