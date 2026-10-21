@@ -983,17 +983,63 @@ internal void ExtPhys_ZoneStep(int seat, const struct Driver *d, int grounded, i
 	}
 }
 
+// THE MAGLEV BOXES (night run 1, NL1_M1_SPEZ.md Z2). The source game switches
+// its anti-gravity state also by boxes: a driver outside a zone that is in a
+// "maglev-on" box enters the track's first zone (its up stays world up until
+// it stands on the zone's surface), one in a zone that is in a "maglev-off"
+// box leaves it. The surface the driver stands on this frame has the last
+// word, as the source game's contacts have it after its box test (Z9): an
+// "on" box over a road without a zone gives no zone, an "off" box over the
+// zone's own surface does not take the driver out. Only the player physics
+// (ExtPhys_AfterGroundSearch); without boxes nothing of this runs.
+// grounded / zoneGround: the driver stands on a record / on one of a zone.
+internal void ExtPhys_MaglevBoxes(int seat, const struct Driver *d, int grounded, int zoneGround)
+{
+	ExtPhysSeatZone *s = &s_extPhysZone[seat];
+	const double pos[3] = {d->posCurr.x / 256.0, d->posCurr.y / 256.0, d->posCurr.z / 256.0};
+
+	if ((s_extPhys.p.maglevCount == 0) || (s_extPhys.p.zoneCount == 0) || (s->inZone ? zoneGround : (grounded && !zoneGround)))
+	{
+		return;
+	}
+	for (int v = 0; v < s_extPhys.p.maglevCount; v++)
+	{
+		if ((s_extPhys.p.maglev[v].on != (s->inZone ? 0 : 1)) || !ExtPhys_InBox(&s_extPhys.p.maglev[v].box, pos))
+		{
+			continue;
+		}
+		Platform_Log("[CTR ExtZone] seat %d maglev box %s (%s) frame %d\n", seat, s_extPhys.p.maglev[v].box.name, s_extPhys.p.maglev[v].on ? "on" : "off",
+		             s_extPhysRun.tick + 2);
+		if (s->inZone)
+		{
+			ExtPhys_LeaveZone(seat, s, d, "maglev-off box");
+			return;
+		}
+		s->inZone = 1;
+		s->zone = 1;
+		s->up = (SVec3){0, 4096, 0};
+		s->airMs = 0;
+		s->leftFrame = 0;
+		Platform_Log("[CTR ExtZone] seat %d enter zone %d frame %d lap %d\n", seat, s_extPhys.p.zones[0].id, s_extPhysRun.tick + 2, (int)d->lapIndex);
+		return;
+	}
+}
+
 // Z-a: after the ground search of a driver with the player physics
-// (COLL_FIXED_PlayerSearch): its ground record decides the zone.
+// (COLL_FIXED_PlayerSearch): its ground record decides the zone (before it
+// the maglev boxes of the track, if any).
 void ExtPhys_AfterGroundSearch(const struct Driver *d)
 {
 	const int grounded = ((d->collisionFlags & DRIVER_COLL_FLAG_GROUNDED) != 0) && (d->currBlockTouching != NULL);
+	int id;
 
 	if (ExtPhys_SeatZone(d) == NULL)
 	{
 		return;
 	}
-	ExtPhys_ZoneStep(d->driverID, d, grounded, grounded ? ExtColl_RecordZone(d->currBlockTouching) : 0, d->normalVecUP, sdata->gGT->elapsedTimeMS);
+	id = grounded ? ExtColl_RecordZone(d->currBlockTouching) : 0;
+	ExtPhys_MaglevBoxes(d->driverID, d, grounded, (id > 0) && (ExtPhys_ZoneIndex(id) >= 0));
+	ExtPhys_ZoneStep(d->driverID, d, grounded, id, d->normalVecUP, sdata->gGT->elapsedTimeMS);
 }
 
 void ExtPhys_BotGround(const struct Driver *bot, const struct QuadBlock *ground, const SVec3 *normal)
@@ -1733,6 +1779,41 @@ int ExtPhys_Selftest(void)
 		ExtPhys_ZoneStep(0, &td, 1, 0, slope, 33);
 		ExtPhys_TestCheck(!s->inZone, "back in, then on ground without a zone: out at once", &checks, &failures);
 		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+	}
+	{
+		// the maglev boxes (A2): "on" box -> in the track's first zone with world
+		// up, "off" box -> out; the frame's surface has the last word
+		static struct Driver tb;
+		ExtPhysSeatZone *s = &s_extPhysZone[0];
+
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		ExtPhys_TestRead("{\"physics\": {\"zones\": [{\"id\": 5}], \"maglev_volumes\": [{\"name\": \"on\", \"kind\": \"on\", \"center\": [0, 0, 0], \"axes\": "
+		                 "[[1, 0, 0], [0, 1, 0], [0, 0, 1]], \"half\": [100, 100, 100]}, {\"name\": \"off\", \"kind\": \"off\", \"center\": [1000, 0, 0], "
+		                 "\"axes\": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], \"half\": [100, 100, 100]}]}}",
+		                 &s_extPhys.p);
+		memset(&tb, 0, sizeof(tb));
+		tb.posCurr.x = 500 << 8;
+		ExtPhys_MaglevBoxes(0, &tb, 0, 0);
+		ExtPhys_TestCheck(!s->inZone, "maglev boxes: between the boxes nothing changes", &checks, &failures);
+		tb.posCurr.x = 50 << 8;
+		ExtPhys_MaglevBoxes(0, &tb, 1, 0);
+		ExtPhys_TestCheck(!s->inZone, "an on box over a road without a zone: no zone", &checks, &failures);
+		ExtPhys_MaglevBoxes(0, &tb, 0, 0);
+		ExtPhys_TestCheck(s->inZone && (s->zone == 1) && (s->up.y == 4096) && (s->airMs == 0), "an on box in the air: in the first zone, world up", &checks,
+		                  &failures);
+		tb.posCurr.x = 1000 << 8;
+		ExtPhys_MaglevBoxes(0, &tb, 1, 1);
+		ExtPhys_TestCheck(s->inZone, "an off box over the zone's own surface: still in", &checks, &failures);
+		ExtPhys_MaglevBoxes(0, &tb, 0, 0);
+		ExtPhys_TestCheck(!s->inZone && (s->leftZone == 5), "an off box in the air: out", &checks, &failures);
+		tb.posCurr.x = 50 << 8;
+		s->inZone = 1;
+		s->zone = 1;
+		ExtPhys_MaglevBoxes(0, &tb, 0, 0);
+		ExtPhys_TestCheck(s->inZone, "in a zone an on box changes nothing (hysteresis)", &checks, &failures);
+		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
 	}
 	{
 		// gravity volumes: read, a box turned 45 degrees about y, the point test,
