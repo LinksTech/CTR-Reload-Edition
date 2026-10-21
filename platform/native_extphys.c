@@ -37,6 +37,7 @@ enum
 	EXT_PHYS_MAGLEV_MAX = 32,
 	EXT_PHYS_MAGGRAV_MAX = 16,
 	EXT_PHYS_SPLINES_MAX = 16,
+	EXT_PHYS_DISP_BASE = EXT_PHYS_SPLINES_MAX, // the magdisp splines follow the maggrav ones in splines[]
 	EXT_PHYS_SPLINE_NODES_MAX = 512,
 	EXT_PHYS_LOW_SPEED_MAX = 32767,
 };
@@ -141,7 +142,16 @@ typedef struct
 		int type;  // EXT_PHYS_GRAV_*, -1 an empty entry
 		int first; // its first node in nodes[]
 		int count; // its nodes (0: unusable)
-	} splines[EXT_PHYS_SPLINES_MAX];
+	} splines[EXT_PHYS_SPLINES_MAX * 2]; // maggrav 0..splineCount-1, magdisp EXT_PHYS_DISP_BASE + 0..dispCount-1
+	// physics.magdisp_splines: the source game's second spline set (its index the
+	// one of maggrav<NN>), only the target of the kart's alignment (A2)
+	int dispCount;
+	// physics.maglev_align: the kart's up turned the source game's way in a zone
+	// (0x190670 target, 0x197510 rate min(1 / tau, 1 / dt)); air_ray: how far the
+	// zone surface under the kart is looked for in the air (units)
+	int alignSet;
+	double alignTau;
+	double alignRay;
 	int nodeCount;
 	double nodes[EXT_PHYS_SPLINE_NODES_MAX][6]; // position (Reload units), direction
 	// measuring only (--dev-kart-steer-zone-hands-off): 1 = the segment from this
@@ -319,19 +329,24 @@ internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int 
 			p->maggravCount++;
 		}
 	}
-	else if (strcmp(name, "maggrav_splines") == 0)
+	else if ((strcmp(name, "maggrav_splines") == 0) || (strcmp(name, "magdisp_splines") == 0))
 	{
-		for (int s = ExtJson_First(doc, key); (s >= 0) && (p->splineCount < EXT_PHYS_SPLINES_MAX); s = ExtJson_Next(doc, s))
+		const int disp = (strcmp(name, "magdisp_splines") == 0);
+		const int base = disp ? EXT_PHYS_DISP_BASE : 0;
+		int *count = disp ? &p->dispCount : &p->splineCount;
+
+		for (int s = ExtJson_First(doc, key); (s >= 0) && (*count < EXT_PHYS_SPLINES_MAX); s = ExtJson_Next(doc, s))
 		{
+			const int at = base + *count;
 			const int nodes = (ExtJson_Type(doc, s) == EXT_JSON_OBJECT) ? ExtJson_Get(doc, s, "nodes") : -1;
 			const int n = (nodes >= 0) ? ExtJson_Count(doc, nodes) : 0;
 			int type = -1;
 			int ok = 1;
 
 			// the entry keeps its place in the list (the index of maggrav<NN>)
-			p->splines[p->splineCount].type = -1;
-			p->splines[p->splineCount].first = p->nodeCount;
-			p->splines[p->splineCount].count = 0;
+			p->splines[at].type = -1;
+			p->splines[at].first = p->nodeCount;
+			p->splines[at].count = 0;
 			// (a type outside -1..2 is no gravity type: not clamped, the entry unusable)
 			if ((ExtJson_Type(doc, s) == EXT_JSON_OBJECT) && (ExtPhys_ReadInt(doc, ExtJson_Get(doc, s, "type"), -1000, 1000, &type, p) == 1) &&
 			    ((type < -1) || (type > EXT_PHYS_GRAV_INVPOINT)))
@@ -347,8 +362,8 @@ internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int 
 				}
 				if (ok)
 				{
-					p->splines[p->splineCount].type = type;
-					p->splines[p->splineCount].count = n;
+					p->splines[at].type = type;
+					p->splines[at].count = n;
 					p->nodeCount += n;
 				}
 				else
@@ -360,8 +375,25 @@ internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int 
 			{
 				p->badValues++;
 			}
-			p->splineCount++;
+			(*count)++;
 		}
+	}
+	else if (strcmp(name, "maglev_align") == 0)
+	{
+		// {"tau": s, "air_ray": units}: both numbers in range, else not taken
+		const int t = (ExtJson_Type(doc, key) == EXT_JSON_OBJECT) ? ExtJson_Get(doc, key, "tau") : -1;
+		const int r = (ExtJson_Type(doc, key) == EXT_JSON_OBJECT) ? ExtJson_Get(doc, key, "air_ray") : -1;
+		const double tau = (ExtJson_Type(doc, t) == EXT_JSON_NUMBER) ? ExtJson_Number(doc, t, 0.0) : -1.0;
+		const double ray = (ExtJson_Type(doc, r) == EXT_JSON_NUMBER) ? ExtJson_Number(doc, r, 0.0) : -1.0;
+
+		if ((tau < 0.001) || (tau > 10.0) || (ray < 0.0) || (ray > 100000.0))
+		{
+			p->badValues++;
+			return;
+		}
+		p->alignSet = 1;
+		p->alignTau = tau;
+		p->alignRay = ray;
 	}
 	else if (strcmp(name, "maglev_boxes_win") == 0)
 	{
@@ -641,7 +673,8 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 			}
 		}
 		else if ((strcmp(name, "maglev_volumes") == 0) || (strcmp(name, "maggrav_volumes") == 0) || (strcmp(name, "maggrav_splines") == 0) ||
-		         (strcmp(name, "maglev_low_speed") == 0) || (strcmp(name, "maglev_forces") == 0) || (strcmp(name, "maglev_boxes_win") == 0))
+		         (strcmp(name, "maglev_low_speed") == 0) || (strcmp(name, "maglev_forces") == 0) || (strcmp(name, "maglev_boxes_win") == 0) ||
+		         (strcmp(name, "magdisp_splines") == 0) || (strcmp(name, "maglev_align") == 0))
 		{
 			ExtPhys_ReadAntigrav(doc, name, key, p);
 		}
@@ -867,6 +900,17 @@ void ExtPhys_OnLevelLoaded(void)
 		{
 			Platform_Log("[CTR ExtPhys] maggrav spline %d: type %d, %d node(s)\n", s, p->splines[s].type, p->splines[s].count);
 		}
+	}
+	if ((p->dispCount > 0) || p->alignSet)
+	{
+		int usable = 0;
+
+		for (int s = 0; s < p->dispCount; s++)
+		{
+			usable += (p->splines[EXT_PHYS_DISP_BASE + s].count >= 2);
+		}
+		Platform_Log("[CTR ExtPhys] magdisp splines %d (%d usable), maglev align %s (tau %.3f s, air ray %.0f)\n", p->dispCount, usable,
+		             p->alignSet ? "on" : "off", p->alignTau, p->alignRay);
 	}
 	if (p->forcesSet)
 	{
@@ -2662,6 +2706,21 @@ int ExtPhys_Selftest(void)
 		ExtPhys_TestCheck((sp.splineCount == 2) && sp.segStraight[0] && sp.segStraight[1] && sp.segStraight[2] && !sp.segStraight[3] && !sp.segStraight[4] &&
 		                      !sp.segStraight[6],
 		                  "straight runs: 3 x 400 straight, a 10 degree kink ends it, 2 x 300 and a lone 900 are too short", &checks, &failures);
+	}
+	// physics.magdisp_splines (kept from EXT_PHYS_DISP_BASE on, a null entry keeps its place) and physics.maglev_align
+	{
+		ExtPhysParams dp;
+
+		ExtPhys_TestRead("{\"physics\": {\"maggrav_splines\": [{\"type\": 2, \"nodes\": [[0, 0, 0, 0, 1, 0], [0, 0, 900, 0, 1, 0]]}], "
+		                 "\"magdisp_splines\": [{\"type\": -1, \"nodes\": []}, {\"type\": 2, \"nodes\": [[5, 0, 0, 0, 1, 0], [5, 0, 900, 0, 1, 0]]}], "
+		                 "\"maglev_align\": {\"tau\": 0.1, \"air_ray\": 640}}}",
+		                 &dp);
+		ExtPhys_TestCheck((dp.splineCount == 1) && (dp.dispCount == 2) && (dp.splines[EXT_PHYS_DISP_BASE].count == 0) &&
+		                      (dp.splines[EXT_PHYS_DISP_BASE + 1].count == 2) && (dp.nodes[dp.splines[EXT_PHYS_DISP_BASE + 1].first][0] == 5.0) &&
+		                      dp.alignSet && (dp.alignTau == 0.1) && (dp.alignRay == 640.0) && (dp.badValues == 0),
+		                  "magdisp_splines after the maggrav ones (null entry kept), maglev_align read", &checks, &failures);
+		ExtPhys_TestRead("{\"physics\": {\"maglev_align\": {\"tau\": 0}}}", &dp);
+		ExtPhys_TestCheck(!dp.alignSet && (dp.badValues == 1), "maglev_align: a bad tau or a missing air_ray takes nothing", &checks, &failures);
 	}
 
 	// fixup round 2: physics.maglev_forces (all keys or none) and the force sizes
