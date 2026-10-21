@@ -590,6 +590,9 @@ int ExtZc_Answer(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResu
 		ZmW32(m, in->a[0] + 0x6Cu, 0u);
 		ZmW32(m, in->a[0] + 0x78u, 0u);
 		return 1;
+	case 0x003AFE10u:
+		ExtZp_Pen_3afe10(c, in->a[0]);
+		return 1;
 	case 0x00380FA0u:
 		zc_detect_set(c, in);
 		return 1;
@@ -665,3 +668,7 @@ int ExtZc_Selftest(void)
 	(void)checks;
 	return (failures == 0) ? 0 : 1;
 }
+
+// the ported penetration handling (parts pa and pb)
+#include "native_extzonecontact_pa.c"
+#include "native_extzonecontact_pb.c"

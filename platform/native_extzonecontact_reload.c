@@ -24,12 +24,34 @@ static int zcr_box_meets(const struct BoundingBox *b, const double lo[3], const 
 	         ((double)b->max.z < lo[2]) || ((double)b->min.z > hi[2]));
 }
 
+// measuring only: calls, triangles handed out and host time, one log line per 3000 calls
+static uint32_t s_zcrCalls, s_zcrTris, s_zcrLeaves;
+static uint64_t s_zcrTicks;
+
+static int zcr_triangles(const double centre[3], double reach, ExtZcTri *out, int max);
+
 int ExtZc_ReloadTriangles(void *user, const double centre[3], double reach, ExtZcTri *out, int max)
+{
+	const uint64_t t0 = SDL_GetPerformanceCounter();
+	const int n = zcr_triangles(centre, reach, out, max);
+	(void)user;
+	s_zcrTicks += SDL_GetPerformanceCounter() - t0;
+	s_zcrCalls++;
+	s_zcrTris += (uint32_t)n;
+	if ((s_zcrCalls % 3000u) == 0u)
+	{
+		const double ms = 1000.0 * (double)s_zcrTicks / (double)SDL_GetPerformanceFrequency();
+		Platform_Log("[CTR ExtZc] triangle provider: %u calls, %.2f triangles and %.1f leaves per call, %.4f ms per call (%.1f ms in all)\n", s_zcrCalls,
+		             (double)s_zcrTris / (double)s_zcrCalls, (double)s_zcrLeaves / (double)s_zcrCalls, ms / (double)s_zcrCalls, ms);
+	}
+	return n;
+}
+
+static int zcr_triangles(const double centre[3], double reach, ExtZcTri *out, int max)
 {
 	struct mesh_info *mesh;
 	double rc[3], rx[3], one[3], scale, r, lo[3], hi[3];
 	int n = 0;
-	(void)user;
 	if ((sdata->gGT == NULL) || (sdata->gGT->level1 == NULL))
 		return 0;
 	mesh = COLL_WorldMesh(sdata->gGT->level1);
@@ -52,6 +74,7 @@ int ExtZc_ReloadTriangles(void *user, const double centre[3], double reach, ExtZ
 		const struct BSP *node = &mesh->bspRoot[b];
 		if (((node->flag & BSP_NODE_FLAG_LEAF) == 0) || !zcr_box_meets(&node->box, lo, hi))
 			continue;
+		s_zcrLeaves++;
 		for (int q = 0; (q < node->data.leaf.numQuads) && (n < max); q++)
 		{
 			const struct QuadBlock *rec = &node->data.leaf.ptrQuadBlockArray[q];

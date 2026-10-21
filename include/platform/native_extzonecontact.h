@@ -117,7 +117,7 @@ void ExtZc_Configure(const ExtZcConfig *cfg);
 //             built from the record; v0 = 1 if P + 0xEC is not empty.
 //   0x3771C0, 0x377290, 0x377620, 0x36F840  the detector's list keeping
 //             before/after the step and after a penetration (pair list P + 0xC8)
-//   0x3AFE10  the penetration handling: ExtZp_Pen_3afe10 (ported below; answered once the port is in the build)
+//   0x3AFE10  the penetration handling: ExtZp_Pen_3afe10 (ported below)
 //   0x380FA0  detect for a given set of bodies (a0 = DET, a1 = the body set,
 //             a2/a3/t0 = the output vectors: new pairs, records, pairs)
 //   0x380FB0  one pair's overlap test (a0 = DET, a1 = pair): v0 = 1 if the
