@@ -103,6 +103,13 @@ int ExtPhys_ZoneSideGrip(const struct Driver *d, int x, int y, int z, int gravit
 // switch it back; out of every box of that kind the surface rule holds again.
 // Without the key (0) the frame's surface has the last word as before.
 //   [CTR ExtZone] seat S out of the on|off box frame F
+// Measuring only (game/DebugMenu.c --dev-kart-steer-zone-hands-off): 1 = the
+// driver is in a zone on a maggrav spline; aim = the direction to steer along
+// (world, any length: the spline's direction the way the kart goes, or in a
+// loop about the spline its velocity without the part along the spline);
+// *straight = its segment lies in a straight run of the spline (every turn
+// between neighbouring segments <= 2.5 degrees, the run >= 1000 units). Reads only.
+int ExtPhys_SplineSteer(const struct Driver *d, int *straight, double aim[3]);
 // Z-e: speed <-> velocity in the surface frame of AxisAngle1 (right, normal,
 // forward at heading 0, the convention of VehPhysForce_RotAxisAngle); 1 = in a
 // zone (converted), 0 = untouched.

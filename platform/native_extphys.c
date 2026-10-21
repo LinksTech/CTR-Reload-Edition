@@ -144,6 +144,9 @@ typedef struct
 	} splines[EXT_PHYS_SPLINES_MAX];
 	int nodeCount;
 	double nodes[EXT_PHYS_SPLINE_NODES_MAX][6]; // position (Reload units), direction
+	// measuring only (--dev-kart-steer-zone-hands-off): 1 = the segment from this
+	// node lies in a straight run of its spline (ExtPhys_MarkStraight)
+	unsigned char segStraight[EXT_PHYS_SPLINE_NODES_MAX];
 	int lowSpeedSet;
 	int lowSpeed; // the game's speed units (d->speed)
 	// the source game's force sizes in a zone (physics.maglev_forces, fixup
@@ -747,6 +750,68 @@ int ExtPhys_PadFireLevel(int fireLevel)
 	return s_extPhys.p.padFireLevel;
 }
 
+// THE STRAIGHT RUNS OF THE MAGGRAV SPLINES (measuring only): a maximal run of
+// segments of one spline in which every turn between neighbours is at most
+// EXT_PHYS_STRAIGHT_TURN_DEG and that is at least EXT_PHYS_STRAIGHT_MIN_LEN
+// long (the rule of the measuring tool for the sideways drift).
+#define EXT_PHYS_STRAIGHT_TURN_DEG 2.5
+#define EXT_PHYS_STRAIGHT_MIN_LEN 1000.0
+
+internal void ExtPhys_SegDir(const ExtPhysParams *p, int first, int k, double t[3], double *len)
+{
+	const double *a = p->nodes[first + k];
+	const double *b = p->nodes[first + k + 1];
+
+	*len = sqrt((b[0] - a[0]) * (b[0] - a[0]) + (b[1] - a[1]) * (b[1] - a[1]) + (b[2] - a[2]) * (b[2] - a[2]));
+	for (int i = 0; i < 3; i++)
+	{
+		t[i] = (*len > 0.0) ? ((b[i] - a[i]) / *len) : 0.0;
+	}
+}
+
+internal void ExtPhys_MarkStraight(ExtPhysParams *p)
+{
+	const double cosMax = cos(EXT_PHYS_STRAIGHT_TURN_DEG * 3.14159265358979323846 / 180.0);
+
+	memset(p->segStraight, 0, sizeof(p->segStraight));
+	for (int s = 0; s < p->splineCount; s++)
+	{
+		const int first = p->splines[s].first;
+		const int segs = p->splines[s].count - 1;
+		int start = 0;
+
+		for (int k = 1; k <= segs; k++)
+		{
+			double t0[3], t1[3], l0, l1;
+			int cut = (k == segs);
+
+			if (!cut)
+			{
+				ExtPhys_SegDir(p, first, k - 1, t0, &l0);
+				ExtPhys_SegDir(p, first, k, t1, &l1);
+				cut = (t0[0] * t1[0] + t0[1] * t1[1] + t0[2] * t1[2]) < cosMax;
+			}
+			if (cut)
+			{
+				double length = 0.0;
+
+				for (int j = start; j < k; j++)
+				{
+					double t[3], l;
+
+					ExtPhys_SegDir(p, first, j, t, &l);
+					length += l;
+				}
+				for (int j = start; (j < k) && (length >= EXT_PHYS_STRAIGHT_MIN_LEN); j++)
+				{
+					p->segStraight[first + j] = 1;
+				}
+				start = k;
+			}
+		}
+	}
+}
+
 void ExtPhys_OnLevelLoaded(void)
 {
 	const ExtJsonDoc *json = ExtTrack_Json();
@@ -755,6 +820,7 @@ void ExtPhys_OnLevelLoaded(void)
 
 	ExtPhys_Read(json, (json != NULL) ? ExtTrack_Section("physics") : -1, &s_extPhys.p);
 	ExtPhys_MakeRows(&s_extPhys.p, s_extPhys.rows);
+	ExtPhys_MarkStraight(&s_extPhys.p);
 	for (int t = 0; t < EXT_PHYS_TERRAINS; t++)
 	{
 		if (p->terrainSet[t] != 0)
@@ -1596,6 +1662,48 @@ int ExtPhys_ZoneSideGrip(const struct Driver *d, int x, int y, int z, int gravit
 	}
 	*outX = ExtPhys_SideGripWith(&s_extPhys.p, (d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0, (d->actionsFlagSet & ACTION_ACCEL_PREVENTION) != 0, x, y, z,
 	                             gravityX, sdata->gGT->elapsedTimeMS);
+	return 1;
+}
+
+int ExtPhys_SplineSteer(const struct Driver *d, int *straight, double aim[3])
+{
+	const ExtPhysSeatZone *s = ExtPhys_SeatZone(d);
+	const ExtPhysMag *m;
+	double t[3], v[3], len, vt, vl;
+	int first;
+
+	*straight = 0;
+	if ((s == NULL) || !s->inZone)
+	{
+		return 0;
+	}
+	m = &s_extPhysMag[d->driverID];
+	if ((m->spline == 0) || (m->node < 0))
+	{
+		return 0;
+	}
+	first = s_extPhys.p.splines[m->spline - 1].first;
+	ExtPhys_SegDir(&s_extPhys.p, first, m->node, t, &len);
+	*straight = s_extPhys.p.segStraight[first + m->node];
+	v[0] = d->velocity.x;
+	v[1] = d->velocity.y;
+	v[2] = d->velocity.z;
+	vl = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+	vt = v[0] * t[0] + v[1] * t[1] + v[2] * t[2];
+	if ((vl > 0.0) && (fabs(vt) >= 0.5 * vl))
+	{
+		// along the spline: its direction the way the kart goes
+		for (int i = 0; i < 3; i++)
+		{
+			aim[i] = (vt < 0.0) ? -t[i] : t[i];
+		}
+		return 1;
+	}
+	// around it (a loop about the spline): the velocity without its part along the spline
+	for (int i = 0; i < 3; i++)
+	{
+		aim[i] = v[i] - vt * t[i];
+	}
 	return 1;
 }
 
@@ -2540,6 +2648,20 @@ int ExtPhys_Selftest(void)
 			ExtPhys_TestCheck(!ExtPhys_ZoneSideGrip(&td2, 100, 0, 1000, 5, &x) && (x == 77), "side grip: untouched outside a zone with maglev_forces",
 			                  &checks, &failures);
 		}
+	}
+
+	// measuring: the straight runs of a spline (every turn <= 2.5 deg, >= 1000 units)
+	{
+		ExtPhysParams sp;
+
+		ExtPhys_TestRead("{\"physics\": {\"maggrav_splines\": [{\"type\": 2, \"nodes\": [[0, 0, 0, 0, 1, 0], [0, 0, 400, 0, 1, 0], [0, 0, 800, 0, 1, 0], "
+		                 "[0, 0, 1200, 0, 1, 0], [52.1, 0, 1495.4, 0, 1, 0], [104.2, 0, 1790.8, 0, 1, 0]]}, {\"type\": 2, \"nodes\": [[0, 0, 0, 0, 1, 0], "
+		                 "[0, 0, 900, 0, 1, 0]]}]}}",
+		                 &sp);
+		ExtPhys_MarkStraight(&sp);
+		ExtPhys_TestCheck((sp.splineCount == 2) && sp.segStraight[0] && sp.segStraight[1] && sp.segStraight[2] && !sp.segStraight[3] && !sp.segStraight[4] &&
+		                      !sp.segStraight[6],
+		                  "straight runs: 3 x 400 straight, a 10 degree kink ends it, 2 x 300 and a lone 900 are too short", &checks, &failures);
 	}
 
 	// fixup round 2: physics.maglev_forces (all keys or none) and the force sizes
