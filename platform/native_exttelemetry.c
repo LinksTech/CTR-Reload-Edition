@@ -19,6 +19,8 @@
 //   [CTR ExtTel] f T pos X Y Z vel VX VY VZ step SX SY SZ speed S SA ks K grab G
 //     gnd N norm NX NY NZ kup UX UY UZ mat M00 M01 M02 M10 M11 M12 M20 M21 M22
 //     zone Z zup ZX ZY ZZ cam PX PY PZ rot RX RY RZ eye EX EY EZ cmat C00 .. C22
+//     probe P mag M pz PZ pg PG gz GZ ter TT tp TP vol V vp VP zp ZP box B spl S node N
+//     gfs GS gf GF gdir DX DY DZ aup AX AY AZ
 // T = gGT->timer (the frame number of the camera line); pos = posCurr / 256;
 // vel = velocity / 256 (the game's velocity vector); step = posCurr - posPrev
 // (/ 256, the move of this frame); speed = speed and speedApprox; ks = kartState;
@@ -29,6 +31,13 @@
 // outside a zone); cam = pushBuffer[0].pos, rot = pushBuffer[0].rot (what the
 // camera of this frame's logic set); eye / cmat = matrix_Camera.t / .m - the
 // matrix last built for drawing, i.e. of the frame before (as --dev-ext-cam-log).
+// probe .. aup = ExtPhys_ProbeState (M1, read only): P its return (1 = the zones
+// are in force), mag maglev, pz its zone id, pg ground, gz the zone id of the
+// ground record (Z9: != 0 = maglev surface), ter its terrain (-1 none), tp / vol /
+// vp / zp track percent, gravity volume (-1 none), its percent, zone percent, box
+// the maggrav box, spl its spline, node the segment (-1 none), gfs gravity from
+// the spline, gf the log frame of the zone gravity read (0 none: world -Y), gdir
+// its direction (4096, "down"), aup the up the kart is turned to.
 //
 // A log only: it reads the driver, the instance and the push buffer and writes
 // nothing of the game, draws no random number and touches no GTE register.
@@ -51,10 +60,14 @@ internal int ExtTel_Format(char *out, size_t size, int frame, const struct Drive
 	const int ground = ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) ? 1 : 0;
 	const int grab = (d->kartState == KS_MASK_GRABBED) ? 1 : 0;
 
+	ExtPhysProbe pr;
+	const int probe = ExtPhys_ProbeState(d, &pr);
+
 	return snprintf(out, size,
 	                "[CTR ExtTel] f %d pos %.2f %.2f %.2f vel %.2f %.2f %.2f step %.2f %.2f %.2f speed %d %d ks %d grab %d gnd %d norm %d %d %d "
 	                "kup %d %d %d mat %d %d %d %d %d %d %d %d %d zone %d zup %d %d %d cam %d %d %d rot %d %d %d eye %d %d %d "
-	                "cmat %d %d %d %d %d %d %d %d %d\n",
+	                "cmat %d %d %d %d %d %d %d %d %d probe %d mag %d pz %d pg %d gz %d ter %d tp %d vol %d vp %d zp %d box %d spl %d node %d "
+	                "gfs %d gf %d gdir %d %d %d aup %d %d %d\n",
 	                frame, d->posCurr.x / 256.0, d->posCurr.y / 256.0, d->posCurr.z / 256.0, d->velocity.x / 256.0, d->velocity.y / 256.0,
 	                d->velocity.z / 256.0, (d->posCurr.x - d->posPrev.x) / 256.0, (d->posCurr.y - d->posPrev.y) / 256.0,
 	                (d->posCurr.z - d->posPrev.z) / 256.0, (int)d->speed, (int)d->speedApprox, (int)d->kartState, grab, ground, (int)d->normalVecUP.x,
@@ -64,7 +77,10 @@ internal int ExtTel_Format(char *out, size_t size, int frame, const struct Drive
 	                (int)zup->y, (int)zup->z, (int)pb->pos.x, (int)pb->pos.y, (int)pb->pos.z, (int)pb->rot.x, (int)pb->rot.y, (int)pb->rot.z,
 	                (int)pb->matrix_Camera.t[0], (int)pb->matrix_Camera.t[1], (int)pb->matrix_Camera.t[2], (int)pb->matrix_Camera.m[0][0],
 	                (int)pb->matrix_Camera.m[0][1], (int)pb->matrix_Camera.m[0][2], (int)pb->matrix_Camera.m[1][0], (int)pb->matrix_Camera.m[1][1],
-	                (int)pb->matrix_Camera.m[1][2], (int)pb->matrix_Camera.m[2][0], (int)pb->matrix_Camera.m[2][1], (int)pb->matrix_Camera.m[2][2]);
+	                (int)pb->matrix_Camera.m[1][2], (int)pb->matrix_Camera.m[2][0], (int)pb->matrix_Camera.m[2][1], (int)pb->matrix_Camera.m[2][2],
+	                probe, pr.maglev, pr.zone, pr.ground, pr.groundZone, pr.terrain, pr.trackPercent, pr.volume, pr.volumePercent, pr.zonePercent,
+	                pr.maggravBox, pr.spline, pr.node, pr.gravFromSpline, pr.gravFrame, (int)pr.gravDir.x, (int)pr.gravDir.y, (int)pr.gravDir.z,
+	                (int)pr.alignUp.x, (int)pr.alignUp.y, (int)pr.alignUp.z);
 }
 
 // From the dispatcher once per logic frame (after the game logic).
@@ -74,7 +90,7 @@ void ExtTel_OnLogicFrame(void)
 	const struct Driver *d;
 	SVec3 zup;
 	int zone;
-	char line[768];
+	char line[1024];
 
 	if (!g_cfg_extTelemetry)
 	{
