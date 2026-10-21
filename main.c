@@ -126,6 +126,8 @@
 #include "platform/native_extchasecam.c"
 #include "platform/native_extzoneworld.c"
 #include "platform/native_extzoneport.c"
+#include "platform/native_extzonecontact.c"
+#include "platform/native_extzonecontact_reload.c"
 #include "platform/native_extphys.c"
 #include "platform/native_exttrack_race.c"
 #include "platform/native_exttrack_nav.c"
