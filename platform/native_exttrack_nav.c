@@ -28,25 +28,25 @@ enum
 	EXTNAV_OPCODE_NONE = 0x0C00, // no lane change (BOTS.c:84-87)
 	EXTNAV_FLAGS_TERRAIN = 0xF8, // the bot's terrain is (u8)flags >> 3 (BOTS.c:1804); no trick bits
 	EXTNAV_TERRAIN_MAX = 20,     // VehAfterColl_GetTerrain: 21 entries
-	EXTNAV_BLOCK_WORDS = (sizeof(struct NavHeader) + (EXTNAV_FRAMES_MAX * sizeof(struct NavFrame)) + 3) / 4,
+	EXTNAV_BLOCK_WORDS = (sizeof(struct NavHeader) + (EXTNAV_FRAMES_MAX_LONG * sizeof(struct NavFrame)) + 3) / 4,
 };
 
 // One block per path: the header, the frames right behind it
 // (NAVHEADER_GETFRAME). Static: no pool of the game is touched, and the paths
-// outlive every reload; 3 x 20.5 KB.
+// outlive every reload; 3 x 80 KB (room for long paths).
 global_variable u32 s_extNavBlock[EXTNAV_PATHS][EXTNAV_BLOCK_WORDS];
 global_variable struct NavHeader *s_extNavTable[EXTNAV_PATHS];
 
 // The JSON's integers, so that a source never points into the reader's nodes.
-global_variable int s_extNavFields[EXTNAV_PATHS][EXTNAV_FRAMES_MAX * EXTNAV_FIELDS];
-global_variable int s_extNavUpFields[EXTNAV_PATHS][EXTNAV_FRAMES_MAX * 3];
-global_variable int s_extNavZoneFields[EXTNAV_PATHS][EXTNAV_FRAMES_MAX];
+global_variable int s_extNavFields[EXTNAV_PATHS][EXTNAV_FRAMES_MAX_LONG * EXTNAV_FIELDS];
+global_variable int s_extNavUpFields[EXTNAV_PATHS][EXTNAV_FRAMES_MAX_LONG * 3];
+global_variable int s_extNavZoneFields[EXTNAV_PATHS][EXTNAV_FRAMES_MAX_LONG];
 
 // The anti-gravity side tables of the installed paths (frame index = the frame's
 // place behind its header). s_extNavZonesOn = 0: no zone frame at all, every
 // query returns at once.
-global_variable s16 s_extNavUp[EXTNAV_PATHS][EXTNAV_FRAMES_MAX][3];
-global_variable u8 s_extNavZone[EXTNAV_PATHS][EXTNAV_FRAMES_MAX];
+global_variable s16 s_extNavUp[EXTNAV_PATHS][EXTNAV_FRAMES_MAX_LONG][3];
+global_variable u8 s_extNavZone[EXTNAV_PATHS][EXTNAV_FRAMES_MAX_LONG];
 global_variable int s_extNavCount[EXTNAV_PATHS];
 global_variable int s_extNavZonesOn;
 global_variable int s_extNavInstalled; // the last ExtNav_Install took the paths (ExtNav_UpAt)
@@ -59,7 +59,7 @@ enum
 	EXTNAV_UP_TOLERANCE = 64, // |up| = 4096 +- 64
 };
 
-internal const char *ExtNav_CheckPath(const struct ExtNavPathSrc *p, int checkpoints, int *badFrame)
+internal const char *ExtNav_CheckPath(const struct ExtNavPathSrc *p, int checkpoints, int longPaths, int *badFrame)
 {
 	int f;
 
@@ -68,7 +68,11 @@ internal const char *ExtNav_CheckPath(const struct ExtNavPathSrc *p, int checkpo
 	{
 		return "fewer than 2 frames (BOTS_Driver_Init makes no bot on such a path)";
 	}
-	if (p->count > EXTNAV_FRAMES_MAX)
+	if (p->count > EXTNAV_FRAMES_MAX_LONG)
+	{
+		return "more than 4095 frames (the most of long_paths)";
+	}
+	if (!longPaths && (p->count > EXTNAV_FRAMES_MAX))
 	{
 		return "more than 1023 frames";
 	}
@@ -214,7 +218,7 @@ int ExtNav_Install(struct Level *lev, const struct ExtNavSrc *src)
 		for (k = 0; (k < EXTNAV_PATHS) && (why == NULL); k++)
 		{
 			badPath = k;
-			why = ExtNav_CheckPath(&src->path[k], lev->cnt_restart_points, &bad);
+			why = ExtNav_CheckPath(&src->path[k], lev->cnt_restart_points, src->longPaths, &bad);
 		}
 	}
 
@@ -238,6 +242,11 @@ int ExtNav_Install(struct Level *lev, const struct ExtNavSrc *src)
 	lev->LevNavTable = s_extNavTable;
 	s_extNavInstalled = 1;
 	Platform_Log("[CTR ExtTrack] nav: 3 paths in the level against %d checkpoints\n", lev->cnt_restart_points);
+	if (src->longPaths)
+	{
+		Platform_Log("[CTR ExtTrack] nav: long paths (up to %d frames, no path change): %d / %d / %d frames\n", EXTNAV_FRAMES_MAX_LONG, s_extNavCount[0],
+		             s_extNavCount[1], s_extNavCount[2]);
+	}
 	if (s_extNavZonesOn)
 	{
 		int zf[EXTNAV_PATHS] = {0, 0, 0};
@@ -273,6 +282,7 @@ internal const char *ExtNav_ReadJson(struct ExtNavSrc *src, int *badPath, int *b
 	}
 
 	src->checkpointCount = (int)ExtJson_Number(doc, ExtJson_Get(doc, sec, "checkpoint_count"), -1.0);
+	src->longPaths = ExtJson_Bool(doc, ExtJson_Get(doc, sec, "long_paths"), 0);
 	paths = ExtJson_Get(doc, sec, "paths");
 	if ((ExtJson_Type(doc, paths) != EXT_JSON_ARRAY) || (ExtJson_Count(doc, paths) != EXTNAV_PATHS))
 	{
@@ -290,9 +300,9 @@ internal const char *ExtNav_ReadJson(struct ExtNavSrc *src, int *badPath, int *b
 		{
 			return "a path's magic is not -0x1303";
 		}
-		if ((ExtJson_Type(doc, frames) != EXT_JSON_ARRAY) || (ExtJson_Count(doc, frames) > EXTNAV_FRAMES_MAX))
+		if ((ExtJson_Type(doc, frames) != EXT_JSON_ARRAY) || (ExtJson_Count(doc, frames) > (src->longPaths ? EXTNAV_FRAMES_MAX_LONG : EXTNAV_FRAMES_MAX)))
 		{
-			return "frames is not an array of at most 1023";
+			return src->longPaths ? "frames is not an array of at most 4095 (long_paths)" : "frames is not an array of at most 1023";
 		}
 
 		for (f = 0, frame = ExtJson_First(doc, frames); frame >= 0; f++, frame = ExtJson_Next(doc, frame))
@@ -904,6 +914,59 @@ int ExtNav_Selftest(void)
 		ExtNav_Expect(!ExtNav_Install(&lev, &src), "8 up without zone refused", &n, &failures);
 		src.path[1].up = NULL;
 		ExtNav_Expect(ExtNav_Install(&lev, &src) && !s_extNavZonesOn, "8 whole again without zones", &n, &failures);
+	}
+
+	// 9: LONG PATHS - 1500 frames refused without long_paths (as before),
+	// taken with it (every frame behind the header, numPoints 1500), more than
+	// 4095 refused, and a path change still refused in a long path
+	{
+		static int longFields[EXTNAV_PATHS][(EXTNAV_FRAMES_MAX_LONG + 1) * EXTNAV_FIELDS];
+		const int lengths[2] = {1500, EXTNAV_FRAMES_MAX_LONG + 1};
+		int li;
+
+		for (li = 0; li < 2; li++)
+		{
+			for (k = 0; k < EXTNAV_PATHS; k++)
+			{
+				int f;
+
+				ExtNav_TestPath(longFields[k], lengths[li], (k - 1) * 200, 8);
+				for (f = 0; f < lengths[li]; f++)
+				{
+					longFields[k][(f * EXTNAV_FIELDS) + 0] = -14000 + (240 * (f % 120));
+					longFields[k][(f * EXTNAV_FIELDS) + 2] = ((k - 1) * 200) + (400 * (f / 120));
+				}
+				src.path[k].count = lengths[li];
+				src.path[k].fields = longFields[k];
+				src.path[k].up = NULL;
+				src.path[k].zone = NULL;
+			}
+			if (li == 0)
+			{
+				src.longPaths = 0;
+				ExtNav_Expect(!ExtNav_Install(&lev, &src) && (lev.LevNavTable == NULL), "9 1500 frames without long_paths refused", &n, &failures);
+				src.longPaths = 1;
+				ExtNav_Expect(ExtNav_Install(&lev, &src) && (lev.LevNavTable == s_extNavTable) && (s_extNavTable[1]->numPoints == 1500) &&
+				                  (NAVHEADER_GETFRAME(s_extNavTable[1])[1499].goBackCount == 7) &&
+				                  (NAVHEADER_GETFRAME(s_extNavTable[1])[1499].pos.x == (-14000 + (240 * (1499 % 120)))) &&
+				                  (ExtNav_FrameZone(NAVHEADER_GETFRAME(s_extNavTable[2]) + 1499) == 0),
+				              "9 1500 frames with long_paths taken, the last frame copied", &n, &failures);
+				longFields[2][(1200 * EXTNAV_FIELDS) + 10] = 0x0001; // a path change to path 0 frame 1
+				ExtNav_Expect(!ExtNav_Install(&lev, &src), "9 a path change in a long path refused", &n, &failures);
+				longFields[2][(1200 * EXTNAV_FIELDS) + 10] = EXTNAV_OPCODE_NONE;
+			}
+			else
+			{
+				ExtNav_Expect(!ExtNav_Install(&lev, &src) && (lev.LevNavTable == NULL), "9 4096 frames refused also with long_paths", &n, &failures);
+			}
+		}
+		src.longPaths = 0;
+		for (k = 0; k < EXTNAV_PATHS; k++)
+		{
+			src.path[k].count = 16;
+			src.path[k].fields = fields[k];
+		}
+		ExtNav_Expect(ExtNav_Install(&lev, &src) && (s_extNavTable[0]->numPoints == 16), "9 the short paths again", &n, &failures);
 	}
 
 	if (failures == 0)

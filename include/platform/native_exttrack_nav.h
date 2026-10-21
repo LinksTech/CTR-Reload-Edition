@@ -16,6 +16,12 @@ enum
 	EXTNAV_PATHS = 3,         // BOTS_NAV_PATH_COUNT (game/BOTS.c:28)
 	EXTNAV_FIELDS = 13,       // integers per frame
 	EXTNAV_FRAMES_MAX = 1023, // the frame field of pathChangeOpcode is 10 bits (BOTS.c:42-43)
+	// LONG PATHS (nav.long_paths, a lap longer than ~3.8 km): up to 4095 frames.
+	// The 10-bit field is only the target of a path change, which no external
+	// path has (every frame's opcode must be 0x0C00, so BOTS.c:1240 never
+	// takes one); otherwise BOTS.c walks the frames by pointer and counts
+	// them in numPoints (s16).
+	EXTNAV_FRAMES_MAX_LONG = 4095,
 };
 
 // One path as handed to ExtNav_Install: count frames of EXTNAV_FIELDS ints.
@@ -31,6 +37,7 @@ struct ExtNavSrc
 {
 	int pathCount;
 	int checkpointCount; // must equal lev->cnt_restart_points
+	int longPaths;       // nav.long_paths: up to EXTNAV_FRAMES_MAX_LONG frames per path, else EXTNAV_FRAMES_MAX
 	struct ExtNavPathSrc path[EXTNAV_PATHS];
 };
 
