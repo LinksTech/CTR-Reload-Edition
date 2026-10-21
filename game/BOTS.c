@@ -742,10 +742,16 @@ enum
 static const struct NavFrame *s_botsExtLastFrame[BOTS_EXT_SEATS];
 static int s_botsExtOnArc[BOTS_EXT_SEATS];
 
-static int BOTS_ExtPortalArc(struct Driver *d, const struct NavFrame *curr, int groundUnder)
+// 1 = the bot's rail went over a jump frame since the last tick (from the last
+// tick's frame up to, not including, this tick's: a fast bot passes the jump
+// frame and the exit place within one tick, run fr2/b3-v2); then the bot is at
+// the rail's height of this tick at once (quadBlockHeight is the rail's lerp
+// here, before any ground probe - the old height would find the track above
+// the exit) and rides the arc.
+static int BOTS_ExtPortalPass(struct Driver *d, const struct NavFrame *curr)
 {
-	const struct NavFrame *last;
-	int id;
+	const struct NavFrame *last, *f, *first, *end;
+	int id, steps, passed = 0;
 
 	if (!BOTS_ExtAirPitch(d) || (curr == NULL))
 	{
@@ -754,11 +760,42 @@ static int BOTS_ExtPortalArc(struct Driver *d, const struct NavFrame *curr, int 
 	id = (int)d->driverID & (BOTS_EXT_SEATS - 1);
 	last = s_botsExtLastFrame[id];
 	s_botsExtLastFrame[id] = curr;
-	if ((last != NULL) && (last != curr) && (last->distToNextNavXYZ == 1) && (last->distToNextNavXZ == 1))
+	first = sdata->NavPath_ptrNavFrameArray[d->botData.botPath];
+	end = sdata->NavPath_ptrHeader[d->botData.botPath]->last;
+	if ((last == NULL) || (last == curr) || (last < first) || (last >= end))
+	{
+		return 0;
+	}
+	for (f = last, steps = 0; (f != curr) && (steps < 16); steps++)
+	{
+		if ((f->distToNextNavXYZ == 1) && (f->distToNextNavXZ == 1))
+		{
+			passed = 1;
+			break;
+		}
+		f = NAVFRAME_GETNEXTFRAME(f);
+		if (f >= end)
+		{
+			f = first;
+		}
+	}
+	if (passed)
 	{
 		s_botsExtOnArc[id] = 1;
 		ExtPhys_SeedDriver(d, NULL, 0);
 	}
+	return passed;
+}
+
+static int BOTS_ExtPortalArc(struct Driver *d, const struct NavFrame *curr, int groundUnder)
+{
+	int id;
+
+	if (!BOTS_ExtAirPitch(d) || (curr == NULL))
+	{
+		return 0;
+	}
+	id = (int)d->driverID & (BOTS_EXT_SEATS - 1);
 	if (s_botsExtOnArc[id] && groundUnder)
 	{
 		s_botsExtOnArc[id] = 0;
@@ -2092,6 +2129,14 @@ UpdateTireColorTimer:
 	    CTR_MipsAddLo(navFrameCurr->pos.y, CTR_MipsSra(CTR_MipsMulLo(CTR_MipsSubLo(navFrameNext->pos.y, navFrameCurr->pos.y), percentage), 0xc)), 8);
 	botDriver->botData.positionBackup.z = CTR_MipsSll(
 	    CTR_MipsAddLo(navFrameCurr->pos.z, CTR_MipsSra(CTR_MipsMulLo(CTR_MipsSubLo(navFrameNext->pos.z, navFrameCurr->pos.z), percentage), 0xc)), 8);
+
+	// External track with portals: a portal pass puts the bot at the rail's height
+	// of the exit at once, no fall speed (BOTS_ExtPortalPass).
+	if (BOTS_ExtPortalPass(botDriver, navFrameCurr))
+	{
+		botDriver->botData.positionBackup.y = botDriver->quadBlockHeight;
+		botDriver->botData.aiPhysics.speedY = 0;
+	}
 
 	// External anti-gravity zone: no free-physics slide (it moves in world x/z,
 	// off a wall or ceiling); the bot stays on its rail.
