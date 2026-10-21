@@ -983,6 +983,214 @@ internal void ExtPhys_ZoneStep(int seat, const struct Driver *d, int grounded, i
 	}
 }
 
+// THE MAGGRAV SPLINES (night run 1, NL1_M1_SPEZ.md Z5-Z7, G1-G6, K4). A
+// driver in a maggrav box follows the box's spline: on entering the nearest
+// node over the whole spline, then every frame the nearest segment of the old
+// node and its neighbours. In a zone the gravity then points along the
+// spline's direction at the driver (PLANE: the nodes' directions blended,
+// POINT: towards the spline, INVPOINT: away from it) - except on the ground
+// under maglev_low_speed, where the zone's up keeps it (K4). Without a box,
+// spline or low speed nothing of this runs.
+
+typedef struct
+{
+	int box;        // the maggrav box the driver is in, + 1 (0 none)
+	int spline;     // its spline + 1 (0 none or unusable)
+	int node;       // the segment the driver is at, -1 none
+	int fromSpline; // the last frame's gravity came from the spline (log only)
+} ExtPhysMag;
+
+global_variable ExtPhysMag s_extPhysMag[EXT_PHYS_SEATS];
+
+internal const double *ExtPhys_Node(const ExtPhysParams *p, int spline, int i)
+{
+	return p->nodes[p->splines[spline].first + i];
+}
+
+// The squared distance of P from segment j -> j + 1 (0x28B3F0's arithmetic).
+internal double ExtPhys_SegmentDist2(const ExtPhysParams *p, int spline, int j, const double P[3])
+{
+	const double *a = ExtPhys_Node(p, spline, j);
+	const double *b = ExtPhys_Node(p, spline, j + 1);
+	const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+	const double dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+	const double u = (dd > 0.0) ? (((P[0] - a[0]) * d[0] + (P[1] - a[1]) * d[1] + (P[2] - a[2]) * d[2]) / dd) : 0.0;
+	double c[3];
+
+	for (int k = 0; k < 3; k++)
+	{
+		c[k] = (u <= 0.0) ? a[k] : ((u >= 1.0) ? b[k] : (a[k] + u * d[k]));
+	}
+	return (c[0] - P[0]) * (c[0] - P[0]) + (c[1] - P[1]) * (c[1] - P[1]) + (c[2] - P[2]) * (c[2] - P[2]);
+}
+
+// Z7: segments max(i - 1, 0) .. min(i + 1, n - 2), the nearest wins, the first
+// of equal ones; -1 for a spline without a segment.
+internal int ExtPhys_SplineLocal(const ExtPhysParams *p, int spline, int i, const double P[3])
+{
+	const int n = p->splines[spline].count;
+	const int lo = (i - 1 < 0) ? 0 : (i - 1);
+	const int hi = (i + 1 > n - 2) ? (n - 2) : (i + 1);
+	int best = -1;
+	double bestD = 0.0;
+
+	for (int j = lo; j <= hi; j++)
+	{
+		const double dist = ExtPhys_SegmentDist2(p, spline, j, P);
+
+		if ((best < 0) || (dist < bestD))
+		{
+			best = j;
+			bestD = dist;
+		}
+	}
+	return best;
+}
+
+// Z6 (0x28B320): the nearest node over the whole spline, then Z7 from it.
+internal int ExtPhys_SplineNearest(const ExtPhysParams *p, int spline, const double P[3])
+{
+	int best = -1;
+	double bestD = 0.0;
+
+	for (int i = 0; i < p->splines[spline].count; i++)
+	{
+		const double *a = ExtPhys_Node(p, spline, i);
+		const double dist = (a[0] - P[0]) * (a[0] - P[0]) + (a[1] - P[1]) * (a[1] - P[1]) + (a[2] - P[2]) * (a[2] - P[2]);
+
+		if ((best < 0) || (dist < bestD))
+		{
+			best = i;
+			bestD = dist;
+		}
+	}
+	return (best < 0) ? -1 : ExtPhys_SplineLocal(p, spline, best, P);
+}
+
+// G1-G6 (0x28B600): the direction of the gravity at P from segment i; 0 when
+// it has no length (a point on the spline of type POINT / INVPOINT).
+internal int ExtPhys_SplineDir(const ExtPhysParams *p, int spline, int i, const double P[3], double out[3])
+{
+	const int n = p->splines[spline].count;
+	const int ia = (i >= n - 1) ? (n - 2) : i;
+	const double *a = ExtPhys_Node(p, spline, ia);
+	const double *b = ExtPhys_Node(p, spline, ia + 1);
+	const double d[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+	const double dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+	double u = (dd > 0.0) ? (((P[0] - a[0]) * d[0] + (P[1] - a[1]) * d[1] + (P[2] - a[2]) * d[2]) / dd) : 0.0;
+	double v[3], len;
+
+	u = (u <= 0.0) ? 0.0 : ((u >= 1.0) ? 1.0 : u);
+	for (int k = 0; k < 3; k++)
+	{
+		const double c = a[k] + u * d[k];
+
+		switch (p->splines[spline].type)
+		{
+		case EXT_PHYS_GRAV_PLANE:
+			v[k] = a[3 + k] + u * (b[3 + k] - a[3 + k]);
+			break;
+		case EXT_PHYS_GRAV_POINT:
+			v[k] = c - P[k];
+			break;
+		default: // INVPOINT (the reader keeps no other type)
+			v[k] = P[k] - c;
+			break;
+		}
+	}
+	len = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+	if (len < 1e-9)
+	{
+		return 0;
+	}
+	for (int k = 0; k < 3; k++)
+	{
+		out[k] = v[k] / len;
+	}
+	return 1;
+}
+
+// Z5-Z7: the maggrav box of the frame (after the zone rule; also outside a
+// zone, as the source game keeps it) and the segment on its spline.
+internal void ExtPhys_MaggravStep(int seat, const struct Driver *d)
+{
+	const ExtPhysParams *p = &s_extPhys.p;
+	const double pos[3] = {d->posCurr.x / 256.0, d->posCurr.y / 256.0, d->posCurr.z / 256.0};
+	ExtPhysMag *m = &s_extPhysMag[seat];
+
+	if (p->maggravCount == 0)
+	{
+		return;
+	}
+	if ((m->box != 0) && !ExtPhys_InBox(&p->maggrav[m->box - 1].box, pos))
+	{
+		Platform_Log("[CTR ExtZone] seat %d leave maggrav box %s frame %d\n", seat, p->maggrav[m->box - 1].box.name, s_extPhysRun.tick + 2);
+		m->box = 0;
+		m->spline = 0;
+		m->node = -1;
+	}
+	if (m->box == 0)
+	{
+		for (int v = 0; v < p->maggravCount; v++)
+		{
+			const int sp = p->maggrav[v].spline;
+
+			if (!ExtPhys_InBox(&p->maggrav[v].box, pos))
+			{
+				continue;
+			}
+			m->box = v + 1;
+			m->spline = ((sp < p->splineCount) && (p->splines[sp].count >= 2)) ? (sp + 1) : 0;
+			m->node = (m->spline != 0) ? ExtPhys_SplineNearest(p, sp, pos) : -1;
+			Platform_Log("[CTR ExtZone] seat %d maggrav box %s spline %d node %d frame %d\n", seat, p->maggrav[v].box.name, m->spline - 1, m->node,
+			             s_extPhysRun.tick + 2);
+			break;
+		}
+	}
+	if (m->spline != 0)
+	{
+		m->node = ExtPhys_SplineLocal(p, m->spline - 1, m->node, pos);
+	}
+}
+
+// K4/K5: the gravity's direction (4096) from the driver's spline; 0 when the
+// zone's up keeps it: no spline (or no low speed read), or on the ground
+// slower than maglev_low_speed (the speed in the plane of the zone's up,
+// NL1_M1_SPEZ.md A4).
+internal int ExtPhys_SplineGravityWith(const ExtPhysParams *p, const ExtPhysMag *m, const struct Driver *d, SVec3 up, s16 dir[3])
+{
+	double pos[3], out[3], v[3], vn, speed2;
+
+	if (!p->lowSpeedSet || (m->spline == 0) || (m->node < 0))
+	{
+		return 0;
+	}
+	v[0] = d->velocity.x;
+	v[1] = d->velocity.y;
+	v[2] = d->velocity.z;
+	vn = (v[0] * up.x + v[1] * up.y + v[2] * up.z) / 4096.0;
+	v[0] -= vn * up.x / 4096.0;
+	v[1] -= vn * up.y / 4096.0;
+	v[2] -= vn * up.z / 4096.0;
+	speed2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+	if (((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) && (speed2 < (double)p->lowSpeed * (double)p->lowSpeed))
+	{
+		return 0;
+	}
+	pos[0] = d->posCurr.x / 256.0;
+	pos[1] = d->posCurr.y / 256.0;
+	pos[2] = d->posCurr.z / 256.0;
+	if (!ExtPhys_SplineDir(p, m->spline - 1, m->node, pos, out))
+	{
+		return 0;
+	}
+	for (int k = 0; k < 3; k++)
+	{
+		dir[k] = (s16)floor(4096.0 * out[k] + 0.5);
+	}
+	return 1;
+}
+
 // THE MAGLEV BOXES (night run 1, NL1_M1_SPEZ.md Z2). The source game switches
 // its anti-gravity state also by boxes: a driver outside a zone that is in a
 // "maglev-on" box enters the track's first zone (its up stays world up until
@@ -1040,6 +1248,7 @@ void ExtPhys_AfterGroundSearch(const struct Driver *d)
 	id = grounded ? ExtColl_RecordZone(d->currBlockTouching) : 0;
 	ExtPhys_MaglevBoxes(d->driverID, d, grounded, (id > 0) && (ExtPhys_ZoneIndex(id) >= 0));
 	ExtPhys_ZoneStep(d->driverID, d, grounded, id, d->normalVecUP, sdata->gGT->elapsedTimeMS);
+	ExtPhys_MaggravStep(d->driverID, d);
 }
 
 void ExtPhys_BotGround(const struct Driver *bot, const struct QuadBlock *ground, const SVec3 *normal)
@@ -1060,6 +1269,9 @@ void ExtPhys_SeedDriver(struct Driver *d, const SVec3 *up, int zone)
 	{
 		return;
 	}
+	// a set-down (respawn, start) chooses the maggrav box and its node anew
+	memset(&s_extPhysMag[d->driverID], 0, sizeof(s_extPhysMag[d->driverID]));
+	s_extPhysMag[d->driverID].node = -1;
 	if ((z < 0) || (up == NULL))
 	{
 		memset(s, 0, sizeof(*s));
@@ -1119,6 +1331,34 @@ int ExtPhys_ZoneGravity(const struct Driver *d, int gravity, s16 out[3])
 		return 0;
 	}
 	g = CTR_MipsDiv(CTR_MipsMulLo(gravity, s_extPhys.p.zones[s->zone - 1].gravityPercent), EXT_PHYS_GRAVITY_NEUTRAL);
+	{
+		// the maggrav spline's direction, where the track gives one (A3): the
+		// same share, along the spline's "down" instead of against the zone's up
+		ExtPhysMag *m = &s_extPhysMag[d->driverID];
+		s16 dir[3];
+		const int fromSpline = ExtPhys_SplineGravityWith(&s_extPhys.p, m, d, s->up, dir);
+
+		if (fromSpline != m->fromSpline)
+		{
+			if (fromSpline)
+			{
+				Platform_Log("[CTR ExtZone] seat %d gravity from spline %d node %d dir %d %d %d frame %d\n", d->driverID, m->spline - 1, m->node, dir[0], dir[1],
+				             dir[2], s_extPhysRun.tick + 2);
+			}
+			else
+			{
+				Platform_Log("[CTR ExtZone] seat %d gravity from zone up frame %d\n", d->driverID, s_extPhysRun.tick + 2);
+			}
+			m->fromSpline = fromSpline;
+		}
+		if (fromSpline)
+		{
+			out[0] = (s16)((-g * dir[0]) >> 12);
+			out[1] = (s16)((-g * dir[1]) >> 12);
+			out[2] = (s16)((-g * dir[2]) >> 12);
+			return 1;
+		}
+	}
 	out[0] = (s16)((g * s->up.x) >> 12);
 	out[1] = (s16)((g * s->up.y) >> 12);
 	out[2] = (s16)((g * s->up.z) >> 12);
@@ -1412,6 +1652,7 @@ void ExtPhys_OnLogicFrame(void)
 		memset(&s_extPhysRun, 0, sizeof(s_extPhysRun));
 		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
 		memset(s_extPhysVolumeSeat, 0, sizeof(s_extPhysVolumeSeat));
+		memset(s_extPhysMag, 0, sizeof(s_extPhysMag));
 		return;
 	}
 	s_extPhysRun.armed = 1;
@@ -1813,6 +2054,69 @@ int ExtPhys_Selftest(void)
 		ExtPhys_MaglevBoxes(0, &tb, 0, 0);
 		ExtPhys_TestCheck(s->inZone, "in a zone an on box changes nothing (hysteresis)", &checks, &failures);
 		memset(s_extPhysZone, 0, sizeof(s_extPhysZone));
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+	}
+	{
+		// the maggrav splines (A3): a straight spline along +z (nodes every 100),
+		// the local search moves at most one segment a frame, the nearest node
+		// over the whole spline, the three directions, the rule of K4
+		static struct Driver tg;
+		ExtPhysParams *p = &s_extPhys.p;
+		ExtPhysMag *m = &s_extPhysMag[0];
+		const double far[3] = {0.0, 0.0, 350.0};
+		const double side[3] = {50.0, 0.0, 150.0};
+		double o[3] = {0.0, 0.0, 0.0};
+		s16 dir[3] = {0, 0, 0};
+		const SVec3 up = {0, 4096, 0};
+		int n1, n2, n3;
+
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+		memset(s_extPhysMag, 0, sizeof(s_extPhysMag));
+		ExtPhys_TestRead("{\"physics\": {\"zones\": [{\"id\": 5}], \"maggrav_volumes\": [{\"name\": \"maggrav00\", \"spline\": 0, \"center\": [0, 0, 200], "
+		                 "\"axes\": [[1, 0, 0], [0, 1, 0], [0, 0, 1]], \"half\": [500, 500, 500]}], \"maggrav_splines\": [{\"type\": 2, \"nodes\": [[0, 0, 0, "
+		                 "0, 1, 0], [0, 0, 100, 0, 1, 0], [0, 0, 200, 1, 0, 0], [0, 0, 300, 1, 0, 0], [0, 0, 400, 1, 0, 0]]}], \"maglev_low_speed\": 6291}}",
+		                 p);
+		n1 = ExtPhys_SplineLocal(p, 0, 0, far);
+		n2 = ExtPhys_SplineLocal(p, 0, n1, far);
+		n3 = ExtPhys_SplineLocal(p, 0, n2, far);
+		snprintf(what, sizeof(what), "spline: from segment 0 towards z 350 one segment a frame (%d %d %d), the whole spline at once (%d)", n1, n2, n3,
+		         ExtPhys_SplineNearest(p, 0, far));
+		ExtPhys_TestCheck((n1 == 1) && (n2 == 2) && (n3 == 3) && (ExtPhys_SplineNearest(p, 0, far) == 3) && (ExtPhys_SplineLocal(p, 0, 3, far) == 3), what,
+		                  &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_SplineDir(p, 0, 1, side, o) && (fabs(o[0] - 1.0) < 1e-12) && (fabs(o[2]) < 1e-12), "INVPOINT: away from the spline",
+		                  &checks, &failures);
+		p->splines[0].type = EXT_PHYS_GRAV_POINT;
+		ExtPhys_TestCheck(ExtPhys_SplineDir(p, 0, 1, side, o) && (fabs(o[0] + 1.0) < 1e-12), "POINT: towards the spline", &checks, &failures);
+		p->splines[0].type = EXT_PHYS_GRAV_PLANE;
+		ExtPhys_TestCheck(ExtPhys_SplineDir(p, 0, 1, side, o) && (fabs(o[0] - 0.70710678) < 1e-6) && (fabs(o[1] - 0.70710678) < 1e-6),
+		                  "PLANE: the nodes' directions blended at u 0.5, normalised", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_SplineDir(p, 0, 4, far, o) && (fabs(o[0] - 1.0) < 1e-12), "PLANE at the last node: its own segment (3 -> 4)", &checks,
+		                  &failures);
+		p->splines[0].type = EXT_PHYS_GRAV_INVPOINT;
+		// the box: entering picks the spline and its node, leaving drops them
+		memset(&tg, 0, sizeof(tg));
+		tg.posCurr.x = 50 << 8;
+		tg.posCurr.z = 150 << 8;
+		ExtPhys_MaggravStep(0, &tg);
+		ExtPhys_TestCheck((m->box == 1) && (m->spline == 1) && (m->node == 1), "maggrav box: spline 0, segment 1 at z 150", &checks, &failures);
+		// on the ground under the low speed the zone's up keeps the gravity; in
+		// the air, or on the ground at the low speed, the spline's direction
+		tg.actionsFlagSet = ACTION_TOUCH_GROUND;
+		tg.velocity.z = 6290;
+		tg.velocity.y = 9000; // along up: not counted
+		ExtPhys_TestCheck(!ExtPhys_SplineGravityWith(p, m, &tg, up, dir), "on the ground at 6290 (< 6291): the zone's up", &checks, &failures);
+		tg.velocity.z = 6291;
+		ExtPhys_TestCheck(ExtPhys_SplineGravityWith(p, m, &tg, up, dir) && (dir[0] == 4096) && (dir[1] == 0) && (dir[2] == 0),
+		                  "on the ground at 6291: the spline's direction (away from it, +x)", &checks, &failures);
+		tg.actionsFlagSet = 0;
+		tg.velocity.z = 0;
+		ExtPhys_TestCheck(ExtPhys_SplineGravityWith(p, m, &tg, up, dir) && (dir[0] == 4096), "in the air at 0: the spline's direction", &checks, &failures);
+		p->lowSpeedSet = 0;
+		ExtPhys_TestCheck(!ExtPhys_SplineGravityWith(p, m, &tg, up, dir), "without maglev_low_speed: the zone's up (today's rule)", &checks, &failures);
+		tg.posCurr.x = 900 << 8;
+		ExtPhys_MaggravStep(0, &tg);
+		ExtPhys_TestCheck((m->box == 0) && (m->spline == 0) && (m->node == -1), "leaving the box drops spline and node", &checks, &failures);
+		memset(s_extPhysMag, 0, sizeof(s_extPhysMag));
 		memset(&s_extPhys, 0, sizeof(s_extPhys));
 	}
 	{
