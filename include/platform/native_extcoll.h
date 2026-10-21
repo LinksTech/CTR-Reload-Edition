@@ -17,6 +17,15 @@ void ExtColl_OnLevelLoaded(struct Level *lev);
 // without --ext-track): level->ptr_mesh_info, the same pointer as before.
 struct mesh_info *COLL_WorldMesh(struct Level *level);
 
+// The vertex array a record's u16 indices point into (game/COLL.c's vertex
+// loader, VehStuckProc's quad centre): always mesh->ptrVertexArray, except for
+// the external collision built with vertex pages (collision.vertex_pages, a
+// track with more than 65535 vertices), whose records count from their page's
+// first vertex.
+struct QuadBlock;
+struct LevVertex;
+struct LevVertex *COLL_RecordVertexArray(struct mesh_info *mesh, const struct QuadBlock *quad);
+
 // After the game logic of a frame (dispatcher ExtTrack_OnLogicFrame - the call
 // is M1's line): read-only log of seat 0 on the external track's collision
 // (ground frames per terrain, wall contacts, the lowest height), every 300

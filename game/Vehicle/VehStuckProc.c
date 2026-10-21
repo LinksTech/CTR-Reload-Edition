@@ -120,7 +120,7 @@ static void VehStuckProc_MaskGrab_SearchBsp(struct Driver *d, struct ScratchpadS
 // The quadblock itself as the destination: the middle of vertices 0 and 3.
 internal void VehStuckProc_MaskGrab_QuadCenter(struct Driver *d, struct mesh_info *mesh, struct QuadBlock *quad)
 {
-	struct LevVertex *verts = mesh->ptrVertexArray;
+	struct LevVertex *verts = COLL_RecordVertexArray(mesh, quad); // mesh->ptrVertexArray but for vertex pages
 	struct LevVertex *v0 = &verts[quad->index[0]];
 	struct LevVertex *v3 = &verts[quad->index[3]];
 

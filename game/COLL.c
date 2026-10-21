@@ -1020,7 +1020,9 @@ internal void COLL_FIXED_QUADBLK_SetLoadScratchpadVertsContext(struct Scratchpad
 {
 	// NOTE(aalhendi): Retail passes these through implicit MIPS registers t8/t9.
 	// Native records that register state explicitly before calling the loader.
-	sCollFixedLoadScratchpadVertsVertexArray = sps->ptr_mesh_info->ptrVertexArray;
+	// the record's vertex array: mesh->ptrVertexArray, except for an external
+	// collision with vertex pages (platform/native_extcoll.c)
+	sCollFixedLoadScratchpadVertsVertexArray = COLL_RecordVertexArray(sps->ptr_mesh_info, quad);
 	sCollFixedLoadScratchpadVertsQuad = quad;
 }
 

@@ -59,7 +59,12 @@
 // the water flag, as the retail water leaves.
 //
 // LIMITS (refused with one log line, nothing is cut silently): positions s16
-// integers, at most 65535 vertices with the midpoints, at most 0x3FFF nodes,
+// integers, at most 65535 vertices with the midpoints (VERTEX PAGES: a track
+// whose collision section asks for vertex_pages gets as many pages of at most
+// 65535 vertices as it needs; a record's indices count from its page's first
+// vertex, the base of each record in recBase, read by every collision reader
+// through COLL_RecordVertexArray; without the key no page, recBase NULL and
+// the indices as before), at most 0x3FFF nodes,
 // edges at most EXT_COLL_MAX_EDGE (the converter splits longer ones), node
 // transforms none, a dividend that fits for every triangle.
 //
@@ -121,6 +126,11 @@ typedef struct
 	u8 zone; // the anti-gravity zone of a ground triangle (physics.zones), 0 none
 } ExtCollTri;
 
+// The collision section's vertex_pages (set by ExtColl_OnLevelLoaded and the
+// selftest right before ExtColl_Build): 0 = one array of at most 65535
+// vertices, as always.
+global_variable int s_extCollPagesAsked;
+
 // The turbo pads of the track: the box of each pad's records (for the log
 // and for telling which pad gave a boost).
 typedef struct
@@ -154,6 +164,8 @@ global_variable struct
 	size_t heapKept; // bytes kept after the build (records, vertex array, node array)
 	size_t heapPeak; // bytes held during the build
 	u8 *recZone; // per record (tree order): its zone, 0 none
+	u32 *recBase; // per record (tree order): its vertex page's first vertex; NULL without vertex pages
+	int numPages; // vertex pages used (0 without vertex pages)
 	int zoneRecords;
 	ExtCollPad pads[EXT_COLL_PADS_MAX];
 	int numPads; // the highest pad number + 1
@@ -183,12 +195,30 @@ struct mesh_info *COLL_WorldMesh(struct Level *level)
 	return (level != NULL) ? level->ptr_mesh_info : NULL;
 }
 
+// a record's vertices: its page's first vertex (always the array itself
+// without vertex pages)
+#define EXT_COLL_RV(q) (s_extColl.verts + ((s_extColl.recBase != NULL) ? s_extColl.recBase[(q) - s_extColl.quads] : 0u))
+
+struct LevVertex *COLL_RecordVertexArray(struct mesh_info *mesh, const struct QuadBlock *quad)
+{
+	// Without vertex pages recBase is NULL and the answer is the mesh's own
+	// array, the same pointer as before.
+	if ((s_extColl.recBase != NULL) && (mesh == &s_extColl.mesh) && (quad >= s_extColl.quads) && (quad < s_extColl.quads + s_extColl.numQuads))
+	{
+		return s_extColl.verts + s_extColl.recBase[quad - s_extColl.quads];
+	}
+	return mesh->ptrVertexArray;
+}
+
 internal void ExtColl_Free(void)
 {
 	free(s_extColl.quads);
 	free(s_extColl.verts);
 	free(s_extColl.bsp);
 	free(s_extColl.recZone);
+	free(s_extColl.recBase);
+	s_extColl.recBase = NULL;
+	s_extColl.numPages = 0;
 	s_extColl.quads = NULL;
 	s_extColl.verts = NULL;
 	s_extColl.bsp = NULL;
@@ -429,6 +459,8 @@ typedef struct
 	const struct QuadBlock *src; // input order
 	const u8 *srcZone;           // input order: the zone of each record
 	u8 *dstZone;                 // tree order
+	const u32 *srcBase;          // input order: the vertex page of each record (NULL without pages)
+	u32 *dstBase;                // tree order
 	struct QuadBlock *dst;       // tree order
 	struct BSP *nodes;
 	int numNodes;
@@ -471,6 +503,10 @@ internal int ExtColl_BuildNode(ExtCollTree *tr, int first, int count, int depth,
 
 			tr->dst[tr->numDst] = *q;
 			tr->dstZone[tr->numDst] = tr->srcZone[tr->keys[first + i].quad];
+			if (tr->dstBase != NULL)
+			{
+				tr->dstBase[tr->numDst] = tr->srcBase[tr->keys[first + i].quad];
+			}
 			tr->dst[tr->numDst].blockID = (s16)tr->numDst;
 			if (i == 0)
 			{
@@ -569,6 +605,10 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	struct QuadBlock *src = NULL;
 	ExtCollKey *keys = NULL;
 	u8 *srcZone = NULL;
+	u32 *srcBase = NULL;
+	const int pages = s_extCollPagesAsked;
+	int pageBase = 0;
+	int numPages = 1;
 	int numSolid = 0;
 	int nq = 0;
 
@@ -599,9 +639,21 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	{
 		vs.cap <<= 1;
 	}
-	vs.max = EXT_COLL_VERTEX_MAX;
+	// with vertex pages: room for six new vertices per record, a page of at
+	// most EXT_COLL_VERTEX_MAX of them (the hash holds one page)
+	vs.max = pages ? (6 * numSolid) : EXT_COLL_VERTEX_MAX;
 	vs.slots = (ExtCollVSlot *)calloc((size_t)vs.cap, sizeof(ExtCollVSlot));
 	vs.verts = (struct LevVertex *)malloc((size_t)vs.max * sizeof(struct LevVertex));
+	if (pages)
+	{
+		srcBase = (u32 *)calloc((size_t)numSolid, sizeof(u32));
+		tr.dstBase = (u32 *)calloc((size_t)numSolid, sizeof(u32));
+		if (!srcBase || !tr.dstBase)
+		{
+			snprintf(why, (size_t)whySize, "out of memory");
+			goto Fail;
+		}
+	}
 	src = (struct QuadBlock *)calloc((size_t)numSolid, sizeof(struct QuadBlock));
 	keys = (ExtCollKey *)malloc((size_t)numSolid * sizeof(ExtCollKey));
 	tr.dst = (struct QuadBlock *)calloc((size_t)numSolid, sizeof(struct QuadBlock));
@@ -641,6 +693,15 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 				s_extColl.maxEdge = edge;
 			}
 		}
+		// a new page when this record's six vertices might not fit the
+		// current one: the hash forgets the old page, so every index found
+		// below lies in the new one
+		if (pages && ((vs.num - pageBase) > (EXT_COLL_VERTEX_MAX - 6)))
+		{
+			pageBase = vs.num;
+			numPages++;
+			memset(vs.slots, 0, (size_t)vs.cap * sizeof(ExtCollVSlot));
+		}
 		// REVERSED corners (a, c, b): see the head of the file
 		va = ExtColl_Vertex(&vs, t->p[0][0], t->p[0][1], t->p[0][2]);
 		vc = ExtColl_Vertex(&vs, t->p[2][0], t->p[2][1], t->p[2][2]);
@@ -654,6 +715,17 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 			goto Fail;
 		}
 		q = &src[nq];
+		// pageBase is 0 without vertex pages: the indices as before
+		va -= pageBase;
+		vb -= pageBase;
+		vc -= pageBase;
+		m01 -= pageBase;
+		m02 -= pageBase;
+		m12 -= pageBase;
+		if (srcBase != NULL)
+		{
+			srcBase[nq] = (u32)pageBase;
+		}
 		q->index[0] = (u16)va;
 		q->index[1] = (u16)vc;
 		q->index[2] = (u16)vb;
@@ -685,7 +757,7 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 		q->pvs = NULL;
 		for (int k = 0; k < 7; k++)
 		{
-			const SVec3 p = vs.verts[q->index[k]].pos;
+			const SVec3 p = vs.verts[pageBase + q->index[k]].pos;
 
 			if (k == 0)
 			{
@@ -718,7 +790,7 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 				q->bbox.max.z = p.z;
 			}
 		}
-		if (!ExtColl_Dividends(q, vs.verts))
+		if (!ExtColl_Dividends(q, vs.verts + pageBase))
 		{
 			snprintf(why, (size_t)whySize, "triangle %d: degenerate, or no collision normal fits 32 bits", i);
 			goto Fail;
@@ -768,6 +840,7 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	tr.keys = keys;
 	tr.src = src;
 	tr.srcZone = srcZone;
+	tr.srcBase = srcBase;
 	// the root is always a branch
 	if (ExtColl_BuildNode(&tr, 0, nq, 0, 1) < 0)
 	{
@@ -777,6 +850,8 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 
 	s_extColl.quads = tr.dst;
 	s_extColl.recZone = tr.dstZone;
+	s_extColl.recBase = tr.dstBase;
+	s_extColl.numPages = pages ? numPages : 0;
 	s_extColl.verts = vs.verts;
 	s_extColl.bsp = tr.nodes;
 	s_extColl.numQuads = nq;
@@ -803,11 +878,17 @@ internal int ExtColl_Build(const ExtCollTri *tris, int numTris, char *why, int w
 	s_extColl.heapPeak = s_extColl.heapKept + (size_t)vs.cap * sizeof(ExtCollVSlot) + (size_t)numSolid * (sizeof(struct QuadBlock) + sizeof(ExtCollKey));
 	s_extColl.heapKept += (size_t)numSolid;
 	s_extColl.heapPeak += 2 * (size_t)numSolid;
+	if (pages)
+	{
+		s_extColl.heapKept += (size_t)numSolid * sizeof(u32);
+		s_extColl.heapPeak += 2 * (size_t)numSolid * sizeof(u32);
+	}
 	s_extColl.ready = 1;
 	free(vs.slots);
 	free(src);
 	free(keys);
 	free(srcZone);
+	free(srcBase);
 	return 1;
 
 Fail:
@@ -816,8 +897,10 @@ Fail:
 	free(src);
 	free(keys);
 	free(srcZone);
+	free(srcBase);
 	free(tr.dst);
 	free(tr.dstZone);
+	free(tr.dstBase);
 	free(tr.nodes);
 	ExtColl_Free();
 	return 0;
@@ -1130,8 +1213,8 @@ internal double ExtColl_SubEdgeDistance(const struct QuadBlock *q, int x, int z)
 	{
 		for (int k = 0; k < 3; k++)
 		{
-			const SVec3 a = s_extColl.verts[q->index[s_extCollTri[t][k]]].pos;
-			const SVec3 b = s_extColl.verts[q->index[s_extCollTri[t][(k + 1) % 3]]].pos;
+			const SVec3 a = EXT_COLL_RV(q)[q->index[s_extCollTri[t][k]]].pos;
+			const SVec3 b = EXT_COLL_RV(q)[q->index[s_extCollTri[t][(k + 1) % 3]]].pos;
 			const double dx = (double)b.x - a.x, dz = (double)b.z - a.z, ll = dx * dx + dz * dz;
 			double tt = (ll > 0.0) ? ((((double)x - a.x) * dx + ((double)z - a.z) * dz) / ll) : 0.0;
 			double dist;
@@ -1202,9 +1285,9 @@ internal int ExtColl_SubTriangle(const struct QuadBlock *q, int x, int z)
 {
 	for (int t = 0; t < 4; t++)
 	{
-		const SVec3 a = s_extColl.verts[q->index[s_extCollTri[t][0]]].pos;
-		const SVec3 b = s_extColl.verts[q->index[s_extCollTri[t][1]]].pos;
-		const SVec3 c = s_extColl.verts[q->index[s_extCollTri[t][2]]].pos;
+		const SVec3 a = EXT_COLL_RV(q)[q->index[s_extCollTri[t][0]]].pos;
+		const SVec3 b = EXT_COLL_RV(q)[q->index[s_extCollTri[t][1]]].pos;
+		const SVec3 c = EXT_COLL_RV(q)[q->index[s_extCollTri[t][2]]].pos;
 		const double d = (double)(b.z - c.z) * (a.x - c.x) + (double)(c.x - b.x) * (a.z - c.z);
 		double l0, l1;
 
@@ -1224,9 +1307,9 @@ internal int ExtColl_SubTriangle(const struct QuadBlock *q, int x, int z)
 
 internal void ExtColl_CheckRay(ExtCollCheck *ck, const struct QuadBlock *q, const struct CollPlane planes[4], int step)
 {
-	const SVec3 p0 = s_extColl.verts[q->index[0]].pos;
-	const SVec3 p1 = s_extColl.verts[q->index[1]].pos;
-	const SVec3 p2 = s_extColl.verts[q->index[2]].pos;
+	const SVec3 p0 = EXT_COLL_RV(q)[q->index[0]].pos;
+	const SVec3 p1 = EXT_COLL_RV(q)[q->index[1]].pos;
+	const SVec3 p2 = EXT_COLL_RV(q)[q->index[2]].pos;
 	const SVec3 e[3][2] = {{p0, p1}, {p1, p2}, {p2, p0}};
 	const double d = (double)(p1.z - p2.z) * (p0.x - p2.x) + (double)(p2.x - p1.x) * (p0.z - p2.z);
 	// |n.y| of the exact unit normal: a height difference times it is the
@@ -1356,9 +1439,9 @@ internal void ExtColl_CheckAll(ExtCollCheck *ck, int step)
 	for (int i = 0; i < s_extColl.numQuads; i++)
 	{
 		struct QuadBlock *q = &s_extColl.quads[i];
-		const SVec3 p0 = s_extColl.verts[q->index[0]].pos;
-		const SVec3 p1 = s_extColl.verts[q->index[1]].pos;
-		const SVec3 p2 = s_extColl.verts[q->index[2]].pos;
+		const SVec3 p0 = EXT_COLL_RV(q)[q->index[0]].pos;
+		const SVec3 p1 = EXT_COLL_RV(q)[q->index[1]].pos;
+		const SVec3 p2 = EXT_COLL_RV(q)[q->index[2]].pos;
 		// the record's own normal in the game's sense: (p2 - p0) x (p1 - p0)
 		const double ux = p1.x - p0.x, uy = p1.y - p0.y, uz = p1.z - p0.z;
 		const double wx = p2.x - p0.x, wy = p2.y - p0.y, wz = p2.z - p0.z;
@@ -1419,8 +1502,8 @@ internal void ExtColl_CheckAll(ExtCollCheck *ck, int step)
 		{
 			s32 c[3];
 
-			ExtColl_GameCross(&s_extColl.verts[q->index[s_extCollTri[t][0]]].pos, &s_extColl.verts[q->index[s_extCollTri[t][1]]].pos,
-			                  &s_extColl.verts[q->index[s_extCollTri[t][2]]].pos, c);
+			ExtColl_GameCross(&EXT_COLL_RV(q)[q->index[s_extCollTri[t][0]]].pos, &EXT_COLL_RV(q)[q->index[s_extCollTri[t][1]]].pos,
+			                  &EXT_COLL_RV(q)[q->index[s_extCollTri[t][2]]].pos, c);
 			for (int k = 0; k < 3; k++)
 			{
 				const s64 product = (s64)(c[k] >> s_extCollTriLod[t]) * q->triNormalVecDividend[s_extCollTriDiv[t]];
@@ -1657,9 +1740,9 @@ int ExtColl_LineQuery(const double from[3], const double dir[3], double tMin, do
 			// the record keeps the file's triangle (a, b, c) as corners (a, c, b):
 			// v0 v1 v2 below are the file's a b c again, and the front
 			// (counter-clockwise in the file) is (v1 - v0) x (v2 - v0)
-			const SVec3 v0 = s_extColl.verts[q->index[0]].pos;
-			const SVec3 v1 = s_extColl.verts[q->index[2]].pos;
-			const SVec3 v2 = s_extColl.verts[q->index[1]].pos;
+			const SVec3 v0 = EXT_COLL_RV(q)[q->index[0]].pos;
+			const SVec3 v1 = EXT_COLL_RV(q)[q->index[2]].pos;
+			const SVec3 v2 = EXT_COLL_RV(q)[q->index[1]].pos;
 			double e1[3], e2[3], h[3], s[3], qv[3], a, f, u, v, t, n[3], nl, key;
 
 			if (((cls & classes) == 0) || !ExtColl_SegmentBox(from, d, tMin, tMax, &q->bbox))
@@ -1758,6 +1841,12 @@ internal void ExtColl_FormatLimits(char *out, size_t size)
 	         s_extColl.numQuads, EXT_COLL_RECORD_MAX, s_extColl.numVerts, EXT_COLL_VERTEX_MAX, s_extColl.numBsp, EXT_COLL_NODE_MAX, s_extColl.treeDepth,
 	         EXT_COLL_SEARCH_STACK, cpMax, EXT_COLL_CP_NONE - 1, s_extColl.maxEdge, EXT_COLL_MAX_EDGE, s_extColl.shiftMin, s_extColl.shiftMax,
 	         0.5 * s_extColl.midOff2, (unsigned)s_extColl.heapKept, (unsigned)s_extColl.heapPeak);
+	if (s_extColl.numPages > 0)
+	{
+		const size_t used = strlen(out);
+
+		snprintf(out + used, (used < size) ? (size - used) : 0, "; vertex pages %d of at most %d vertices", s_extColl.numPages, EXT_COLL_VERTEX_MAX);
+	}
 }
 
 internal void ExtColl_LogLimits(void)
@@ -1800,12 +1889,15 @@ void ExtColl_OnLevelLoaded(struct Level *lev)
 		return;
 	}
 	tris = ExtColl_ReadGlb(path, &numTris, why, (int)sizeof(why));
+	s_extCollPagesAsked = (json != NULL) ? ExtJson_Bool(json, ExtJson_Get(json, section, "vertex_pages"), 0) : 0;
 	if ((tris == NULL) || !ExtColl_Build(tris, numTris, why, (int)sizeof(why)))
 	{
+		s_extCollPagesAsked = 0;
 		Platform_Log("[CTR ExtColl] refused '%s': %s - the donor's collision stays\n", path, why);
 		free(tris);
 		return;
 	}
+	s_extCollPagesAsked = 0;
 	free(tris);
 	Platform_Log("[CTR ExtColl] built from '%s': %d triangle(s) (json %d, %s) -> %d record(s): ground %d (in zones %d), wall %d, kill %d, trigger %d "
 	             "(%d pad(s)); %d vertex(es), %d tree node(s), depth %d, %d water leaf(s)\n",
@@ -2163,6 +2255,111 @@ int ExtColl_Selftest(void)
 		{
 			ExtColl_TestCheck(0, "memory for the record-limit test", &checks, &failures);
 		}
+	}
+
+	// VERTEX PAGES: 12000 separate small floor triangles need 72000 vertices
+	// with the midpoints - refused without vertex_pages, built in two pages with
+	// it; every record reads its own corners through its page, also in the
+	// game's own vertex loader (COLL.c through COLL_RecordVertexArray, the ray)
+	{
+		char lim[640];
+		const int many = 12000;
+		const int cols = 110;
+		const s16 side = 32;
+		ExtCollTri *grid = (ExtCollTri *)calloc((size_t)many, sizeof(ExtCollTri));
+
+		if (grid != NULL)
+		{
+			int cornersOk = 1;
+			int rangeOk = 1;
+			int accessOk = 1;
+			int lastPage = 0;
+			struct mesh_info other;
+
+			for (int i = 0; i < many; i++)
+			{
+				const s16 x = (s16)(-3520 + 64 * (i % cols));
+				const s16 z = (s16)(-3520 + 64 * (i / cols));
+				const ExtCollTri t = {{{x, 0, z}, {x, 0, (s16)(z + side)}, {(s16)(x + side), 0, z}}, EXT_COLL_CLASS_GROUND, TERRAIN_ASPHALT, 0, 0, 0};
+
+				grid[i] = t;
+			}
+			s_extCollPagesAsked = 0;
+			why[0] = '\0';
+			ExtColl_TestCheck(!ExtColl_Build(grid, many, why, (int)sizeof(why)) && !s_extColl.ready && (strstr(why, "vertices with the midpoints") != NULL),
+			                  "72000 vertices without vertex_pages: refused as before", &checks, &failures);
+			s_extCollPagesAsked = 1;
+			why[0] = '\0';
+			ExtColl_TestCheck(ExtColl_Build(grid, many, why, (int)sizeof(why)) && s_extColl.ready, "72000 vertices with vertex_pages: built", &checks, &failures);
+			s_extCollPagesAsked = 0;
+			ExtColl_TestCheck(s_extColl.ready && (s_extColl.numVerts == 6 * many) && (s_extColl.numPages == 2) && (s_extColl.recBase != NULL),
+			                  "6 vertices per record, two pages", &checks, &failures);
+			for (int r = 0; s_extColl.ready && (r < s_extColl.numQuads); r++)
+			{
+				const struct QuadBlock *q = &s_extColl.quads[r];
+				const u32 base = s_extColl.recBase[r];
+				const struct LevVertex *v = EXT_COLL_RV(q);
+				const SVec3 a = v[q->index[0]].pos, c = v[q->index[1]].pos, b = v[q->index[2]].pos;
+
+				for (int k = 0; k < 9; k++)
+				{
+					if ((base + q->index[k]) >= (u32)s_extColl.numVerts)
+					{
+						rangeOk = 0;
+					}
+				}
+				if ((base > 0) && (base != (u32)lastPage))
+				{
+					lastPage = (int)base;
+				}
+				// (a, c, b) = the file's (p0, p2, p1): a right triangle of side 32 at y 0
+				if ((a.y != 0) || (b.y != 0) || (c.y != 0) || (b.x != a.x) || (b.z != a.z + side) || (c.x != a.x + side) || (c.z != a.z) ||
+				    (v[q->index[4]].pos.x != a.x + side / 2) || (v[q->index[5]].pos.z != a.z + side / 2))
+				{
+					cornersOk = 0;
+				}
+				if (COLL_RecordVertexArray(&s_extColl.mesh, q) != v)
+				{
+					accessOk = 0;
+				}
+			}
+			ExtColl_TestCheck(rangeOk && (lastPage > 0), "every record's indices lie inside the array from its page (a second page used)", &checks, &failures);
+			ExtColl_TestCheck(cornersOk, "every record's corners and midpoints read through its page are its own triangle's", &checks, &failures);
+			ExtColl_TestCheck(accessOk, "COLL_RecordVertexArray gives each record's page", &checks, &failures);
+			memset(&other, 0, sizeof(other));
+			other.ptrVertexArray = s_extColl.verts + 7;
+			ExtColl_TestCheck(s_extColl.ready && (COLL_RecordVertexArray(&other, &s_extColl.quads[0]) == other.ptrVertexArray),
+			                  "another mesh: COLL_RecordVertexArray = its own ptrVertexArray", &checks, &failures);
+			{
+				u8 *const savedScratch = gCTRNativeScratchpadBase;
+				s16 hy = 1;
+				SVec3 hn = {0, 0, 0};
+				const s16 lx = (s16)(-3520 + 64 * ((many - 1) % cols) + 8);
+				const s16 lz = (s16)(-3520 + 64 * ((many - 1) / cols) + 8);
+				int hitFirst, hitLast;
+
+				memset(s_extCollScratch, 0, sizeof(s_extCollScratch));
+				gCTRNativeScratchpadBase = (u8 *)s_extCollScratch;
+				hitFirst = ExtColl_Probe(-3512, 0, -3512, &hy, &hn) && (hy == 0) && (hn.y > 4000);
+				hy = 1;
+				hitLast = ExtColl_Probe(lx, 0, lz, &hy, &hn) && (hy == 0) && (hn.y > 4000);
+				gCTRNativeScratchpadBase = savedScratch;
+				ExtColl_TestCheck(hitFirst && hitLast, "the game's ray hits the first and the last triangle at y 0 (both pages, COLL.c's loader)", &checks, &failures);
+			}
+			ExtColl_FormatLimits(lim, sizeof(lim));
+			ExtColl_TestCheck(strstr(lim, "vertex pages 2") != NULL, "the limits line names the pages", &checks, &failures);
+			ExtColl_Free();
+			ExtColl_TestCheck((s_extColl.recBase == NULL) && (s_extColl.numPages == 0), "freed: no pages left", &checks, &failures);
+			free(grid);
+		}
+		else
+		{
+			ExtColl_TestCheck(0, "memory for the vertex-page test", &checks, &failures);
+		}
+		ExtColl_Build(tris, n, why, (int)sizeof(why));
+		ExtColl_FormatLimits(lim, sizeof(lim));
+		ExtColl_TestCheck(s_extColl.ready && (s_extColl.recBase == NULL) && (strstr(lim, "vertex pages") == NULL),
+		                  "the made-up track again: no pages, the limits line as before", &checks, &failures);
 	}
 
 	// COLL_WorldMesh answers with the level's own pointer unless the external
