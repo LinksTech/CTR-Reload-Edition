@@ -493,6 +493,116 @@ void Ps2V_OpMsub(Ps2Vec4 *d, const Ps2Vec4 *acc, const Ps2Vec4 *fs, const Ps2Vec
 	*d = r;
 }
 
+// ---------------------------------------------------------------- accumulator
+
+static Ps2Acc Ps2A_Make(Ps2F v, unsigned flags)
+{
+	Ps2Acc a;
+	a.v = v;
+	a.overflow = (flags & PS2F_FLAG_OVERFLOW) != 0;
+	return a;
+}
+Ps2Acc Ps2A_Adda(Ps2F a, Ps2F b)
+{
+	unsigned f = 0;
+	Ps2F v = Ps2F_AddEx(a, b, &f);
+	return Ps2A_Make(v, f);
+}
+Ps2Acc Ps2A_Suba(Ps2F a, Ps2F b)
+{
+	unsigned f = 0;
+	Ps2F v = Ps2F_SubEx(a, b, &f);
+	return Ps2A_Make(v, f);
+}
+Ps2Acc Ps2A_Mula(Ps2F a, Ps2F b)
+{
+	unsigned f = 0;
+	Ps2F v = Ps2F_MulEx(a, b, &f);
+	return Ps2A_Make(v, f);
+}
+Ps2Acc Ps2A_Madda(Ps2Acc acc, Ps2F a, Ps2F b)
+{
+	unsigned f = 0;
+	Ps2F v = Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 0, &f);
+	return Ps2A_Make(v, f);
+}
+Ps2Acc Ps2A_Msuba(Ps2Acc acc, Ps2F a, Ps2F b)
+{
+	unsigned f = 0;
+	Ps2F v = Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 1, &f);
+	return Ps2A_Make(v, f);
+}
+Ps2F Ps2A_Madd(Ps2Acc acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 0, 0); }
+Ps2F Ps2A_Msub(Ps2Acc acc, Ps2F a, Ps2F b) { return Ps2F_MulAddEx(acc.v, acc.overflow, a, b, 1, 0); }
+
+void Ps2V_Adda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			acc->lane[i] = Ps2A_Adda(a->v[i], b->v[i]);
+}
+void Ps2V_Suba(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			acc->lane[i] = Ps2A_Suba(a->v[i], b->v[i]);
+}
+void Ps2V_Mula(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			acc->lane[i] = Ps2A_Mula(a->v[i], b->v[i]);
+}
+void Ps2V_Madda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			acc->lane[i] = Ps2A_Madda(acc->lane[i], a->v[i], b->v[i]);
+}
+void Ps2V_Msuba(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			acc->lane[i] = Ps2A_Msuba(acc->lane[i], a->v[i], b->v[i]);
+}
+void Ps2V_MaddAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	Ps2Vec4 r = *d;
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			r.v[i] = Ps2A_Madd(acc->lane[i], a->v[i], b->v[i]);
+	*d = r;
+}
+void Ps2V_MsubAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask)
+{
+	Ps2Vec4 r = *d;
+	for (int i = 0; i < 4; i++)
+		if (PS2V_LANE(mask, i))
+			r.v[i] = Ps2A_Msub(acc->lane[i], a->v[i], b->v[i]);
+	*d = r;
+}
+Ps2Vec4 Ps2V_Bc(const Ps2Vec4 *b, int lane)
+{
+	Ps2Vec4 r;
+	for (int i = 0; i < 4; i++)
+		r.v[i] = b->v[lane & 3];
+	return r;
+}
+void Ps2V_OpMulaAcc(Ps2VAcc *acc, const Ps2Vec4 *fs, const Ps2Vec4 *ft)
+{
+	acc->lane[0] = Ps2A_Mula(fs->v[1], ft->v[2]);
+	acc->lane[1] = Ps2A_Mula(fs->v[2], ft->v[0]);
+	acc->lane[2] = Ps2A_Mula(fs->v[0], ft->v[1]);
+}
+void Ps2V_OpMsubAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *fs, const Ps2Vec4 *ft)
+{
+	Ps2Vec4 r = *d;
+	r.v[0] = Ps2A_Msub(acc->lane[0], fs->v[1], ft->v[2]);
+	r.v[1] = Ps2A_Msub(acc->lane[1], fs->v[2], ft->v[0]);
+	r.v[2] = Ps2A_Msub(acc->lane[2], fs->v[0], ft->v[1]);
+	*d = r;
+}
+
 // ---------------------------------------------------------------- selftest
 
 static void Ps2F_Check(int ok, const char *what, uint32_t got, uint32_t want, int *checks, int *failures, void (*log)(const char *line))
@@ -603,6 +713,21 @@ void Ps2F_Selftest(int *checks, int *failures, void (*log)(const char *line))
 		PS2F_EXPECT("vmul mask x", d.v[0], 0x40800000u);
 		PS2F_EXPECT("vmul mask y kept", d.v[1], 0u);
 		PS2F_EXPECT("vmul mask z", d.v[2], 0x40800000u);
+	}
+
+	// The accumulator: an overflowed ADDA keeps the multiply-add at the
+	// overflowed value; MULA then MADDA then MADD = 1*2 + 3*4 + 5*6 = 44.
+	{
+		Ps2Acc ov = Ps2A_Adda(PS2F_FMAX, PS2F_FMAX);
+		PS2F_EXPECT("adda overflow flag", (uint32_t)ov.overflow, 1u);
+		PS2F_EXPECT("madd keeps an overflowed acc", Ps2A_Madd(ov, 0x3F800000u, 0x3F800000u), PS2F_FMAX);
+		Ps2Acc acc = Ps2A_Mula(0x3F800000u, 0x40000000u);
+		acc = Ps2A_Madda(acc, 0x40400000u, 0x40800000u);
+		PS2F_EXPECT("mula madda madd", Ps2A_Madd(acc, 0x40A00000u, 0x40C00000u), 0x42300000u);
+		PS2F_EXPECT("msub", Ps2A_Msub(acc, 0x40A00000u, 0x40C00000u), 0xC1800000u);
+		Ps2Vec4 b = {{1u, 2u, 3u, 4u}};
+		Ps2Vec4 w = Ps2V_Bc(&b, 3);
+		PS2F_EXPECT("broadcast w", w.v[0] == 4u && w.v[1] == 4u && w.v[2] == 4u && w.v[3] == 4u, 1u);
 	}
 
 	// Reference vectors.

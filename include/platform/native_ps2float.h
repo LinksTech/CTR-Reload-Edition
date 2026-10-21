@@ -108,6 +108,32 @@ void Ps2V_MulSub(Ps2Vec4 *d, const Ps2Vec4 *acc, const Ps2Vec4 *a, const Ps2Vec4
 void Ps2V_OpMula(Ps2Vec4 *acc, const Ps2Vec4 *fs, const Ps2Vec4 *ft);
 void Ps2V_OpMsub(Ps2Vec4 *d, const Ps2Vec4 *acc, const Ps2Vec4 *fs, const Ps2Vec4 *ft);
 
+// THE ACCUMULATOR (main CPU ADDA/SUBA/MULA/MADDA/MSUBA, MADD/MSUB; the vector
+// unit's ...A forms per lane): its value and whether the operation that wrote
+// it overflowed (that flag steers the next multiply-add, Ps2F_MulAddEx).
+typedef struct Ps2Acc { Ps2F v; int overflow; } Ps2Acc;
+Ps2Acc Ps2A_Adda(Ps2F a, Ps2F b);
+Ps2Acc Ps2A_Suba(Ps2F a, Ps2F b);
+Ps2Acc Ps2A_Mula(Ps2F a, Ps2F b);
+Ps2Acc Ps2A_Madda(Ps2Acc acc, Ps2F a, Ps2F b);
+Ps2Acc Ps2A_Msuba(Ps2Acc acc, Ps2F a, Ps2F b);
+Ps2F Ps2A_Madd(Ps2Acc acc, Ps2F a, Ps2F b); // fd = acc + a*b (acc unchanged)
+Ps2F Ps2A_Msub(Ps2Acc acc, Ps2F a, Ps2F b); // fd = acc - a*b
+// The vector accumulator: lanes as above; mask as the instruction's xyzw.
+typedef struct Ps2VAcc { Ps2Acc lane[4]; } Ps2VAcc;
+void Ps2V_Adda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+void Ps2V_Suba(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+void Ps2V_Mula(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+void Ps2V_Madda(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+void Ps2V_Msuba(Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+void Ps2V_MaddAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+void Ps2V_MsubAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *a, const Ps2Vec4 *b, unsigned mask);
+// The broadcast operand of the ...bc forms (x = 0 .. w = 3): every lane = b.v[lane].
+Ps2Vec4 Ps2V_Bc(const Ps2Vec4 *b, int lane);
+// OPMULA / OPMSUB with the accumulator's overflow flags.
+void Ps2V_OpMulaAcc(Ps2VAcc *acc, const Ps2Vec4 *fs, const Ps2Vec4 *ft);
+void Ps2V_OpMsubAcc(Ps2Vec4 *d, const Ps2VAcc *acc, const Ps2Vec4 *fs, const Ps2Vec4 *ft);
+
 // The module's own checks (hand-computed cases and reference vectors); adds
 // to *checks and *failures, logs each failure through the callback (may be 0).
 void Ps2F_Selftest(int *checks, int *failures, void (*log)(const char *line));
