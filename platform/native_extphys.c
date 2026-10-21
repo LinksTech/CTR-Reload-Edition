@@ -40,6 +40,13 @@ enum
 	EXT_PHYS_DISP_BASE = EXT_PHYS_SPLINES_MAX, // the magdisp splines follow the maggrav ones in splines[]
 	EXT_PHYS_SPLINE_NODES_MAX = 512,
 	EXT_PHYS_LOW_SPEED_MAX = 32767,
+	// physics.speed_factor in 1/4096: 1.0 neutral, 0.5 .. 1.5 (a bigger factor
+	// would run into the game's own speed caps, VehPhysGeneral_GetBaseSpeed 0x6400
+	// and the bots' 24000)
+	EXT_PHYS_SPEED_FACTOR_SHIFT = 12,
+	EXT_PHYS_SPEED_FACTOR_ONE = 1 << EXT_PHYS_SPEED_FACTOR_SHIFT,
+	EXT_PHYS_SPEED_FACTOR_MIN = EXT_PHYS_SPEED_FACTOR_ONE / 2,
+	EXT_PHYS_SPEED_FACTOR_MAX = (EXT_PHYS_SPEED_FACTOR_ONE * 3) / 2,
 };
 
 // A box of the track (Reload units): centre, its own unit axes, half extents
@@ -174,6 +181,10 @@ typedef struct
 	double fLatHiTurn;   // m_HiTurnLatFriction lat
 	double fHiTurnCos;   // cos m_HiTurnStartAngle (the loader's table, 0x19A9E0)
 	double fLatAir;      // m_InAirFriction lat (0x1936B0 -> 0x195900)
+	// physics.speed_factor: the top speeds of every driver (player and CPU)
+	// times this, in 1/4096 (EXT_PHYS_SPEED_FACTOR_ONE = 1.0, kept as not set)
+	int speedSet;
+	int speedFactor;
 } ExtPhysParams;
 
 global_variable struct
@@ -467,6 +478,37 @@ internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int 
 	}
 }
 
+// "speed_factor": a number, 0.5 .. 1.5 (clamped and counted outside), kept in
+// 1/4096; 1.0 (also after the rounding) is the game's own speed: not set.
+internal void ExtPhys_ReadSpeedFactor(const ExtJsonDoc *doc, int key, ExtPhysParams *p)
+{
+	int v;
+
+	if (ExtJson_Type(doc, key) != EXT_JSON_NUMBER)
+	{
+		p->badValues++;
+		return;
+	}
+	v = (int)floor(ExtJson_Number(doc, key, 1.0) * (double)EXT_PHYS_SPEED_FACTOR_ONE + 0.5);
+	if (v < EXT_PHYS_SPEED_FACTOR_MIN)
+	{
+		v = EXT_PHYS_SPEED_FACTOR_MIN;
+		p->clamped++;
+	}
+	if (v > EXT_PHYS_SPEED_FACTOR_MAX)
+	{
+		v = EXT_PHYS_SPEED_FACTOR_MAX;
+		p->clamped++;
+	}
+	if (v == EXT_PHYS_SPEED_FACTOR_ONE)
+	{
+		p->neutralGiven++;
+		return;
+	}
+	p->speedSet = 1;
+	p->speedFactor = v;
+}
+
 // Reads the section (or its absence) into p. A value equal to the game's own
 // is not stored: p then equals the one of a missing section.
 internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
@@ -678,6 +720,10 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 		{
 			ExtPhys_ReadAntigrav(doc, name, key, p);
 		}
+		else if (strcmp(name, "speed_factor") == 0)
+		{
+			ExtPhys_ReadSpeedFactor(doc, key, p);
+		}
 		else
 		{
 			p->unknownKeys++;
@@ -685,7 +731,7 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 	}
 
 	// a zone asks for a behaviour of its own: never neutral
-	p->anySet = p->gravitySet || p->padReservesSet || p->padFireSet || (p->zoneCount > 0) || (p->volumeCount > 0);
+	p->anySet = p->gravitySet || p->padReservesSet || p->padFireSet || (p->zoneCount > 0) || (p->volumeCount > 0) || p->speedSet;
 	for (int t = 0; t < EXT_PHYS_TERRAINS; t++)
 	{
 		if (p->terrainSet[t] != 0)
@@ -781,6 +827,81 @@ int ExtPhys_PadFireLevel(int fireLevel)
 		return fireLevel;
 	}
 	return s_extPhys.p.padFireLevel;
+}
+
+// THE SPEED FACTOR (physics.speed_factor). The top speeds a driver's class
+// gives it (VehBirth_SetConsts from data.metaPhys) times the factor, once per
+// birth, for every driver of the race - the player physics and the CPU drivers
+// alike (BOTS.c takes its target speed from the same class values of the bot
+// and of the leading driver). Scaled: const_Speed_ClassStat (the top speed),
+// const_AccelSpeed_ClassStat (the top speed with wumpa / turbo count),
+// const_SingleTurboSpeed and const_SacredFireSpeed (what a boost adds on top),
+// const_MaskSpeed (the mask's boost). Not scaled: the acceleration, the
+// reverse speed, the damage penalty, the fall speed, turning, gravity - the
+// source game keeps its top speeds (m_MaxForwardSpeed*, m_BoostInfo speeds) as
+// values of their own beside the acceleration gain (0x19C4E0 scales them with
+// separate factors per character). Rounded to the nearest unit, at most 32767.
+internal int ExtPhys_ScaleSpeedValue(int v, int factor)
+{
+	// |v| <= 32768, factor <= 6144: the product stays far inside an int
+	int r = ((v * factor) + (EXT_PHYS_SPEED_FACTOR_ONE / 2)) >> EXT_PHYS_SPEED_FACTOR_SHIFT;
+
+	return (r > 32767) ? 32767 : r;
+}
+
+internal void ExtPhys_ScaleDriverWith(int factor, struct Driver *d)
+{
+	d->const_Speed_ClassStat = (s16)ExtPhys_ScaleSpeedValue(d->const_Speed_ClassStat, factor);
+	d->const_AccelSpeed_ClassStat = (s16)ExtPhys_ScaleSpeedValue(d->const_AccelSpeed_ClassStat, factor);
+	d->const_SingleTurboSpeed = (s16)ExtPhys_ScaleSpeedValue(d->const_SingleTurboSpeed, factor);
+	d->const_SacredFireSpeed = (s16)ExtPhys_ScaleSpeedValue(d->const_SacredFireSpeed, factor);
+	d->const_MaskSpeed = (s16)ExtPhys_ScaleSpeedValue(d->const_MaskSpeed, factor);
+}
+
+// per seat: the driver scaled last and its scaled top speed - a driver that
+// still holds both is not scaled twice (a new birth writes the class values again)
+global_variable struct
+{
+	const struct Driver *driver[8];
+	int speed[8];
+} s_extPhysSpeed;
+
+// Scales the drivers of the 8 seats not scaled yet; returns how many it scaled.
+internal int ExtPhys_ScaleSeatsWith(int factor, struct Driver *const drivers[8], int log)
+{
+	int scaled = 0;
+
+	for (int seat = 0; seat < 8; seat++)
+	{
+		struct Driver *d = drivers[seat];
+		int speed0;
+
+		if ((d == NULL) || ((s_extPhysSpeed.driver[seat] == d) && (s_extPhysSpeed.speed[seat] == (int)d->const_Speed_ClassStat)))
+		{
+			continue;
+		}
+		speed0 = d->const_Speed_ClassStat;
+		ExtPhys_ScaleDriverWith(factor, d);
+		s_extPhysSpeed.driver[seat] = d;
+		s_extPhysSpeed.speed[seat] = d->const_Speed_ClassStat;
+		scaled++;
+		if (log)
+		{
+			Platform_Log("[CTR ExtPhys] speed factor %.4f seat %d: speed %d -> %d, accelSpeed %d, singleTurbo %d, sacredFire %d, mask %d\n",
+			             (double)factor / EXT_PHYS_SPEED_FACTOR_ONE, seat, speed0, (int)d->const_Speed_ClassStat, (int)d->const_AccelSpeed_ClassStat,
+			             (int)d->const_SingleTurboSpeed, (int)d->const_SacredFireSpeed, (int)d->const_MaskSpeed);
+		}
+	}
+	return scaled;
+}
+
+void ExtPhys_OnRaceStart(void)
+{
+	if (!s_extPhys.p.speedSet || !ExtPhys_InForce())
+	{
+		return;
+	}
+	(void)ExtPhys_ScaleSeatsWith(s_extPhys.p.speedFactor, sdata->gGT->drivers, 1);
 }
 
 // THE STRAIGHT RUNS OF THE MAGGRAV SPLINES (measuring only): a maximal run of
@@ -885,6 +1006,11 @@ void ExtPhys_OnLevelLoaded(void)
 	             (p->padReservesSet || p->padFireSet) ? "" : " (neutral)", p->anySet ? "own values in force" : "all neutral - the game's own values",
 	             p->neutralGiven, p->unknownKeys, p->clamped, p->badValues);
 	Platform_Log("[CTR ExtPhys] zones %d, gravity volumes %d\n", p->zoneCount, p->volumeCount);
+	if (p->speedSet)
+	{
+		Platform_Log("[CTR ExtPhys] speed factor %.4f (%d/%d): the top speeds of every driver, set at the race start\n",
+		             (double)p->speedFactor / EXT_PHYS_SPEED_FACTOR_ONE, p->speedFactor, EXT_PHYS_SPEED_FACTOR_ONE);
+	}
 	if ((p->maglevCount > 0) || (p->maggravCount > 0) || (p->splineCount > 0) || p->lowSpeedSet)
 	{
 		int on = 0;
@@ -2249,6 +2375,9 @@ void ExtPhys_OnLogicFrame(void)
 // --ext-selftest phys: the reader and the hooks on made-up sections, no window,
 // no game data, no track
 
+// made-up drivers of the speed factor checks (selftest only)
+global_variable struct Driver s_extPhysTestDrivers[3];
+
 internal void ExtPhys_TestCheck(int ok, const char *what, int *n, int *failures)
 {
 	(*n)++;
@@ -2888,6 +3017,85 @@ int ExtPhys_Selftest(void)
 		ExtPhys_TestCheck((ExtPhys_SideGripWith(&fp, 1, 0, 3000, 0, 8000, 0, 33) == 3000 - 1038) && (ExtPhys_SideGripWith(&fp, 1, 1, 3000, 0, 8000, 7, 33) == 3007) &&
 		                      (ExtPhys_SideGripWith(&fp, 0, 0, 100, 0, 8000, 0, 33) == 0) && (ExtPhys_SideGripWith(&fp, 0, 1, 2000, 0, 0, 0, 33) == 2000 - 1038),
 		                  "side grip: hi turn, braking, air", &checks, &failures);
+	}
+
+	// 9. the speed factor (MX1): without the key nothing, 1.0 neutral, limits,
+	// only the five top speeds change, a driver is never scaled twice
+	{
+		ExtPhysParams sp;
+		struct Driver *const none[8] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+		struct Driver *seats[8] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+		struct Driver *a = &s_extPhysTestDrivers[0];
+		struct Driver *b = &s_extPhysTestDrivers[1];
+		struct Driver *ref = &s_extPhysTestDrivers[2];
+
+		ExtPhys_TestCheck(!absent.speedSet && !empty.speedSet && !neut.speedSet && !set.speedSet, "no speed_factor key: the factor is not set", &checks,
+		                  &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead("{\"physics\": {\"speed_factor\": 1.0}}", &sp) && !sp.speedSet && !sp.anySet && (sp.neutralGiven == 1) &&
+		                      (sp.unknownKeys == 0) && (sp.clamped == 0) && (sp.badValues == 0),
+		                  "speed_factor 1.0 is neutral: not set", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead("{\"physics\": {\"speed_factor\": 1.0001}}", &sp) && !sp.speedSet && (sp.neutralGiven == 1),
+		                  "speed_factor 1.0001 rounds to 4096/4096: neutral", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead("{\"physics\": {\"speed_factor\": 1.25}}", &sp) && sp.speedSet && sp.anySet && (sp.speedFactor == 5120) &&
+		                      (sp.clamped == 0) && (sp.badValues == 0),
+		                  "speed_factor 1.25 is set as 5120/4096", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead("{\"physics\": {\"speed_factor\": 0.2}}", &sp) && sp.speedSet && (sp.speedFactor == EXT_PHYS_SPEED_FACTOR_MIN) &&
+		                      (sp.clamped == 1),
+		                  "speed_factor 0.2 is clamped to 0.5", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead("{\"physics\": {\"speed_factor\": 3}}", &sp) && sp.speedSet && (sp.speedFactor == EXT_PHYS_SPEED_FACTOR_MAX) &&
+		                      (sp.clamped == 1),
+		                  "speed_factor 3 is clamped to 1.5", &checks, &failures);
+		ExtPhys_TestCheck(ExtPhys_TestRead("{\"physics\": {\"speed_factor\": \"fast\"}}", &sp) && !sp.speedSet && !sp.anySet && (sp.badValues == 1),
+		                  "a speed_factor that is no number is not set and counted", &checks, &failures);
+		ExtPhys_TestCheck((ExtPhys_ScaleSpeedValue(13140, 5120) == 16425) && (ExtPhys_ScaleSpeedValue(12950, 5120) == 16188) &&
+		                      (ExtPhys_ScaleSpeedValue(13900, 6144) == 20850) && (ExtPhys_ScaleSpeedValue(13140, 2048) == 6570) &&
+		                      (ExtPhys_ScaleSpeedValue(30000, 6144) == 32767) && (ExtPhys_ScaleSpeedValue(13140, EXT_PHYS_SPEED_FACTOR_ONE) == 13140),
+		                  "top speed times the factor, rounded, at most 32767", &checks, &failures);
+
+		// the class values of a balanced kart (data.metaPhys column 0) in a driver of made-up bytes
+		memset(a, 0x5a, sizeof(*a));
+		a->const_Speed_ClassStat = 13140;
+		a->const_AccelSpeed_ClassStat = 14640;
+		a->const_SingleTurboSpeed = 2048;
+		a->const_SacredFireSpeed = 4096;
+		a->const_MaskSpeed = 3900;
+		a->const_Accel_ClassStat = 480;
+		a->const_BackwardSpeed = 5120;
+		a->const_DamagedSpeed = 4096;
+		memcpy(b, a, sizeof(*a));
+		memcpy(ref, a, sizeof(*a));
+
+		// without the key: the race start hook returns before any driver
+		memset(&s_extPhys, 0, sizeof(s_extPhys));
+		memset(&s_extPhysSpeed, 0, sizeof(s_extPhysSpeed));
+		ExtPhys_OnRaceStart();
+		ExtPhys_TestCheck((memcmp(a, ref, sizeof(*a)) == 0) && (s_extPhysSpeed.driver[0] == NULL) && (ExtPhys_ScaleSeatsWith(5120, none, 0) == 0),
+		                  "without the key the race start changes nothing", &checks, &failures);
+
+		ExtPhys_ScaleDriverWith(5120, b);
+		ExtPhys_TestCheck((b->const_Speed_ClassStat == 16425) && (b->const_AccelSpeed_ClassStat == 18300) && (b->const_SingleTurboSpeed == 2560) &&
+		                      (b->const_SacredFireSpeed == 5120) && (b->const_MaskSpeed == 4875),
+		                  "factor 1.25: speed, accelSpeed, singleTurbo, sacredFire, mask scaled", &checks, &failures);
+		b->const_Speed_ClassStat = a->const_Speed_ClassStat;
+		b->const_AccelSpeed_ClassStat = a->const_AccelSpeed_ClassStat;
+		b->const_SingleTurboSpeed = a->const_SingleTurboSpeed;
+		b->const_SacredFireSpeed = a->const_SacredFireSpeed;
+		b->const_MaskSpeed = a->const_MaskSpeed;
+		ExtPhys_TestCheck(memcmp(a, b, sizeof(*a)) == 0, "factor 1.25: no other byte of the driver changes (acceleration, reverse, damage)", &checks,
+		                  &failures);
+
+		// the seats: scaled once, a second race start (same drivers, scaled values) scales nothing
+		memcpy(b, a, sizeof(*a));
+		seats[0] = a;
+		seats[5] = b;
+		ExtPhys_TestCheck((ExtPhys_ScaleSeatsWith(5120, seats, 0) == 2) && (a->const_Speed_ClassStat == 16425) && (b->const_Speed_ClassStat == 16425) &&
+		                      (ExtPhys_ScaleSeatsWith(5120, seats, 0) == 0) && (a->const_Speed_ClassStat == 16425) && (b->const_AccelSpeed_ClassStat == 18300),
+		                  "every seat is scaled once; a second race start without a new birth scales nothing", &checks, &failures);
+		// a new birth writes the class values again: scaled again once
+		a->const_Speed_ClassStat = 13140;
+		ExtPhys_TestCheck((ExtPhys_ScaleSeatsWith(5120, seats, 0) == 1) && (a->const_Speed_ClassStat == 16425), "a driver born again is scaled again",
+		                  &checks, &failures);
+		memset(&s_extPhysSpeed, 0, sizeof(s_extPhysSpeed));
 	}
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));

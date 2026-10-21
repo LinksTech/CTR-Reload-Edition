@@ -61,6 +61,17 @@ void ExtPhys_NotePadBoost(const struct Driver *d);
 //   [CTR ExtPhys] boost seat S frame F pad P pos X Y Z speed V0 -> peak V1 at +K frame(s), normal max VMAX
 void ExtPhys_OnLogicFrame(void);
 
+// THE SPEED FACTOR (MX1): with "speed_factor": F in the section (0.5 .. 1.5,
+// 1.0 = not set) the top speeds of every driver of the race - the player
+// physics and the CPU drivers - are F times their class values:
+// const_Speed_ClassStat, const_AccelSpeed_ClassStat, const_SingleTurboSpeed,
+// const_SacredFireSpeed, const_MaskSpeed (acceleration, turning, gravity and
+// the rest unchanged). From the dispatcher ExtTrack_OnRaceStart, after the
+// drivers are born (MainInit_FinalizeInit, also after a restart); a driver is
+// never scaled twice. Without the key it returns at once and changes nothing.
+//   [CTR ExtPhys] speed factor F seat S: speed A -> B, accelSpeed .., singleTurbo .., sacredFire .., mask ..
+void ExtPhys_OnRaceStart(void);
+
 // THE ANTI-GRAVITY ZONES (B2). A zone is a surface: the ground records of the
 // collision nodes with "zone": n, listed in physics.zones. Every function is
 // inert (returns 0 / leaves its output at world up) unless the track lists
