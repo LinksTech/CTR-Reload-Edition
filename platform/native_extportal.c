@@ -227,6 +227,11 @@ enum
 };
 
 global_variable int s_extPortalCooldown[EXTPORTAL_SEATS];
+
+// The camera module's reset at the new place (platform/native_extcam_module.c,
+// M2): its next frame starts from the kart's new place instead of springing
+// over from the old one; it acts only for seat 0 and only while it owns the view.
+void ExtCam_OnTeleport(int seat);
 global_variable int s_extPortalFrame;
 global_variable int s_extPortalPasses;
 
@@ -334,6 +339,7 @@ void ExtPortal_OnLogicFrame(void)
 		if (d->driverID < 4)
 		{
 			gGT->cameraDC[d->driverID].flags |= CAMERA_FLAG_DIRECTION_CHANGED;
+			ExtCam_OnTeleport(d->driverID);
 		}
 		s_extPortalCooldown[seat] = EXTPORTAL_COOLDOWN;
 		s_extPortalPasses++;
