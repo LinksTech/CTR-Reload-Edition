@@ -1444,6 +1444,15 @@ int g_cfg_kartSteerLead = 2;
 // line, the counts one line when the race ends.
 int g_cfg_kartSteerUnstick = 0;
 
+// --dev-kart-steer-zone-hands-off (only beside --dev-kart-steer; without it the
+// helper is unchanged to the last pad bit). For measuring how an external
+// track's anti-gravity zone moves a kart that is not steered: while the kart of
+// seat 0 is in a zone (ExtPhys_DriverZone) no steering key is pressed, also not
+// in a back-off of --dev-kart-steer-unstick; gas, SQUARE and the rest stay as
+// the helper sets them. Every change is one log line:
+//   [CTR Debug] --dev-kart-steer-zone-hands-off: hands off|on frame F zone Z
+int g_cfg_kartSteerZoneHandsOff = 0;
+
 enum
 {
 	KART_UNSTICK_MOVE = 64,   // 1 m
@@ -1730,6 +1739,22 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			{
 				usBackEnd = usTick;
 			}
+		}
+	}
+
+	if (g_cfg_kartSteerZoneHandsOff)
+	{
+		local_persist int handsOff = 0;
+		const int zone = ExtPhys_DriverZone(d);
+
+		if ((zone != 0) != handsOff)
+		{
+			handsOff = (zone != 0);
+			Platform_Log("[CTR Debug] --dev-kart-steer-zone-hands-off: hands %s frame %d zone %d\n", handsOff ? "off" : "on", (int)gGT->timer, zone);
+		}
+		if (handsOff)
+		{
+			word |= (u16)(RAW_BTN_LEFT | RAW_BTN_RIGHT);
 		}
 	}
 
