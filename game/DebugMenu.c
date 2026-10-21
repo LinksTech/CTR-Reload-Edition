@@ -1448,11 +1448,12 @@ int g_cfg_kartSteerUnstick = 0;
 // helper is unchanged to the last pad bit). For measuring how an external
 // track's anti-gravity zone moves a kart that is not steered on a straight run
 // of a gravity spline: while the kart of seat 0 is in a zone on a straight run
-// (ExtPhys_SplineSteer) no steering key is pressed, also not in a back-off of
-// --dev-kart-steer-unstick. Elsewhere in a zone on a spline the helper steers
-// along the spline (ExtPhys_SplineSteer's aim, within 4/4096 of a turn), so
-// that the kart enters a straight run lined up with it instead of with the
-// heading a curve without steering leaves; in a zone without a spline and
+// (ExtPhys_SplineSteer) and has been lined up with the spline there (within
+// 4/4096 of a turn, once) no steering key is pressed, also not in a back-off of
+// --dev-kart-steer-unstick. Elsewhere in a zone on a spline, and on a straight
+// run until lined up, the helper steers along the spline (ExtPhys_SplineSteer's
+// aim), so that the hands come off a kart lined up with the run instead of one
+// with the heading a curve or a respawn left; in a zone without a spline and
 // outside zones it steers as always. Gas, SQUARE and the rest stay as the
 // helper sets them. Every change is one log line:
 //   [CTR Debug] --dev-kart-steer-zone-hands-off: hands off|along|on frame F zone Z
@@ -1749,25 +1750,21 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 
 	if (g_cfg_kartSteerZoneHandsOff)
 	{
-		// mode 0 the helper's own steering, 1 along the spline, 2 hands off
+		// mode 0 the helper's own steering, 1 along the spline, 2 hands off (on a
+		// straight run, from the first frame the kart is lined up with the spline
+		// within 4/4096 of a turn until it leaves the run)
 		local_persist int mode = 0;
+		local_persist int released = 0;
 		const int zone = ExtPhys_DriverZone(d);
 		double aim[3];
 		int straight = 0;
 		const int onSpline = (zone != 0) && ExtPhys_SplineSteer(d, &straight, aim);
-		const int now = !onSpline ? 0 : (straight ? 2 : 1);
+		int diff = 0;
+		int haveDiff = 0;
+		int now;
 		static const char *const k_modeNames[3] = {"on", "along", "off"};
 
-		if (now != mode)
-		{
-			mode = now;
-			Platform_Log("[CTR Debug] --dev-kart-steer-zone-hands-off: hands %s frame %d zone %d\n", k_modeNames[mode], (int)gGT->timer, zone);
-		}
-		if (mode != 0)
-		{
-			word |= (u16)(RAW_BTN_LEFT | RAW_BTN_RIGHT);
-		}
-		if ((mode == 1) && (usBackLeft == 0))
+		if (onSpline)
 		{
 			double big = 0.0;
 			int want = d->angle & 0xfff;
@@ -1778,17 +1775,34 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 
 				big = (a > big) ? a : big;
 			}
-
 			if ((big > 0.0) &&
 			    ExtPhys_ZoneHeadingTo(d, (int)(aim[0] * 4096.0 / big), (int)(aim[1] * 4096.0 / big), (int)(aim[2] * 4096.0 / big), &want))
 			{
-				const int diff = ((want - (d->angle & 0xfff) + 0x800) & 0xfff) - 0x800;
-
-				if ((diff > 4) || (diff < -4))
-				{
-					word &= (u16)~((((diff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_LEFT : RAW_BTN_RIGHT);
-				}
+				diff = ((want - (d->angle & 0xfff) + 0x800) & 0xfff) - 0x800;
+				haveDiff = 1;
 			}
+		}
+		if (!onSpline || !straight)
+		{
+			released = 0;
+		}
+		else if (!released && haveDiff && (diff <= 4) && (diff >= -4))
+		{
+			released = 1;
+		}
+		now = !onSpline ? 0 : ((straight && released) ? 2 : 1);
+		if (now != mode)
+		{
+			mode = now;
+			Platform_Log("[CTR Debug] --dev-kart-steer-zone-hands-off: hands %s frame %d zone %d\n", k_modeNames[mode], (int)gGT->timer, zone);
+		}
+		if (mode != 0)
+		{
+			word |= (u16)(RAW_BTN_LEFT | RAW_BTN_RIGHT);
+		}
+		if ((mode == 1) && (usBackLeft == 0) && haveDiff && ((diff > 4) || (diff < -4)))
+		{
+			word &= (u16)~((((diff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_LEFT : RAW_BTN_RIGHT);
 		}
 	}
 
