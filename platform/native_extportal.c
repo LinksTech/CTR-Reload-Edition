@@ -341,6 +341,40 @@ void ExtPortal_OnLogicFrame(void)
 			gGT->cameraDC[d->driverID].flags |= CAMERA_FLAG_DIRECTION_CHANGED;
 			ExtCam_OnTeleport(d->driverID);
 		}
+		// THE PROGRESS. The game's shortcut test (COLL.c, COLL_FIXED_PlayerSearch_CheckMaskGrabProgress)
+		// grabs a kart whose new ground lies more than a quarter lap nearer the finish than its last
+		// checkpoint; a pass is no shortcut, so the checkpoint distance becomes that of the restart node
+		// nearest to the exit in front of it (V1 run 2: every landing behind exit 1 was grabbed and put
+		// back before the gate). The node itself (lastValid) stays: a fall before the landing respawns
+		// as before.
+		{
+			const struct Level *lev = gGT->level1;
+			const ExtPortal *t = &s_extPortals[s_extPortals[k].target];
+			int best = -1;
+			long long bestD2 = 0;
+
+			for (int i = 0; (lev != NULL) && (lev->ptr_restart_points != NULL) && (i < lev->cnt_restart_points); i++)
+			{
+				const struct CheckpointNode *cn = &lev->ptr_restart_points[i];
+				const long long dx = (long long)cn->pos.x - outPos[0], dy = (long long)cn->pos.y - outPos[1], dz = (long long)cn->pos.z - outPos[2];
+				const long long along = (dx * t->axes[1][0]) + (dy * t->axes[1][1]) + (dz * t->axes[1][2]);
+				const long long d2 = (dx * dx) + (dy * dy) + (dz * dz);
+
+				if ((along > 0) && ((best < 0) || (d2 < bestD2)))
+				{
+					best = i;
+					bestD2 = d2;
+				}
+			}
+			if (best >= 0)
+			{
+				const u32 before = d->distanceToFinish_checkpoint;
+
+				d->distanceToFinish_checkpoint = (u32)lev->ptr_restart_points[best].distToFinish << 3;
+				Platform_Log("[CTR ExtPortal] seat %d frame %d progress: checkpoint distance %u -> %u (node %d, %.0f from the exit)\n", seat,
+				             s_extPortalFrame, (unsigned)before, (unsigned)d->distanceToFinish_checkpoint, best, sqrt((double)bestD2));
+			}
+		}
 		s_extPortalCooldown[seat] = EXTPORTAL_COOLDOWN;
 		s_extPortalPasses++;
 	}
