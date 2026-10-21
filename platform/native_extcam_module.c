@@ -37,6 +37,11 @@
 
 int CTR_View_ProjectionDistance(int distanceToScreen); // game/native_view.c
 
+// Night run 2: on a track whose physics.source asks for the port, the source's chase camera itself (the 1:1 port,
+// platform/native_extchasecam.c) gives the picture on every follow frame, not only in zones (b = 1 throughout);
+// see ExtCam_Follow. Without such a track it is never called.
+#include "native_extchasecam_glue.c"
+
 // the source's chase camera parameters (1P near; the values of its camera table)
 #define EXT_CHASE_M 64.0 // world units a metre (the track's conversion)
 global_variable const double s_chaseNear[3] = {0.0, -3.05, 1.2};     // position behind, near (x side, y ahead, z up)
@@ -570,6 +575,7 @@ void ExtCam_OnTeleport(int seat)
 	if (seat == 0)
 	{
 		s_extChase.teleport = 1;
+		ExtChaseGlue_OnTeleport();
 	}
 }
 
@@ -695,8 +701,43 @@ void ExtCam_Follow(const struct GameTracker *gGT, const struct Driver *d, struct
 		ExtCam_OrientOfMatrix(&m, &retailO);
 	}
 
-	// R4 and the step
-	if (d->kartState == KS_MASK_GRABBED)
+	// R4 and the step; on a track of the port the ported camera instead, owning every frame (no blend at zone borders)
+	if (ExtChaseGlue_Ready(gGT->level1))
+	{
+		ExtChaseGlueIn gi;
+		ExtChaseGlueOut go;
+
+		memset(&gi, 0, sizeof(gi));
+		gi.dtMs = in.dtMs;
+		gi.frame = gGT->timer;
+		for (i = 0; i < 3; i++)
+		{
+			gi.pos[i] = in.pos[i];
+			gi.vel[i] = (double)(&d->velocity.x)[i] / 256.0 * (1000.0 / 32.0);
+			gi.fwd[i] = in.f[i];
+			gi.up[i] = in.u[i];
+		}
+		gi.ground = in.air ? 0 : 1;
+		gi.maglev = (ExtPhys_DriverZone(d) != 0) ? 1 : 0;
+		gi.slide = in.slide;
+		gi.freeze = (d->kartState == KS_MASK_GRABBED) ? 1 : 0;
+		if (ExtChaseGlue_Step(gGT->level1, &gi, &go))
+		{
+			memset(&o, 0, sizeof(o));
+			for (i = 0; i < 3; i++)
+			{
+				o.eye[i] = go.eye[i];
+				o.fwd[i] = go.fwd[i];
+				o.up[i] = go.up[i];
+				o.look[i] = go.eye[i] + go.fwd[i] * EXT_CHASE_M;
+			}
+			o.fov = go.fovDeg;
+			s_extChase.raw = o;
+			s_extChase.haveRaw = 1;
+		}
+		s_extChase.b = s_extChase.haveRaw ? 1.0 : 0.0;
+	}
+	else if (d->kartState == KS_MASK_GRABBED)
 	{
 		s_extChase.b -= (double)in.dtMs * 0.001 / EXT_CHASE_T_BLEND;
 		s_extChase.b = (s_extChase.b < 0.0) ? 0.0 : s_extChase.b;
@@ -857,6 +898,7 @@ internal int ExtCamMod_Selftest(int *n, int *failures)
 	} while (0)
 
 	EXTCHASE_CHECK(fabs(ExtChase_Rate(0.05, 33) - 0.2475) < 1e-9, "rate 0.05 at 33 ms");
+	ExtChaseGlue_Selftest(n, failures);
 	EXTCHASE_CHECK(fabs(ExtChase_HOfFov(90.0, 216) - 255.36) < 0.05, "H(90) %.3f", ExtChase_HOfFov(90.0, 216));
 	// far rig at 25 m/s, flat
 	ExtChase_Init(&s);
