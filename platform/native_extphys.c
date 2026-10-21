@@ -474,6 +474,8 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 	int v = 0;
 
 	memset(p, 0, sizeof(*p));
+	// the source data of the zone port (platform/native_extzoneport.c): absent unless the section has it
+	ExtZp_ClearSource();
 	if ((doc == NULL) || (section < 0) || (ExtJson_Type(doc, section) != EXT_JSON_OBJECT))
 	{
 		return;
@@ -677,6 +679,11 @@ internal void ExtPhys_Read(const ExtJsonDoc *doc, int section, ExtPhysParams *p)
 		         (strcmp(name, "magdisp_splines") == 0) || (strcmp(name, "maglev_align") == 0))
 		{
 			ExtPhys_ReadAntigrav(doc, name, key, p);
+		}
+		else if (strcmp(name, "source") == 0)
+		{
+			// night run 2: the source game's own data for the 1:1 zone port (exact float bits)
+			ExtZp_ReadSource(doc, key);
 		}
 		else
 		{
@@ -2898,6 +2905,8 @@ int ExtPhys_Selftest(void)
 	// The second console's single precision arithmetic of the zone physics port
 	// (platform/native_ps2float.c): hand-computed cases and reference vectors.
 	Ps2F_Selftest(&checks, &failures, ExtPhys_TestLog);
+	// The zone port's Reload side (platform/native_extzoneport.c): physics.source, the frame mapping, the step log.
+	ExtZp_Selftest(&checks, &failures, ExtPhys_TestLog);
 
 	memset(&s_extPhys, 0, sizeof(s_extPhys));
 	if (failures)
