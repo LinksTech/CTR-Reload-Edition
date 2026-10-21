@@ -689,6 +689,8 @@ typedef struct
 	Ps2F dt;
 	uint32_t steps, entries;
 	uint32_t enteredFrame;
+	uint32_t airTicks;          // port ticks without ground contact in a row
+	int blocked;                // the port gave up this stay: no entry until Reload left the zone or set the kart down
 	s32 keepPos[3], keepVel[3]; // the written state, kept against COLL_FIXED
 	double up[3], fwd[3];       // the written orientation (Reload axes, unit)
 } ExtZpCouple;
@@ -746,6 +748,7 @@ void ExtZp_CoupleLevel(void)
 {
 	s_extZpc.ready = 0;
 	s_extZpc.active = 0;
+	s_extZpc.blocked = 0;
 	if (!g_cfg_extZonePort)
 	{
 		return;
@@ -1119,7 +1122,18 @@ int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
 	if (stage == DRIVER_FUNC_PHYS_LINEAR)
 	{
 		const int zone = ExtPhys_DriverZone(d);
-		if (!s_extZpc.active && (zone != 0))
+		if (s_extZpc.blocked)
+		{
+			// after the port gave up: again only once Reload has the kart out of the zone or set it down anew
+			const s32 jump = abs(d->posCurr.x - s_extZpc.keepPos[0]) + abs(d->posCurr.y - s_extZpc.keepPos[1]) + abs(d->posCurr.z - s_extZpc.keepPos[2]);
+			if ((zone == 0) || (jump > (2000 << 8)))
+			{
+				s_extZpc.blocked = 0;
+			}
+			for (int k = 0; k < 3; k++)
+				s_extZpc.keepPos[k] = (&d->posCurr.x)[k];
+		}
+		else if (!s_extZpc.active && (zone != 0))
 		{
 			if (!ExtZpc_LoadWorld())
 			{
@@ -1128,6 +1142,7 @@ int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
 				return 0;
 			}
 			ExtZpc_Enter(d);
+			s_extZpc.airTicks = 0;
 			s_extZpcDelta = 0; // the first step of a stay logs every page
 			s_extZpc.active = 1;
 			s_extZpc.entries++;
@@ -1135,11 +1150,27 @@ int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
 			Platform_Log("[CTR ExtZp] port entry %u frame %d zone %d pos %d %d %d\n", (unsigned)s_extZpc.entries, (int)sdata->gGT->timer, zone, d->posCurr.x >> 8,
 			             d->posCurr.y >> 8, d->posCurr.z >> 8);
 		}
-		else if (s_extZpc.active && (zone == 0))
+		else if (s_extZpc.active)
 		{
-			s_extZpc.active = 0;
-			Platform_Log("[CTR ExtZp] port exit frame %d after %u tick(s) pos %d %d %d\n", (int)sdata->gGT->timer, (unsigned)((uint32_t)sdata->gGT->timer - s_extZpc.enteredFrame),
-			             d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8);
+			// the source's own reset state (9: the kart is lost) or no ground under the port's kart for 5 s:
+			// Reload takes the kart back (its own set-down applies); otherwise the zone decides
+			const uint32_t st = ZmR32(s_extZpc.m, s_extZpc.kart + EXT_ZPC_K_STATE);
+			const int ground = ZmR8(s_extZpc.m, s_extZpc.kart + EXT_ZPC_K_GROUND);
+			const char *why = NULL;
+			s_extZpc.airTicks = ground ? 0u : s_extZpc.airTicks + 1u;
+			if (zone == 0)
+				why = "zone left";
+			else if (st == 9u)
+				why = "the source resets the kart (state 9) - given up";
+			else if (s_extZpc.airTicks > 150u)
+				why = "no ground for 5 s - given up";
+			if (why != NULL)
+			{
+				s_extZpc.active = 0;
+				s_extZpc.blocked = (zone != 0);
+				Platform_Log("[CTR ExtZp] port exit frame %d after %u tick(s) pos %d %d %d: %s\n", (int)sdata->gGT->timer,
+				             (unsigned)((uint32_t)sdata->gGT->timer - s_extZpc.enteredFrame), d->posCurr.x >> 8, d->posCurr.y >> 8, d->posCurr.z >> 8, why);
+			}
 		}
 		return 0;
 	}

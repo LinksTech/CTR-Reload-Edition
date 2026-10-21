@@ -35,7 +35,7 @@
 #define EXT_ZP_NODES_MAX 1024
 #define EXT_ZP_CSV_TABLES 4
 #define EXT_ZP_CSV_ROWS_MAX 192
-#define EXT_ZP_NAME_MAX 48
+#define EXT_ZP_NAME_MAX 64 // the longest source name is 59 characters
 
 enum
 {
