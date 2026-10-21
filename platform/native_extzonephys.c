@@ -277,3 +277,6 @@ void ExtZp_Cross(Ps2F out[4], const Ps2F a[4], const Ps2F b[4])
 #include "native_extzonephys_h.c" // downforce, drive, jump
 #include "native_extzonephys_i.c" // state 4: air, states 5/6: sliding
 #include "native_extzonephys_j.c" // the contact callback
+#include "native_extzonephys_s1.c" // the contact solver type 1: core
+#include "native_extzonephys_s2.c" // the contact solver frame, islands (part 1)
+#include "native_extzonephys_s3.c" // the contact solver frame, islands (part 2), contact list copy
