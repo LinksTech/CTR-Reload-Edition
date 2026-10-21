@@ -1157,7 +1157,10 @@ internal void ExtPhys_ZoneStep(int seat, const struct Driver *d, int grounded, i
 			Platform_Log("[CTR ExtZone] seat %d enter zone %d frame %d lap %d\n", seat, id, s_extPhysRun.tick + 2, (int)d->lapIndex);
 		}
 		s->airMs = 0;
-		s->up = ExtPhys_BlendUp(s->up, normal, s_extPhys.p.zones[z].upBlend, s_extPhys.p.zones[z].maxUpDeg);
+		if (!s_extPhys.p.alignSet)
+		{
+			s->up = ExtPhys_BlendUp(s->up, normal, s_extPhys.p.zones[z].upBlend, s_extPhys.p.zones[z].maxUpDeg);
+		}
 		return;
 	}
 	if (!s->inZone)
@@ -1208,6 +1211,7 @@ typedef struct
 	int airMs;
 	int jumped;
 	int gravUnits;  // the last zone gravity per frame of maglev_forces (log only)
+	int disp;       // physics.maglev_align: the segment on the box's magdisp spline + 1, 0 none (the source game's +0x46C)
 } ExtPhysMag;
 
 global_variable ExtPhysMag s_extPhysMag[EXT_PHYS_SEATS];
@@ -1339,6 +1343,7 @@ internal void ExtPhys_MaggravStep(int seat, const struct Driver *d)
 		m->box = 0;
 		m->spline = 0;
 		m->node = -1;
+		m->disp = 0;
 	}
 	if (m->box == 0)
 	{
@@ -1353,6 +1358,10 @@ internal void ExtPhys_MaggravStep(int seat, const struct Driver *d)
 			m->box = v + 1;
 			m->spline = ((sp < p->splineCount) && (p->splines[sp].count >= 2)) ? (sp + 1) : 0;
 			m->node = (m->spline != 0) ? ExtPhys_SplineNearest(p, sp, pos) : -1;
+			// 0x198BF0: the nearest node in the magdisp spline of the same index, when it has one
+			m->disp = (p->alignSet && (m->spline != 0) && (sp < p->dispCount) && (p->splines[EXT_PHYS_DISP_BASE + sp].count >= 2))
+			              ? (ExtPhys_SplineNearest(p, EXT_PHYS_DISP_BASE + sp, pos) + 1)
+			              : 0;
 			Platform_Log("[CTR ExtZone] seat %d maggrav box %s spline %d node %d frame %d\n", seat, p->maggrav[v].box.name, m->spline - 1, m->node,
 			             s_extPhysRun.tick + 2);
 			break;
@@ -1361,6 +1370,11 @@ internal void ExtPhys_MaggravStep(int seat, const struct Driver *d)
 	if (m->spline != 0)
 	{
 		m->node = ExtPhys_SplineLocal(p, m->spline - 1, m->node, pos);
+	}
+	if (m->disp != 0)
+	{
+		// 0x192650: the magdisp node follows the same way
+		m->disp = ExtPhys_SplineLocal(p, EXT_PHYS_DISP_BASE + m->spline - 1, m->disp - 1, pos) + 1;
 	}
 }
 
@@ -1478,6 +1492,102 @@ internal int ExtPhys_SideGripWith(const ExtPhysParams *p, int ground, int brakin
 	return x + gravityX;
 }
 
+// THE SOURCE GAME'S ALIGNMENT (physics.maglev_align, A2/A2b): in a zone the
+// kart's up turns towards a target at the rate min(1 / tau, 1 / dt) (0x197510,
+// tau 0.1 s from 0x190670), only about its side and forward axes (no yaw: the up
+// turns on the great circle to the target). Target (0x190670): on a maggrav
+// spline whose index has a magdisp spline, minus that spline's direction at the
+// kart (0x28B600 on the magdisp node); else the ground normal on the ground
+// (+0x410, the contact normals), and in the air the normal of the zone surface
+// air_ray under the kart along its up (0x191BC0), else the up stays. The
+// result keeps the zone's max_up_deg (the surface frame of the heading needs it).
+internal SVec3 ExtPhys_TurnUp(SVec3 up, const double target[3], double k, int maxUpDeg)
+{
+	const double ul = sqrt((double)up.x * up.x + (double)up.y * up.y + (double)up.z * up.z);
+	const double tl = sqrt(target[0] * target[0] + target[1] * target[1] + target[2] * target[2]);
+	double u[3], t[3], c, th, a, b, v[3];
+	SVec3 out;
+
+	if ((ul < 1e-9) || (tl < 1e-9))
+	{
+		return up;
+	}
+	u[0] = up.x / ul;
+	u[1] = up.y / ul;
+	u[2] = up.z / ul;
+	for (int i = 0; i < 3; i++)
+	{
+		t[i] = target[i] / tl;
+	}
+	c = u[0] * t[0] + u[1] * t[1] + u[2] * t[2];
+	c = (c > 1.0) ? 1.0 : ((c < -1.0) ? -1.0 : c);
+	th = acos(c);
+	if ((th < 1e-9) || (th > 3.14159265358979323846 - 1e-6))
+	{
+		return up; // there already, or exactly opposite (no turning axis)
+	}
+	k = (k > 1.0) ? 1.0 : k;
+	a = sin((1.0 - k) * th) / sin(th);
+	b = sin(k * th) / sin(th);
+	for (int i = 0; i < 3; i++)
+	{
+		v[i] = a * u[i] + b * t[i];
+	}
+	out = ExtPhys_Normalize(v[0], v[1], v[2]);
+	return ExtPhys_BlendUp(out, out, 256, maxUpDeg);
+}
+
+internal void ExtPhys_AlignStep(int seat, const struct Driver *d, int grounded, int ms)
+{
+	ExtPhysSeatZone *s = &s_extPhysZone[seat];
+	const ExtPhysMag *m = &s_extPhysMag[seat];
+	const ExtPhysParams *p = &s_extPhys.p;
+	const double pos[3] = {d->posCurr.x / 256.0, d->posCurr.y / 256.0, d->posCurr.z / 256.0};
+	double target[3];
+
+	if (!s->inZone)
+	{
+		return;
+	}
+	if ((m->spline != 0) && (m->disp != 0))
+	{
+		double dir[3];
+
+		if (!ExtPhys_SplineDir(p, EXT_PHYS_DISP_BASE + m->spline - 1, m->disp - 1, pos, dir))
+		{
+			return;
+		}
+		target[0] = -dir[0];
+		target[1] = -dir[1];
+		target[2] = -dir[2];
+	}
+	else if (grounded)
+	{
+		target[0] = d->normalVecUP.x;
+		target[1] = d->normalVecUP.y;
+		target[2] = d->normalVecUP.z;
+	}
+	else
+	{
+		const double dir[3] = {s->up.x / 4096.0, s->up.y / 4096.0, s->up.z / 4096.0};
+		ExtCollLineHit lh;
+
+		if ((p->alignRay <= 0.0) || !ExtColl_LineQuery(pos, dir, -p->alignRay, 0.0, EXT_COLL_LINE_GROUND, 1, &lh) || (lh.zone == 0) ||
+		    (ExtPhys_ZoneIndex(lh.zone) < 0))
+		{
+			return; // the up stays
+		}
+		target[0] = lh.normal[0];
+		target[1] = lh.normal[1];
+		target[2] = lh.normal[2];
+	}
+	{
+		const double dt = (double)ms / 1000.0;
+
+		s->up = ExtPhys_TurnUp(s->up, target, dt / p->alignTau, s_extPhys.p.zones[s->zone - 1].maxUpDeg);
+	}
+}
+
 // THE MAGLEV BOXES (night run 1, NL1_M1_SPEZ.md Z2). The source game switches
 // its anti-gravity state also by boxes: a driver outside a zone that is in a
 // "maglev-on" box enters the track's first zone (its up stays world up until
@@ -1566,6 +1676,10 @@ void ExtPhys_AfterGroundSearch(const struct Driver *d)
 	ExtPhys_MaglevBoxes(d->driverID, d, grounded, (id > 0) && (ExtPhys_ZoneIndex(id) >= 0));
 	ExtPhys_ZoneStep(d->driverID, d, grounded, id, d->normalVecUP, sdata->gGT->elapsedTimeMS);
 	ExtPhys_MaggravStep(d->driverID, d);
+	if (s_extPhys.p.alignSet)
+	{
+		ExtPhys_AlignStep(d->driverID, d, grounded, sdata->gGT->elapsedTimeMS);
+	}
 }
 
 void ExtPhys_BotGround(const struct Driver *bot, const struct QuadBlock *ground, const SVec3 *normal)
@@ -2721,6 +2835,24 @@ int ExtPhys_Selftest(void)
 		                  "magdisp_splines after the maggrav ones (null entry kept), maglev_align read", &checks, &failures);
 		ExtPhys_TestRead("{\"physics\": {\"maglev_align\": {\"tau\": 0}}}", &dp);
 		ExtPhys_TestCheck(!dp.alignSet && (dp.badValues == 1), "maglev_align: a bad tau or a missing air_ray takes nothing", &checks, &failures);
+	}
+	// the alignment's turn: a third of the way at 33 ms and tau 0.1 s (90 -> 30 degrees), on the great circle, at most all the way
+	{
+		const SVec3 up = {0, 4096, 0};
+		const double side[3] = {1.0, 0.0, 0.0};
+		const double same[3] = {0.0, 2.0, 0.0};
+		const double back[3] = {0.0, -1.0, 0.0};
+		const SVec3 a = ExtPhys_TurnUp(up, side, 0.033 / 0.1, 180);
+		const SVec3 b = ExtPhys_TurnUp(up, side, 5.0, 180);
+		const SVec3 c = ExtPhys_TurnUp(up, same, 0.33, 180);
+		const SVec3 e = ExtPhys_TurnUp(up, back, 0.33, 180);
+		const SVec3 f = ExtPhys_TurnUp(up, side, 1.0, 60);
+
+		snprintf(what, sizeof(what), "align turn: 90 deg at k 0.33 -> %.2f deg (want 29.70), k > 1 all the way, at the target or opposite unchanged, max_up kept",
+		         ExtPhys_AngleDeg(a, up));
+		ExtPhys_TestCheck((fabs(ExtPhys_AngleDeg(a, up) - 29.7) < 0.05) && (a.z == 0) && (a.x > 0) && (b.x == 4096) && (b.y == 0) && (c.y == 4096) &&
+		                      (e.y == 4096) && (fabs(ExtPhys_AngleDeg(f, up) - 60.0) < 0.05),
+		                  what, &checks, &failures);
 	}
 
 	// fixup round 2: physics.maglev_forces (all keys or none) and the force sizes
