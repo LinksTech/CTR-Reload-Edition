@@ -41,8 +41,12 @@ int ExtZc_ReloadTriangles(void *user, const double centre[3], double reach, ExtZ
 	if ((s_zcrCalls % 3000u) == 0u)
 	{
 		const double ms = 1000.0 * (double)s_zcrTicks / (double)SDL_GetPerformanceFrequency();
-		Platform_Log("[CTR ExtZc] triangle provider: %u calls, %.2f triangles and %.1f leaves per call, %.4f ms per call (%.1f ms in all)\n", s_zcrCalls,
-		             (double)s_zcrTris / (double)s_zcrCalls, (double)s_zcrLeaves / (double)s_zcrCalls, ms / (double)s_zcrCalls, ms);
+		uint32_t heapUsed, heapRefused;
+		ExtZc_HeapStats(&heapUsed, &heapRefused);
+		Platform_Log("[CTR ExtZc] triangle provider: %u calls, %.2f triangles and %.1f leaves per call, %.4f ms per call (%.1f ms in all); "
+		             "heap %u of %u bytes, %u refused\n",
+		             s_zcrCalls, (double)s_zcrTris / (double)s_zcrCalls, (double)s_zcrLeaves / (double)s_zcrCalls, ms / (double)s_zcrCalls, ms,
+		             (unsigned)heapUsed, (unsigned)EXT_ZC_ARENA_BYTES, (unsigned)heapRefused);
 	}
 	return n;
 }

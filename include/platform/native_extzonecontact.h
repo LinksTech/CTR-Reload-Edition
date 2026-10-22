@@ -94,16 +94,18 @@ typedef struct ExtZcConfig
 	void *user;
 	uint32_t trackShell;        // the shell the records name as body B (the track's static body, from the source world)
 	uint32_t recordClass;       // the value for EXT_ZC_REC_VTABLE
-	uint32_t recordArena;       // port memory for the record vectors (EXT_ZC_ARENA_BYTES, 16-byte aligned)
+	uint32_t recordArena;       // free port memory for the source's heap (allocator 0x33C1B0, the detector's vectors; EXT_ZC_ARENA_BYTES, 16-byte aligned)
 	Ps2F radius;                // the sphere radius of a kart body (0.52 m: 0x3F051EB8)
 	uint32_t onlyShell;         // 0: every dynamic shell of the detector (P + 0x1C list); else only this shell gets records
 } ExtZcConfig;
 enum
 {
-	EXT_ZC_ARENA_BYTES = 0x8000, // room for 3 x 64 records and the pair lists
+	EXT_ZC_ARENA_BYTES = 0x20000, // the heap: blocks live until released and are given out again (free list)
 	EXT_ZC_MAX_TRIS = 256,       // triangles looked at per body and query
 };
 void ExtZc_Configure(const ExtZcConfig *cfg);
+// The heap's state: bytes taken from the arena so far and allocations it could not serve (0 expected).
+void ExtZc_HeapStats(uint32_t *usedBytes, uint32_t *refused); // of the memory of the last answer
 
 // ------------------------------------------------------------------ the answer
 

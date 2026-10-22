@@ -30,19 +30,17 @@
 #define ZC_F_ONE 0x3F800000u
 #define ZC_TRI_CACHE 512
 
-// arena layout (offsets from cfg.recordArena): fixed homes of the detector's lists, then a bump area for transient vectors
-enum
-{
-	ZC_AR_CONTACTS = 0x0000, // 64 records
-	ZC_AR_PAIRS = 0x2000,    // P+0xC8: 64 pairs
-	ZC_AR_PEN = 0x2200,      // P+0xEC
-	ZC_AR_KNOWN = 0x2400,    // P+0xB0
-	ZC_AR_PAIRS2 = 0x2600,   // P+0xE0
-	ZC_AR_PAIRS3 = 0x2800,   // P+0xD4
-	ZC_AR_BUMP = 0x2A00,
-	ZC_CAP_RECORDS = 64,
-	ZC_CAP_PAIRS = 64,
-};
+// The arena (cfg.recordArena, EXT_ZC_ARENA_BYTES) is the source's heap for the port: the block allocator
+// 0x33C1B0 and its release 0x33C3B0 are served from it, and the detector's vectors grow in it the way the
+// source's vectors do (a block with the allocator header of 0x33C120, the old block released as 0x33C170
+// does). Blocks live until they are released, as in the source; a released block is kept in a free list in
+// port memory and given out again for the same size. Head of the arena: +0 magic, +4 top (next unused
+// byte), +8 first free block (a free block: +4 its size, +8 the next free block).
+#define ZC_HEAP_MAGIC 0x5A434850u
+#define ZC_HEAP_HEAD 0x10u
+#define ZC_BLOCK_TAG 0x02345656u  // the allocator header's tag word (0x33C120)
+#define ZC_BLOCK_FREED 0xDEADBEEFu // the tag word of a released block (0x33C170)
+#define ZC_VEC_TAG 14u             // the tag the source's vectors allocate with (measured: P+0x1C, P+0xEC, P+0xF8 in slot6)
 
 typedef struct ZcTriInfo
 {
@@ -53,7 +51,8 @@ typedef struct ZcTriInfo
 
 static ExtZcConfig s_zc;
 static int s_zcReady;
-static uint32_t s_zcBump;
+static uint32_t s_zcHeapFull; // allocations the arena could not serve (log line)
+static ExtZpMem *s_zcMem;     // the memory of the last answer (ExtZc_HeapStats)
 static ZcTriInfo s_zcTri[ZC_TRI_CACHE];
 static int s_zcTriCount;
 
@@ -90,28 +89,96 @@ static void zc_put_vec(uint8_t *rec, uint32_t off, const double v[3], Ps2F w)
 static uint32_t zc_vcount(ExtZpMem *m, uint32_t v) { return ZmR32(m, v + 4u); }
 static uint32_t zc_vdata(ExtZpMem *m, uint32_t v) { return ZmR32(m, v + 8u); }
 
-// Makes room for `need` elements of `size` bytes: a vector whose capacity is
-// too small moves to `home` (cap elements) or, home == 0, to the bump area.
-static void zc_vreserve(ExtZpCtx *c, uint32_t v, uint32_t need, uint32_t size, uint32_t home, uint32_t cap)
+// ------------------------------------------------------------------ the heap (see the arena above)
+
+static uint32_t zc_heap(ExtZpMem *m)
+{
+	const uint32_t a = s_zc.recordArena;
+	if (ZmR32(m, a) != ZC_HEAP_MAGIC)
+	{
+		ZmW32(m, a + 0u, ZC_HEAP_MAGIC);
+		ZmW32(m, a + 4u, a + ZC_HEAP_HEAD);
+		ZmW32(m, a + 8u, 0u);
+	}
+	return a;
+}
+// 0x33C1B0: a block of `bytes` (rounded to 16), zeroed; 0 when the arena is used up (counted).
+static uint32_t zc_alloc(ExtZpMem *m, uint32_t bytes)
+{
+	const uint32_t a = zc_heap(m), size = (bytes + 15u) & ~15u;
+	uint32_t prev = a + 8u, blk = ZmR32(m, a + 8u), top;
+	while (blk != 0u)
+	{
+		if (ZmR32(m, blk + 4u) == size)
+		{
+			ZmW32(m, prev, ZmR32(m, blk + 8u));
+			break;
+		}
+		prev = blk + 8u;
+		blk = ZmR32(m, blk + 8u);
+	}
+	if (blk == 0u)
+	{
+		top = ZmR32(m, a + 4u);
+		if ((size == 0u) || (top + size > a + (uint32_t)EXT_ZC_ARENA_BYTES))
+		{
+			s_zcHeapFull++;
+			return 0u;
+		}
+		blk = top;
+		ZmW32(m, a + 4u, top + size);
+	}
+	for (uint32_t i = 0; i < size; i += 4u)
+		ZmW32(m, blk + i, 0u);
+	return blk;
+}
+// 0x33C3B0 (block, bytes, tag): the block goes to the free list.
+static void zc_release(ExtZpMem *m, uint32_t blk, uint32_t bytes)
+{
+	const uint32_t a = zc_heap(m);
+	if (blk == 0u)
+		return;
+	ZmW32(m, blk + 4u, (bytes + 15u) & ~15u);
+	ZmW32(m, blk + 8u, ZmR32(m, a + 8u));
+	ZmW32(m, a + 8u, blk);
+}
+// 0x33C120 / 0x33C170 inline: a block with the allocator header (tag, size, tag argument), the data behind it.
+static uint32_t zc_block_new(ExtZpMem *m, uint32_t size)
+{
+	const uint32_t blk = zc_alloc(m, size + 0x10u);
+	if (blk == 0u)
+		return 0u;
+	ZmW32(m, blk + 0x0u, ZC_BLOCK_TAG);
+	ZmW32(m, blk + 0x4u, size);
+	ZmW32(m, blk + 0x8u, ZC_VEC_TAG);
+	return blk + 0x10u;
+}
+static void zc_block_free(ExtZpMem *m, uint32_t blockData)
+{
+	uint32_t size;
+	if (blockData == 0u)
+		return;
+	ZmW32(m, blockData - 0x10u, ZC_BLOCK_FREED);
+	size = ZmR32(m, blockData - 0xCu);
+	zc_release(m, blockData - 0x10u, size + 0x10u);
+}
+
+// Makes room for `need` elements of `size` bytes as the source's vector insert does (0x3674C0): the capacity
+// (at least 1) doubles until it holds them, the elements move to a new block, the old block is released.
+static void zc_vreserve(ExtZpCtx *c, uint32_t v, uint32_t need, uint32_t size)
 {
 	ExtZpMem *m = c->m;
-	uint32_t have = ZmR32(m, v), count = zc_vcount(m, v), old = zc_vdata(m, v), dst;
+	uint32_t cap = ZmR32(m, v), count = zc_vcount(m, v), old = zc_vdata(m, v), dst;
 	uint8_t tmp[256];
-	if ((need <= have) && (old != 0u))
+	if (need <= cap)
 		return;
-	if (home != 0u)
-	{
-		dst = home;
-		if (need > cap)
-			need = cap;
-	}
-	else
-	{
-		cap = (need < 16u) ? 16u : need;
-		dst = s_zcBump;
-		s_zcBump += (cap * size + 15u) & ~15u;
-	}
-	if ((old != 0u) && (old != dst))
+	if (cap == 0u)
+		cap = 1u;
+	while (cap < need)
+		cap <<= 1;
+	dst = zc_block_new(m, cap * size);
+	if (dst == 0u)
+		return;
 	{
 		uint32_t bytes = count * size, done = 0u;
 		while (done < bytes)
@@ -122,16 +189,17 @@ static void zc_vreserve(ExtZpCtx *c, uint32_t v, uint32_t need, uint32_t size, u
 			done += n;
 		}
 	}
+	zc_block_free(m, old);
 	ZmW32(m, v, cap);
 	ZmW32(m, v + 8u, dst);
 }
-static void zc_vpush(ExtZpCtx *c, uint32_t v, const void *elem, uint32_t size, uint32_t home, uint32_t cap)
+static void zc_vpush(ExtZpCtx *c, uint32_t v, const void *elem, uint32_t size)
 {
 	ExtZpMem *m = c->m;
 	uint32_t count = zc_vcount(m, v);
-	zc_vreserve(c, v, count + 1u, size, home, cap);
+	zc_vreserve(c, v, count + 1u, size);
 	if (count >= ZmR32(m, v))
-		return; // full (home capacity reached): the element is dropped
+		return; // the arena is used up (counted in s_zcHeapFull)
 	ExtZpMem_Write(m, zc_vdata(m, v) + count * size, elem, size);
 	ZmW32(m, v + 4u, count + 1u);
 }
@@ -146,11 +214,11 @@ static int zc_pair_in(ExtZpMem *m, uint32_t v, uint32_t a, uint32_t b)
 	}
 	return 0;
 }
-static void zc_pair_add_unique(ExtZpCtx *c, uint32_t v, uint32_t a, uint32_t b, uint32_t home)
+static void zc_pair_add_unique(ExtZpCtx *c, uint32_t v, uint32_t a, uint32_t b)
 {
 	uint32_t e[2] = {a, b};
 	if (!zc_pair_in(c->m, v, a, b))
-		zc_vpush(c, v, e, 8u, home, ZC_CAP_PAIRS);
+		zc_vpush(c, v, e, 8u);
 }
 // body flag byte (body + 0x18): bit 0 or bit 2 = fixed (no response)
 static int zc_static(ExtZpMem *m, uint32_t body) { return (ZmR8(m, body + 0x18u) & 5u) != 0u; }
@@ -330,8 +398,7 @@ int ExtZc_SphereTriangle(const Ps2F centre[3], Ps2F radius, Ps2F tol, const ExtZ
 // All records of one dynamic body (its shell) against the geometry: appended to
 // `recs` (vector), the pair (shell, track) to `pairs` if any, to `pen` if one overlaps.
 // Returns the number of records; *overlap = 1 if one has a negative gap.
-static int zc_body_records(ExtZpCtx *c, uint32_t shell, Ps2F tol, uint32_t recs, uint32_t recHome, uint32_t pairs, uint32_t pairHome, uint32_t pen,
-                           uint32_t penHome, int *overlap)
+static int zc_body_records(ExtZpCtx *c, uint32_t shell, Ps2F tol, uint32_t recs, uint32_t pairs, uint32_t pen, int *overlap)
 {
 	ExtZpMem *m = c->m;
 	static ExtZcTri tris[EXT_ZC_MAX_TRIS];
@@ -357,15 +424,15 @@ static int zc_body_records(ExtZpCtx *c, uint32_t shell, Ps2F tol, uint32_t recs,
 			memcpy(rec + EXT_ZC_REC_FRICTION_A, mat, 16);
 		}
 		zc_tri_remember(&tris[i], n);
-		zc_vpush(c, recs, rec, EXT_ZC_REC_SIZE, recHome, ZC_CAP_RECORDS);
+		zc_vpush(c, recs, rec, EXT_ZC_REC_SIZE);
 		made++;
 		if (gap < 0.0)
 			*overlap = 1;
 	}
 	if ((made > 0) && (pairs != 0u))
-		zc_pair_add_unique(c, pairs, shell, s_zc.trackShell, pairHome);
+		zc_pair_add_unique(c, pairs, shell, s_zc.trackShell);
 	if (*overlap && (pen != 0u))
-		zc_pair_add_unique(c, pen, shell, s_zc.trackShell, penHome);
+		zc_pair_add_unique(c, pen, shell, s_zc.trackShell);
 	return made;
 }
 
@@ -381,7 +448,6 @@ static uint32_t zc_detect(ExtZpCtx *c, uint32_t sub)
 		return 0u;
 	P = ZmR32(m, det + EXT_ZC_DET_INNER);
 	tol = ZmRF(m, P + EXT_ZC_P_TOLERANCE);
-	s_zcBump = s_zc.recordArena + ZC_AR_BUMP;
 	ZmW32(m, P + EXT_ZC_P_CONTACTS + 4u, 0u);
 	ZmW32(m, P + EXT_ZC_P_PENETRATING + 4u, 0u);
 	ZmW32(m, P + EXT_ZC_P_PAIRS + 4u, 0u);
@@ -390,8 +456,7 @@ static uint32_t zc_detect(ExtZpCtx *c, uint32_t sub)
 	for (uint32_t i = 0; i < n; i++)
 	{
 		int ov;
-		(void)zc_body_records(c, ZmR32(m, d + 4u * i), tol, P + EXT_ZC_P_CONTACTS, s_zc.recordArena + ZC_AR_CONTACTS, P + EXT_ZC_P_PAIRS,
-		                      s_zc.recordArena + ZC_AR_PAIRS, P + EXT_ZC_P_PENETRATING, s_zc.recordArena + ZC_AR_PEN, &ov);
+		(void)zc_body_records(c, ZmR32(m, d + 4u * i), tol, P + EXT_ZC_P_CONTACTS, P + EXT_ZC_P_PAIRS, P + EXT_ZC_P_PENETRATING, &ov);
 	}
 	return (zc_vcount(m, P + EXT_ZC_P_PENETRATING) != 0u) ? 1u : 0u;
 }
@@ -406,7 +471,7 @@ static void zc_detect_set(ExtZpCtx *c, const ExtZpQueryArgs *in)
 	{
 		int ov;
 		uint32_t body = ZmR32(m, d + 4u * i);
-		(void)zc_body_records(c, zc_shell_of(m, P, body), tol, in->a[3], 0u, in->a[4], 0u, in->a[2], 0u, &ov);
+		(void)zc_body_records(c, zc_shell_of(m, P, body), tol, in->a[3], in->a[4], in->a[2], &ov);
 	}
 }
 
@@ -419,7 +484,7 @@ static void zc_detect_pair(ExtZpCtx *c, const ExtZpQueryArgs *in)
 	int ov = 0;
 	if (zc_static(m, dyn))
 		dyn = in->a[2];
-	(void)zc_body_records(c, zc_shell_of(m, P, dyn), tol, in->a[4], 0u, 0u, 0u, 0u, 0u, &ov);
+	(void)zc_body_records(c, zc_shell_of(m, P, dyn), tol, in->a[4], 0u, 0u, &ov);
 	ZmW8(m, in->a[3], (uint8_t)(ov ? 1u : 0u));
 }
 
@@ -435,7 +500,7 @@ static void zc_pairs_before(ExtZpCtx *c, uint32_t P)
 		if (((ZmR8(m, ZmR32(m, a + 0x18u) + 0x18u) & 2u) == 0u) && ((ZmR8(m, ZmR32(m, b + 0x18u) + 0x18u) & 2u) == 0u))
 		{
 			uint32_t e[2] = {a, b};
-			zc_vpush(c, P + 0xE0u, e, 8u, s_zc.recordArena + ZC_AR_PAIRS2, ZC_CAP_PAIRS);
+			zc_vpush(c, P + 0xE0u, e, 8u);
 		}
 	}
 	ZmW32(m, P + 0xC8u + 4u, 0u);
@@ -450,7 +515,7 @@ static void zc_pairs_after(ExtZpCtx *c, uint32_t P)
 	for (uint32_t i = 0; i < n; i++)
 	{
 		uint32_t e[2] = {ZmR32(m, d + 8u * i), ZmR32(m, d + 8u * i + 4u)};
-		zc_vpush(c, P + 0xD4u, e, 8u, s_zc.recordArena + ZC_AR_PAIRS3, ZC_CAP_PAIRS);
+		zc_vpush(c, P + 0xD4u, e, 8u);
 	}
 }
 
@@ -506,7 +571,7 @@ static void zc_contact_events(ExtZpCtx *c, uint32_t P)
 // 0x3770E0 (a0 = P, a1 = the pair as one 64-bit word): adds it to P+0xB0 unless there (either order).
 static void zc_known_add(ExtZpCtx *c, uint32_t P, uint32_t a, uint32_t b)
 {
-	zc_pair_add_unique(c, P + EXT_ZC_P_KNOWN_PAIRS, a, b, s_zc.recordArena + ZC_AR_KNOWN);
+	zc_pair_add_unique(c, P + EXT_ZC_P_KNOWN_PAIRS, a, b);
 }
 
 // 0x36F840 (a0 = P, a1 = pair listener): every overlapping pair (P+0xEC) into the known pairs.
@@ -518,11 +583,20 @@ static void zc_pen_known(ExtZpCtx *c, uint32_t P)
 		zc_known_add(c, P, ZmR32(m, d + 8u * i), ZmR32(m, d + 8u * i + 4u));
 }
 
+void ExtZc_HeapStats(uint32_t *usedBytes, uint32_t *refused)
+{
+	*usedBytes = 0u;
+	*refused = s_zcHeapFull;
+	if (s_zcReady && (s_zcMem != NULL) && (ZmR32(s_zcMem, s_zc.recordArena) == ZC_HEAP_MAGIC))
+		*usedBytes = ZmR32(s_zcMem, s_zc.recordArena + 4u) - s_zc.recordArena;
+}
+
 void ExtZc_Configure(const ExtZcConfig *cfg)
 {
 	s_zc = *cfg;
 	s_zcReady = (cfg != NULL) && (cfg->recordArena != 0u);
-	s_zcBump = s_zc.recordArena + ZC_AR_BUMP;
+	s_zcHeapFull = 0;
+	s_zcMem = NULL;
 	s_zcTriCount = 0;
 }
 
@@ -531,6 +605,7 @@ int ExtZc_Answer(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResu
 	ExtZpMem *m = c->m;
 	if (!s_zcReady)
 		return 0;
+	s_zcMem = m;
 	if (kind == EXT_ZP_Q_MATERIAL)
 	{
 		if (in->func != 0x00390F40u)
@@ -549,17 +624,19 @@ int ExtZc_Answer(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQueryResu
 	}
 	if (kind == EXT_ZP_Q_OTHER)
 	{
-		// the original's block allocator and its release, served from the contact arena (transient)
+		// the source's block allocator (a0 bytes, a1 tag) and its release (a0 block, a1 bytes, a2 tag): the arena's heap
 		if (in->func == 0x0033C1B0u)
 		{
-			uint32_t size = (in->a[0] + 15u) & ~15u;
-			out->v0 = s_zcBump;
-			for (uint32_t i = 0; i < size; i += 4u)
-				ZmW32(m, s_zcBump + i, 0u);
-			s_zcBump += size;
+			out->v0 = zc_alloc(m, in->a[0]);
 			return 1;
 		}
-		if ((in->func == 0x0033C3B0u) || (in->func == 0x004BA240u))
+		if (in->func == 0x0033C3B0u)
+		{
+			zc_release(m, in->a[0], in->a[1]);
+			return 1;
+		}
+		// operator delete (0x4BA240): the port calls it only for objects of the source's operator new, none of them from this heap
+		if (in->func == 0x004BA240u)
 			return 1;
 		// the subspace's virtual function +0x20 (asked by the contact solver 0x3B1960): the detector's tolerance,
 		// in the source 0x3B2600 -> 0x380F80 = f32 [[[sub + 0x70] + 0x14] + 0x14] (0 without a detector); the port's own
@@ -672,6 +749,51 @@ int ExtZc_Selftest(void)
 	checks++;
 	if (!(zc_near(f[0], -0.7071, 2e-3) && zc_near(f[2], 0.7071, 2e-3)))
 		failures++;
+	{
+		// the heap: a vector grows 1 -> 2 -> 4 -> 8 in blocks with the allocator header, every old block is released,
+		// a released block is given out again for its size, and nothing is read from an absent page
+		const ExtZcConfig keep = s_zc;
+		const int keepReady = s_zcReady;
+		const uint32_t keepFull = s_zcHeapFull, v = 0x01000000u, arena = 0x01C00000u;
+		ExtZpMem *mem = ExtZpMem_Create();
+		ExtZpCtx hc;
+		static const uint8_t zero[256] = {0};
+		uint32_t firstBlock, d;
+		memset(&hc, 0, sizeof(hc));
+		hc.m = mem;
+		for (uint32_t a = 0; a < (uint32_t)EXT_ZC_ARENA_BYTES; a += (uint32_t)sizeof(zero))
+			ExtZpMem_Write(mem, arena + a, zero, (uint32_t)sizeof(zero));
+		ExtZpMem_Write(mem, v, zero, 16u);
+		memset(&s_zc, 0, sizeof(s_zc));
+		s_zc.recordArena = arena;
+		s_zcReady = 1;
+		s_zcHeapFull = 0;
+		for (uint32_t i = 0; i < 5u; i++)
+		{
+			const uint32_t e[2] = {i, ~i};
+			zc_vpush(&hc, v, e, 8u);
+		}
+		d = ZmR32(mem, v + 8u);
+		firstBlock = arena + ZC_HEAP_HEAD; // the capacity-1 block (0x20 bytes), released at the first growth
+		checks++;
+		if ((ZmR32(mem, v) != 8u) || (ZmR32(mem, v + 4u) != 5u) || (ZmR32(mem, d - 0x10u) != ZC_BLOCK_TAG) || (ZmR32(mem, d - 0xCu) != 64u) ||
+		    (ZmR32(mem, d + 8u * 4u) != 4u) || (ZmR32(mem, d + 8u * 4u + 4u) != ~4u))
+			failures++;
+		checks++;
+		// the free list holds (last released first) the capacity-4, -2 and -1 blocks; the two 0x20-byte ones come back
+		// for 0x20-byte requests (the capacity-2 block right behind the first one), the third request takes new room
+		if ((ZmR32(mem, firstBlock) != ZC_BLOCK_FREED) || (zc_alloc(mem, 0x18u) != firstBlock + 0x20u) || (zc_alloc(mem, 0x20u) != firstBlock) ||
+		    (zc_alloc(mem, 0x20u) <= d))
+			failures++;
+		checks++;
+		if ((ExtZpMem_Faults(mem) != 0u) || (s_zcHeapFull != 0u))
+			failures++;
+		ExtZpMem_Destroy(mem);
+		s_zc = keep;
+		s_zcReady = keepReady;
+		s_zcHeapFull = keepFull;
+		s_zcMem = NULL;
+	}
 	(void)checks;
 	return (failures == 0) ? 0 : 1;
 }
