@@ -1458,6 +1458,9 @@ int g_cfg_kartSteerUnstick = 0;
 // helper sets them. Every change is one log line:
 //   [CTR Debug] --dev-kart-steer-zone-hands-off: hands off|along|on frame F zone Z
 int g_cfg_kartSteerZoneHandsOff = 0;
+// --dev-kart-steer-zone-hands-off [tol]: the line-up within tol/4096 of a turn (default 4, as before; with
+// --dev-kart-steer-analog the stick lines the kart up only to its dead zone, so a larger tol is given there).
+int g_cfg_kartSteerZoneHandsOffTol = 4;
 
 // --dev-kart-steer-analog (only beside --dev-kart-steer; without it the helper is
 // unchanged to the last pad bit). For the external track's zone port, whose
@@ -1475,6 +1478,20 @@ internal int DebugMenu_KartSteerStick(int leftKey, int diff)
 	const int a = (diff < 0) ? -diff : diff;
 	int mag = (a <= 0x10) ? 0 : ((a >= 0x200) ? 0x7f : (a * 0x7f) / 0x200);
 
+	return leftKey ? (0x80 - mag) : (0x80 + mag);
+}
+
+// The same for the line-up along a spline (--dev-kart-steer-zone-hands-off): nothing within tol, else at
+// least 9 (just past the zone port's stick dead zone of 8), so that small errors are steered out too.
+internal int DebugMenu_KartSteerStickFine(int leftKey, int diff, int tol)
+{
+	const int a = (diff < 0) ? -diff : diff;
+	int mag = (a <= tol) ? 0 : ((a >= 0x200) ? 0x7f : (a * 0x7f) / 0x200);
+
+	if ((a > tol) && (mag < 9))
+	{
+		mag = 9;
+	}
 	return leftKey ? (0x80 - mag) : (0x80 + mag);
 }
 
@@ -1815,7 +1832,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		{
 			released = 0;
 		}
-		else if (!released && haveDiff && (diff <= 4) && (diff >= -4))
+		else if (!released && haveDiff && (diff <= g_cfg_kartSteerZoneHandsOffTol) && (diff >= -g_cfg_kartSteerZoneHandsOffTol))
 		{
 			released = 1;
 		}
@@ -1830,11 +1847,11 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			word |= (u16)(RAW_BTN_LEFT | RAW_BTN_RIGHT);
 			stick = 0x80;
 		}
-		if ((mode == 1) && (usBackLeft == 0) && haveDiff && ((diff > 4) || (diff < -4)))
+		if ((mode == 1) && (usBackLeft == 0) && haveDiff && ((diff > g_cfg_kartSteerZoneHandsOffTol) || (diff < -g_cfg_kartSteerZoneHandsOffTol)))
 		{
 			if (g_cfg_kartSteerAnalog)
 			{
-				stick = DebugMenu_KartSteerStick(((diff > 0) ? 1 : -1) == leftSign, diff);
+				stick = DebugMenu_KartSteerStickFine(((diff > 0) ? 1 : -1) == leftSign, diff, g_cfg_kartSteerZoneHandsOffTol);
 			}
 			else
 			{
