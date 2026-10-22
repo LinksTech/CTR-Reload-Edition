@@ -446,6 +446,7 @@ void ExtZp_LogEnd(void)
 // Writes of an answer: done in the port's memory and kept for the step log
 // (STEPLOG_FORMAT: 'QRY ' blob, nWrites x {addr, len, bytes}).
 global_variable int s_extZpCoupleContacts; // the coupling configured the contacts for its world
+global_variable int s_extZpcSourceRespawn;  // the source asked to put the kart back this tick (its state 9 ended)
 internal void ExtZp_AnswerWrite(ExtZpCtx *c, uint32_t addr, const void *bytes, uint32_t len)
 {
 	ExtZpMem_Write(c->m, addr, bytes, len); // kept by the memory's write journal for the step log
@@ -520,6 +521,13 @@ void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQue
 	{
 		// the subspace's contact solver (type 1): the port's own (parts s1-s3) on the detector's records
 		ExtZp_Solver_3b1960(c, in->a[0]);
+	}
+	else if ((kind == EXT_ZP_Q_OTHER) && ((in->func == 0x00337690u) || (in->func == 0x00190540u)))
+	{
+		// the end of the source's state 9: the body back into the world (0x337690) and the kart set down at its
+		// reset place (0x190540) - the source's respawn logic, not ported; the coupling hands the kart to
+		// Reload's respawn after this tick (v0 0, nothing written)
+		s_extZpcSourceRespawn = 1;
 	}
 	else if (s_extZpCoupleContacts)
 	{
@@ -1265,16 +1273,13 @@ int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
 		}
 		else if (s_extZpc.active)
 		{
-			// the source's own reset state (9: the kart is lost) or no ground under the port's kart for 5 s:
-			// Reload takes the kart back (its own set-down applies); otherwise the zone decides
-			const uint32_t st = ZmR32(s_extZpc.m, s_extZpc.kart + EXT_ZPC_K_STATE);
+			// no ground under the port's kart for 5 s: Reload takes the kart back (its own set-down applies);
+			// otherwise the zone decides (the source's reset state 9 is ported: its end asks for the respawn, below)
 			const int ground = ZmR8(s_extZpc.m, s_extZpc.kart + EXT_ZPC_K_GROUND);
 			const char *why = NULL;
 			s_extZpc.airTicks = ground ? 0u : s_extZpc.airTicks + 1u;
 			if (zone == 0)
 				why = "zone left";
-			else if (st == 9u)
-				why = "the source resets the kart (state 9) - given up";
 			else if (s_extZpc.airTicks > 150u)
 				why = "no ground for 5 s - given up";
 			if (why != NULL)
@@ -1299,6 +1304,18 @@ int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
 		// without it COLL_FIXED keeps the first quad it touched, the checkpoint (lap, the helper's target) never moves
 		d->collisionFlags = 0;
 		d->currBlockTouching = NULL;
+		if (s_extZpcSourceRespawn)
+		{
+			// the source's reset state ended and it would put the kart back (0x337690 / 0x190540, its respawn
+			// logic, not ported): Reload's own respawn does it (the mask grab COLL_FIXED starts on this request)
+			s_extZpcSourceRespawn = 0;
+			d->collisionFlags |= DRIVER_COLL_FLAG_MASK_GRAB_REQUEST;
+			s_extZpc.active = 0;
+			s_extZpc.blocked = 1;
+			Platform_Log("[CTR ExtZp] port exit frame %d after %u tick(s) pos %d %d %d: the source sets the kart back - Reload's respawn\n",
+			             (int)sdata->gGT->timer, (unsigned)((uint32_t)sdata->gGT->timer - s_extZpc.enteredFrame), d->posCurr.x >> 8, d->posCurr.y >> 8,
+			             d->posCurr.z >> 8);
+		}
 		return 1;
 	case DRIVER_FUNC_COLL_MOVED:
 	case DRIVER_FUNC_COLLIDE_DRIVERS:

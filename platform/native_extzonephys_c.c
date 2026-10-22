@@ -4,6 +4,7 @@
 
 #include <platform/native_extzonephys.h>
 #include <platform/native_extzonephys_c.h>
+#include <platform/native_extzonephys_z9.h>
 
 #include <string.h>
 
@@ -221,8 +222,9 @@ uint32_t ExtZp_Kart_4ba920(ExtZpCtx *c, uint32_t mp, uint32_t a0, uint32_t a1, u
 		case 4: return ExtZp_State_192860(c, a0);
 		case 5:
 		case 6: return ExtZp_State_192890(c, a0);
+		case 9: return ExtZp_State_192c80(c, a0); // the reset (part z9)
 		}
-		// the other enter handlers (states 1, 7, 9, 13, 14) lie outside the anti-gravity path
+		// the other enter handlers (states 1, 7, 13, 14) lie outside the anti-gravity path
 		ExtZp_Leave(c, kc_target(state, slot));
 		return 0u;
 	}
@@ -235,7 +237,8 @@ uint32_t ExtZp_Kart_4ba920(ExtZpCtx *c, uint32_t mp, uint32_t a0, uint32_t a1, u
 		case 4: ExtZp_State_1936b0(c, a0, f12); break;
 		case 5:
 		case 6: ExtZp_State_1938d0(c, a0, f12); break;
-		default: ExtZp_Leave(c, kc_target(state, slot)); break; // states 1, 7..13: outside the path
+		case 9: ExtZp_State_194720(c, a0, f12); break; // the reset (part z9)
+		default: ExtZp_Leave(c, kc_target(state, slot)); break; // states 1, 7, 8, 10..13: outside the path
 		}
 		return 0u;
 	}
@@ -246,8 +249,9 @@ uint32_t ExtZp_Kart_4ba920(ExtZpCtx *c, uint32_t mp, uint32_t a0, uint32_t a1, u
 		case 4: return ExtZp_State_194d20(c, a0);
 		case 5:
 		case 6: return ExtZp_State_194dd0(c, a0);
+		case 9: return ExtZp_State_194f70(c, a0); // the reset (part z9)
 		}
-		// the exit handlers of states 9 and 14 lie outside the path
+		// the exit handler of state 14 lies outside the path
 		ExtZp_Leave(c, kc_target(state, slot));
 		return 0u;
 	}

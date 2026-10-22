@@ -280,3 +280,5 @@ void ExtZp_Cross(Ps2F out[4], const Ps2F a[4], const Ps2F b[4])
 #include "native_extzonephys_s1.c" // the contact solver type 1: core
 #include "native_extzonephys_s2.c" // the contact solver frame, islands (part 1)
 #include "native_extzonephys_s3.c" // the contact solver frame, islands (part 2), contact list copy
+#include "native_extzonephys_z9.c" // state 9: the kart reset (entry, update, exit) and the body removal
+#include "native_extzonephys_z9b.c" // the body removal from the physics system (0x36edc0)
