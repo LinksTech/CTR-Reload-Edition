@@ -1365,11 +1365,6 @@ static const char *Rld_WhyNotVram(const u8 *data, size_t size)
 
 #define RLD_LEV_BODY          4u
 #define RLD_LEV_NUM_INSTANCES 0x0cu  // Level.numInstances
-
-// Instance limit in a race: 128 pool - 10 drivers/HUD = 118 hard, of which 8
-// are kept free for the wake (110); from 90 on fewer than 28 remain for the race.
-#define RLD_INSTANCES_MAX  110u
-#define RLD_INSTANCES_WARN 90u
 #define RLD_LEV_PTR_INSTDEFS  0x10u  // Level.ptrInstDefs
 #define RLD_LEV_PTR_SPAWN1    0x134u // Level.ptrSpawnType1, namespace_Level.h:818
 #define RLD_INSTDEF_BYTES     0x40u
@@ -1433,6 +1428,188 @@ static int Rld_PtrMapHas(const struct RldPtrMap *map, u32 bodyOffset)
 	}
 
 	return 0;
+}
+
+// THE DEAD HITBOXES. Every BSP leaf names a list of collision boxes
+// (BSP.data.leaf.bspHitboxArray, 0x20 bytes each, ended by a zero word); a box
+// that belongs to an object carries its InstDef at +0x1C (hitbox.instDef,
+// always a pointer into the LEV). A track from the Saphi data (116 objects)
+// had three boxes whose InstDef pointer lay far behind the level body - boxes
+// of an object that is no longer in the track. The game refuses such a LEV
+// (Rld_CheckLev, case C5), and rightly: relocated, the word would be a random
+// address that collision and the pickup callbacks dereference.
+//
+// Such a box is switched off where it stands, so the list keeps its length:
+// the COLLIDABLE bit goes (PROC_PerBspLeaf_CheckInstances skips it, no
+// callback ever sees it), the bounding box becomes empty, min above max
+// (COLL_FIXED_BSPLEAF_TestInstance tests a box only where it overlaps, so no
+// invisible wall), the InstDef becomes NULL and its pointer map entry goes (a
+// mapped 0 would become the LEV's origin). The flag stays non-zero: a zero
+// word would end the list early. Nothing else is touched.
+#define RLD_HITBOX_BYTES      0x20u
+#define RLD_HITBOX_INSTDEF    0x1cu
+#define RLD_HITBOX_COLLIDABLE 0x80u // BSP_HITBOX_COLLIDABLE, include/namespace_Level.h
+#define RLD_BSP_FLAG_LEAF     0x01u // BSP_NODE_FLAG_LEAF
+#define RLD_BSP_LEAF_HITBOXES 0x14u // BSP.data.leaf.bspHitboxArray
+#define RLD_MESH_BSP_ROOT     0x18u // mesh_info.bspRoot
+#define RLD_MESH_BSP_COUNT    0x1cu // mesh_info.numBspNodes
+#define RLD_HITBOX_SHOWN      16
+
+struct RldHitboxFix
+{
+	u32 fixed;                     // boxes switched off
+	u32 site[RLD_HITBOX_SHOWN];    // body offset of their InstDef word
+	u32 before[RLD_HITBOX_SHOWN];  // the word that was there
+};
+
+static int Rld_HitboxSiteListed(const u32 *sites, u32 count, u32 site)
+{
+	u32 i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (sites[i] == site)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+// apply 0 only counts. *size shrinks by 4 bytes per pointer map entry taken out.
+static void Rld_DeadHitboxes(u8 *lev, size_t *size, int apply, struct RldHitboxFix *out)
+{
+	struct RldPtrMap map;
+	u8 *body = &lev[RLD_LEV_BODY];
+	u32 bodyBytes;
+	u32 mesh;
+	u32 root;
+	u32 nodes;
+	u32 n;
+	u32 *sites = NULL;
+	u32 count = 0;
+	u32 room = 0;
+
+	memset(out, 0, sizeof(*out));
+
+	if (!Rld_PtrMapRead(lev, *size, &map))
+	{
+		return;
+	}
+
+	bodyBytes = Rld_ReadLE32At(lev, 0);
+	mesh = Rld_ReadLE32At(body, 0);
+	if ((bodyBytes < 4u) || !Rld_PtrMapHas(&map, 0u) || ((u64)mesh + 0x20u > (u64)bodyBytes))
+	{
+		return;
+	}
+
+	root = Rld_ReadLE32At(body, mesh + RLD_MESH_BSP_ROOT);
+	nodes = Rld_ReadLE32At(body, mesh + RLD_MESH_BSP_COUNT);
+	if (!Rld_PtrMapHas(&map, mesh + RLD_MESH_BSP_ROOT) || (((u64)root + ((u64)nodes * RLD_HITBOX_BYTES)) > (u64)bodyBytes))
+	{
+		return;
+	}
+
+	for (n = 0; n < nodes; n++)
+	{
+		const u32 node = root + (n * RLD_HITBOX_BYTES);
+		u32 box;
+
+		if (((Rld_ReadLE32At(body, node) & 0xffffu) & RLD_BSP_FLAG_LEAF) == 0u)
+		{
+			continue;
+		}
+
+		box = Rld_ReadLE32At(body, node + RLD_BSP_LEAF_HITBOXES);
+		if ((box == 0u) || !Rld_PtrMapHas(&map, node + RLD_BSP_LEAF_HITBOXES))
+		{
+			continue;
+		}
+
+		// Lists may be shared between leaves; a box already taken is only
+		// found again, its word is 0 by then.
+		for (; ((u64)box + RLD_HITBOX_BYTES) <= (u64)bodyBytes; box += RLD_HITBOX_BYTES)
+		{
+			const u32 flag = Rld_ReadLE32At(body, box) & 0xffffu;
+			const u32 site = box + RLD_HITBOX_INSTDEF;
+			const u32 instDef = Rld_ReadLE32At(body, site);
+
+			if (Rld_ReadLE32At(body, box) == 0u)
+			{
+				break;
+			}
+
+			if ((instDef <= bodyBytes) || Rld_HitboxSiteListed(sites, count, site) || !Rld_PtrMapHas(&map, site))
+			{
+				continue;
+			}
+
+			if (out->fixed < RLD_HITBOX_SHOWN)
+			{
+				out->site[out->fixed] = site;
+				out->before[out->fixed] = instDef;
+			}
+			out->fixed++;
+
+			if (count == room)
+			{
+				u32 *grown = (u32 *)realloc(sites, (size_t)(room + 16u) * sizeof(u32));
+
+				if (grown == NULL)
+				{
+					free(sites);
+					memset(out, 0, sizeof(*out));
+					return;
+				}
+				sites = grown;
+				room += 16u;
+			}
+			sites[count++] = site;
+
+			if (apply)
+			{
+				Rld_WriteLE16(&body[box], flag & ~RLD_HITBOX_COLLIDABLE);
+				Rld_WriteLE16(&body[box + 0x4u], 0x7fffu); // min x, y, z
+				Rld_WriteLE16(&body[box + 0x6u], 0x7fffu);
+				Rld_WriteLE16(&body[box + 0x8u], 0x7fffu);
+				Rld_WriteLE16(&body[box + 0xau], 0x8000u); // max x, y, z
+				Rld_WriteLE16(&body[box + 0xcu], 0x8000u);
+				Rld_WriteLE16(&body[box + 0xeu], 0x8000u);
+				Rld_WriteLE32(&body[site], 0u);
+			}
+		}
+	}
+
+	// The map without the entries of the switched-off boxes. Whatever follows
+	// the map moves up by the bytes taken out.
+	if (apply && (count != 0u))
+	{
+		const size_t at = RLD_LEV_BODY + (size_t)bodyBytes;
+		const u32 entries = map.count;
+		u32 kept = 0;
+		u32 i;
+		size_t tail;
+
+		for (i = 0; i < entries; i++)
+		{
+			const u32 raw = Rld_ReadLE32At(lev, at + 4u + ((size_t)i * 4u));
+
+			if (!Rld_HitboxSiteListed(sites, count, raw & ~3u))
+			{
+				Rld_WriteLE32(&lev[at + 4u + ((size_t)kept * 4u)], raw);
+				kept++;
+			}
+		}
+
+		tail = *size - (at + 4u + ((size_t)entries * 4u));
+		memmove(&lev[at + 4u + ((size_t)kept * 4u)], &lev[at + 4u + ((size_t)entries * 4u)], tail);
+		Rld_WriteLE32(&lev[at], kept * 4u);
+		*size -= (size_t)(entries - kept) * 4u;
+	}
+
+	free(sites);
 }
 
 // THE MODEL ID - port of the model-ID fix of an earlier external track tool,
@@ -2347,6 +2524,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 	int abrChecked = 0;
 	struct RldAbrReport abrReport;
 	struct RldModelIds modelIds;
+	struct RldHitboxFix hitboxFix;
 	struct RldAutoLev autoLev;
 	struct RldSpawn spawn;
 	struct RldLevModes levModes;
@@ -2561,6 +2739,11 @@ static int Rld_Pack(const struct RldPackJob *job)
 	// bytes; META does not change because of it, Rld_MemNeed reads no instances.
 	Rld_ModelIds(lev, levSize, job->make && !job->keepModelIds, &modelIds);
 
+	// THE DEAD HITBOXES, switched off in make only, like the model ID
+	// (Rld_DeadHitboxes). In build they stay, and the game's check below
+	// refuses the LEV.
+	Rld_DeadHitboxes(lev, &levSize, job->make, &hitboxFix);
+
 	// THE START GRID AND THE NAV PATHS, make only, after ABR and ID and before
 	// the modes are read: the checks and warnings below then see the track as it
 	// goes into the container. A LEV that has both is not touched.
@@ -2609,40 +2792,43 @@ static int Rld_Pack(const struct RldPackJob *job)
 		}
 	}
 
-	// THE INSTANCE LIMIT. Every InstDef of the LEV takes a
-	// slot in the game's instance pool in a race (128, MainInit.c:342), including
-	// hidden ones like time crates and letters. 10 slots are taken beforehand by the 8
-	// drivers and 2 HUD instances, 8 more by the wake if the LEV
-	// carries a wake model; during the race up to 21 more come in, as measured
-	// (crate explosions, weapons). Above 118 the game cuts off when loading.
-	// The largest disc race track (Dingo Canyon) has 66.
-	if (modelIds.instances > RLD_INSTANCES_MAX)
+	// THE INSTANCE LIMIT, the game's own (include/rldinstances.h). Every
+	// InstDef of the LEV takes a slot in the game's instance pool, hidden ones
+	// like time crates and letters included. Up to RLD_LEVEL_INSTANCES_RETAIL
+	// the race keeps the disc's pool; above it the game takes the large pool
+	// (MainInit_JitPoolsNew), with the whole disc pool on top as room for the
+	// drivers, HUD, wake, weapons and effects - so there is nothing left to
+	// warn about below the limit. The same limit refuses a container in the
+	// game (Rld_CheckLevTables, case C6).
+	if (modelIds.instances > (u32)RLD_LEVEL_INSTANCES_MAX)
 	{
 		char technical[96];
 
-		snprintf(technical, sizeof(technical), "Level.numInstances %u, at most %u", modelIds.instances, RLD_INSTANCES_MAX);
-		fprintf(stderr, "rldpack: the LEV has %u instances, at most %u fit the game's instance pool in a race\n", modelIds.instances,
-		        RLD_INSTANCES_MAX);
+		snprintf(technical, sizeof(technical), "Level.numInstances %u, at most %u", modelIds.instances, (u32)RLD_LEVEL_INSTANCES_MAX);
+		fprintf(stderr, "rldpack: the LEV has %u instances, at most %u fit the game's instance pool\n", modelIds.instances, (u32)RLD_LEVEL_INSTANCES_MAX);
 		Rld_Say("error", "instances", technical,
-		        "The track has %u objects (crates, fruit, letters and every other placed model). The game has room for %u in a race - remove at least %u.",
-		        modelIds.instances, RLD_INSTANCES_MAX, modelIds.instances - RLD_INSTANCES_MAX);
+		        "The track has %u objects (crates, fruit, letters and every other placed model). The game has room for %u - remove at least %u.",
+		        modelIds.instances, (u32)RLD_LEVEL_INSTANCES_MAX, modelIds.instances - (u32)RLD_LEVEL_INSTANCES_MAX);
 		return 1;
 	}
 
-	if (modelIds.instances > RLD_INSTANCES_WARN)
-	{
-		char technical[96];
-
-		snprintf(technical, sizeof(technical), "Level.numInstances %u, warning above %u, limit %u", modelIds.instances, RLD_INSTANCES_WARN,
-		         RLD_INSTANCES_MAX);
-		printf("\nWARNING: the LEV has %u instances. Above %u the race may run out of room for explosions and weapons; the limit is %u.\n",
-		       modelIds.instances, RLD_INSTANCES_WARN, RLD_INSTANCES_MAX);
-		Rld_Say("warning", "instances", technical,
-		        "The track has %u objects (crates, fruit, letters and every other placed model). Above %u the race may run short of room for explosions and weapons; the disc tracks use at most 66.",
-		        modelIds.instances, RLD_INSTANCES_WARN);
-	}
-
 	Rld_EmitNumber("lev", "instances", modelIds.instances);
+
+	// THE GAME'S OWN CHECK, on the LEV as it goes into the container. The
+	// game refuses a container whose LEV fails it (NativeTrack_ReadAll,
+	// platform/native_assets.c): a check that is green here and a track
+	// that stays gray in the game would be two answers to one question.
+	{
+		const char *refused = Rld_CheckLev(lev, levSize);
+
+		if (refused != NULL)
+		{
+			fprintf(stderr, "rldpack: the game would refuse this LEV: %s\n", refused);
+			Rld_Say("error", "lev-check", refused, "The game would not load this track: %s. The cause is in the exported LEV - export the track again.",
+			        refused);
+			return 1;
+		}
+	}
 
 	// THE MENU MAP - only a report now (4.1).
 	//
@@ -2948,6 +3134,21 @@ static int Rld_Pack(const struct RldPackJob *job)
 	if (job->make && !job->keepModelIds && (modelIds.problem == NULL) && (modelIds.differ != 0u))
 	{
 		Rld_Say("info", "model-ids", NULL, "The model numbers of %u object(s) were corrected, so the game shows the right models.", modelIds.differ);
+	}
+	if (job->make && (hitboxFix.fixed != 0u))
+	{
+		u32 k;
+
+		Rld_Say("info", "hitbox-dead", NULL,
+		        "%u collision box(es) belonged to an object that is no longer in the track. The packer switched them off, so the game loads the track.",
+		        hitboxFix.fixed);
+		printf("\nNOTE: %u collision box(es) of the BSP leaves named an InstDef behind the level body -\n", hitboxFix.fixed);
+		printf("  an object the exporter left out, the box kept. The game refuses such a LEV.\n");
+		printf("  rldpack has switched them off (not collidable, empty box, no InstDef):\n");
+		for (k = 0; (k < hitboxFix.fixed) && (k < RLD_HITBOX_SHOWN); k++)
+		{
+			printf("    box InstDef word at body 0x%x was 0x%x\n", hitboxFix.site[k], hitboxFix.before[k]);
+		}
 	}
 
 	// The grid and the paths: said like ABR - the cause is in the export, and

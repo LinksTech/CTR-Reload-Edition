@@ -1,5 +1,8 @@
 #include <common.h>
+#include <platform/native_log.h>
 #include <platform/native_mods.h>
+#include <rldinstances.h>
+#include <stdlib.h>
 
 #ifdef CTR_NATIVE
 int NativeFlyIn_PreviewAlone(void); // game/native_flyin.c
@@ -323,6 +326,102 @@ EndFunc:
 	gGT->otSwapchainDB[1] = MEMPACK_AllocMem(size); // "ot2"
 }
 
+// THE LARGE POOLS (include/rldinstances.h).
+//
+// On the disc a race has 128 instances, 96 threads, 100 small stacks and a
+// render bucket of 0x1000 bytes - room for 90 placed objects with the
+// drivers, HUD, wake, weapons and effects on top. A level with more placed
+// objects (RLD_LEVEL_INSTANCES_RETAIL) gets RLD_INSTANCE_POOL_LARGE instance
+// slots - RLD_LEVEL_INSTANCES_MAX for the level plus the whole retail pool as
+// reserve - and one thread and one small stack more per possible level object,
+// because a LInB births at most one of each (PROC_BirthWithObject). The render
+// bucket keeps the retail 32 bytes per instance slot: an 8-byte entry for each
+// of 4 players, plus the terminating entry.
+//
+// They live on the PC heap, taken once at the size for 4 players and kept
+// for the run, so the pack (MEMPACK) stays as on the disc. A whole-machine
+// checkpoint holds the pack, not the heap: NativeCheckpoint_Capture refuses
+// while they are in use (MainInit_InstancePoolLarge).
+#define MAININIT_SMALLSTACK_BYTES   0x48
+#define MAININIT_LARGE_THREADS      (((0x1000 * 3) >> 7) + RLD_LEVEL_INSTANCES_MAX)
+#define MAININIT_LARGE_SMALLSTACKS  (((0x1000 * 0x19) >> 10) + RLD_LEVEL_INSTANCES_MAX)
+#define MAININIT_LARGE_BUCKET_BYTES ((RLD_INSTANCE_POOL_LARGE << 5) + 8)
+
+CTR_STATIC_ASSERT((0x1000 >> 5) == RLD_INSTANCE_POOL_RETAIL);
+
+struct MainInitLargePools
+{
+	void *instances;
+	void *threads;
+	void *smallStacks;
+	void *renderBucket;
+};
+
+static struct MainInitLargePools s_mainInitLarge;
+static int s_mainInitLargeFailed = 0;
+
+// 1 while the instance pool is the large one on the PC heap.
+int MainInit_InstancePoolLarge(void)
+{
+	return (s_mainInitLarge.instances != NULL) && (sdata->gGT->JitPools.instance.ptrPoolData == s_mainInitLarge.instances);
+}
+
+// The large pools for the level just loaded, or NULL for the retail pools.
+// Only a race level counts: at stage 7 (LOAD_TenStages) gGT->level1 is the
+// new LEV; the adventure arena, cutscenes and credits make their pools at
+// stage 0, before their LEV is read, and the main menu has its own sizes.
+static struct MainInitLargePools *MainInit_LargePoolsFor(struct GameTracker *gGT)
+{
+	const u32 instanceBytes = (u32)(sizeof(struct Instance) + (sizeof(struct InstDrawPerPlayer) * 4));
+	const u32 total = (RLD_INSTANCE_POOL_LARGE * instanceBytes) + (MAININIT_LARGE_THREADS * (u32)sizeof(struct Thread)) +
+	                  (MAININIT_LARGE_SMALLSTACKS * MAININIT_SMALLSTACK_BYTES) + MAININIT_LARGE_BUCKET_BYTES;
+	u32 numLevInstances;
+
+	if (((gGT->gameMode1 & (GAME_CUTSCENE | ADVENTURE_ARENA | MAIN_MENU)) != 0) || ((gGT->gameMode2 & CREDITS) != 0) || (gGT->level1 == NULL))
+	{
+		return NULL;
+	}
+
+	numLevInstances = gGT->level1->numInstances;
+	if (numLevInstances <= RLD_LEVEL_INSTANCES_RETAIL)
+	{
+		return NULL;
+	}
+
+	if ((s_mainInitLarge.instances == NULL) && !s_mainInitLargeFailed)
+	{
+		s_mainInitLarge.instances = calloc(RLD_INSTANCE_POOL_LARGE, instanceBytes);
+		s_mainInitLarge.threads = calloc(MAININIT_LARGE_THREADS, sizeof(struct Thread));
+		s_mainInitLarge.smallStacks = calloc(MAININIT_LARGE_SMALLSTACKS, MAININIT_SMALLSTACK_BYTES);
+		s_mainInitLarge.renderBucket = calloc(1, MAININIT_LARGE_BUCKET_BYTES);
+
+		if ((s_mainInitLarge.instances == NULL) || (s_mainInitLarge.threads == NULL) || (s_mainInitLarge.smallStacks == NULL) ||
+		    (s_mainInitLarge.renderBucket == NULL))
+		{
+			free(s_mainInitLarge.instances);
+			free(s_mainInitLarge.threads);
+			free(s_mainInitLarge.smallStacks);
+			free(s_mainInitLarge.renderBucket);
+			memset(&s_mainInitLarge, 0, sizeof(s_mainInitLarge));
+			s_mainInitLargeFailed = 1;
+			Platform_LogError("[CTR Inst] the large instance pool (%u bytes) could not be taken from the PC heap - races keep the retail pool\n", total);
+		}
+	}
+
+	if (s_mainInitLarge.instances == NULL)
+	{
+		Platform_LogError("[CTR Inst] level %d: %u LEV instances on the retail pool of %d - objects beyond it will be missing\n", (int)gGT->levelID,
+		                  numLevInstances, RLD_INSTANCE_POOL_RETAIL);
+		return NULL;
+	}
+
+	Platform_Log("[CTR Inst] level %d: %u LEV instances, more than the retail pool carries (%d) - large pools on the PC heap: instances %d, threads %d, "
+	             "small stacks %d, render bucket %d bytes (%u bytes in all)\n",
+	             (int)gGT->levelID, numLevInstances, RLD_LEVEL_INSTANCES_RETAIL, RLD_INSTANCE_POOL_LARGE, MAININIT_LARGE_THREADS, MAININIT_LARGE_SMALLSTACKS,
+	             MAININIT_LARGE_BUCKET_BYTES, total);
+	return &s_mainInitLarge;
+}
+
 void MainInit_JitPoolsNew(struct GameTracker *gGT)
 {
 	u32 gameMode = gGT->gameMode1;
@@ -352,14 +451,31 @@ void MainInit_JitPoolsNew(struct GameTracker *gGT)
 
 	MEMPACK_PushState();
 
-	JitPool_Init(&gGT->JitPools.thread, (renderBucketSize * 3) >> 7, sizeof(struct Thread), rdata.s_ThreadPool);
+	// A level with more placed objects than the disc's pool carries gets the
+	// large pools on the PC heap (MainInit_LargePoolsFor); every other level
+	// keeps the retail pools in the pack, in the retail order.
+	struct MainInitLargePools *large = MainInit_LargePoolsFor(gGT);
+	int numThread = (renderBucketSize * 3) >> 7;
+	int numInstance = renderBucketSize >> 5;
+	int numSmallStack = (poolScale * 0x19) >> 10;
+
+	if (large != NULL)
+	{
+		numThread = MAININIT_LARGE_THREADS;
+		numInstance = RLD_INSTANCE_POOL_LARGE;
+		numSmallStack = MAININIT_LARGE_SMALLSTACKS;
+		JitPool_InitAt(&gGT->JitPools.thread, numThread, sizeof(struct Thread), rdata.s_ThreadPool, large->threads);
+	}
+	else
+	{
+		JitPool_Init(&gGT->JitPools.thread, numThread, sizeof(struct Thread), rdata.s_ThreadPool);
+	}
 #if defined(CTR_NATIVE)
 	{
 		// --instance-pool <n> (only with --dev): probe for a full
-		// instance pool in a race. Never bigger than the retail number.
+		// instance pool in a race. Never bigger than the pool it replaces.
 		extern int g_cfg_instancePool;
 		void Platform_Log(const char *format, ...);
-		int numInstance = renderBucketSize >> 5;
 
 		if ((g_cfg_instancePool > 0) && (g_cfg_instancePool < numInstance) && ((gameMode & MAIN_MENU) == 0))
 		{
@@ -367,14 +483,29 @@ void MainInit_JitPoolsNew(struct GameTracker *gGT)
 			numInstance = g_cfg_instancePool;
 		}
 
-		JitPool_Init(&gGT->JitPools.instance, numInstance, sizeof(struct Instance) + (sizeof(struct InstDrawPerPlayer) * gGT->numPlyrCurrGame),
-		             rdata.s_InstancePool);
+		if (large != NULL)
+		{
+			JitPool_InitAt(&gGT->JitPools.instance, numInstance, sizeof(struct Instance) + (sizeof(struct InstDrawPerPlayer) * gGT->numPlyrCurrGame),
+			               rdata.s_InstancePool, large->instances);
+		}
+		else
+		{
+			JitPool_Init(&gGT->JitPools.instance, numInstance, sizeof(struct Instance) + (sizeof(struct InstDrawPerPlayer) * gGT->numPlyrCurrGame),
+			             rdata.s_InstancePool);
+		}
 	}
 #else
 	JitPool_Init(&gGT->JitPools.instance, renderBucketSize >> 5, sizeof(struct Instance) + (sizeof(struct InstDrawPerPlayer) * gGT->numPlyrCurrGame),
 	             rdata.s_InstancePool);
 #endif
-	JitPool_Init(&gGT->JitPools.smallStack, (poolScale * 0x19) >> 10, 0x48, rdata.s_SmallStackPool);
+	if (large != NULL)
+	{
+		JitPool_InitAt(&gGT->JitPools.smallStack, numSmallStack, MAININIT_SMALLSTACK_BYTES, rdata.s_SmallStackPool, large->smallStacks);
+	}
+	else
+	{
+		JitPool_Init(&gGT->JitPools.smallStack, numSmallStack, MAININIT_SMALLSTACK_BYTES, rdata.s_SmallStackPool);
+	}
 	JitPool_Init(&gGT->JitPools.mediumStack, poolScale >> 7, 0x88, rdata.s_MediumStackPool);
 
 	int numDriver = poolScale >> 9;
@@ -394,6 +525,13 @@ void MainInit_JitPoolsNew(struct GameTracker *gGT)
 #else
 	// NOTE(aalhendi): Native reuses static RDATA scratch for existing PC memory headroom.
 	gGT->ptrRenderBucketInstance = (void *)((u32)&rdata.s_STATIC_GNORMALZ[0] + 148);
+
+	// The scratch has room for the retail 0x1000 bytes only; the large pool
+	// brings its own bucket (32 bytes per slot, as on the disc).
+	if (large != NULL)
+	{
+		gGT->ptrRenderBucketInstance = large->renderBucket;
+	}
 #endif
 
 	for (int i = 0; i < 3; i++)

@@ -100,6 +100,7 @@
 #include <common.h>
 #include <macros.h>
 #include <platform.h>
+#include <rldinstances.h>
 
 #include "platform/native_gfx.h"
 #include "platform/native_gpu.h"
@@ -131,11 +132,12 @@ unsigned int NativeRenderer_ProbeUploadsInRaceFrame(void);
 // Never in ctr-settings.cfg: the file only knows s_videoSettings and the views.
 int g_cfg_nativeEmptyMarkers = 0;
 
-// THE TABLE SIZE. One object per pool slot. The largest retail pool is the
-// race pool with 0x1000 >> 5 = 128 slots (MainInit.c), and --instance-pool
-// never goes above retail; 256 leaves room. A slot beyond the table is
-// counted and left out, never written past the end.
-#define NATIVE_RENDER_LAYER_SLOTS 256
+// THE TABLE SIZE. One object per pool slot. The largest pool is the large
+// race pool of a level with many placed objects (RLD_INSTANCE_POOL_LARGE,
+// include/rldinstances.h; MainInit_JitPoolsNew), and --instance-pool never
+// goes above the pool it replaces. A slot beyond the table is counted and left
+// out, never written past the end.
+#define NATIVE_RENDER_LAYER_SLOTS RLD_INSTANCE_POOL_LARGE
 
 // Push buffers of the views (gGT->pushBuffer[4]); the UI push buffer has no
 // camera worth blending.

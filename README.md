@@ -226,8 +226,8 @@ starts a race on your track straight away. Keep it next to `ctr_native.exe`.
 | Time Trial | the same as Race; its own row in NITRO-PIT |
 | Battle | not available yet |
 
-At most 110 placed objects (crates, fruit, letters and every other placed
-model); above 90 Reload Studio warns.
+At most 512 placed objects (crates, fruit, letters and every other placed
+model).
 
 </details>
 

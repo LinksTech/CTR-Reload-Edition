@@ -2113,6 +2113,22 @@ int NativeCheckpoint_Capture(void *dst, int dstSize)
 	struct NativeCheckpointHeader header;
 	u8 *bytes = (u8 *)dst;
 
+	// The large instance pool of a level with many placed objects lives on the
+	// PC heap (MainInit_JitPoolsNew), outside every region a checkpoint holds.
+	// Said once: a replay recording asks for a checkpoint every frame.
+	if (MainInit_InstancePoolLarge())
+	{
+		static int s_refusedLarge = 0;
+
+		if (!s_refusedLarge)
+		{
+			s_refusedLarge = 1;
+			Platform_LogWarn("[CTR State] checkpoint refused: this level runs on the large instance pool (the PC heap, which a checkpoint cannot hold) - "
+			                 "further refusals are not logged\n");
+		}
+		return 0;
+	}
+
 	if (!NativeCheckpoint_InitHeader(&header))
 	{
 		return 0;

@@ -61,6 +61,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <rldinstances.h>
+
 //========================================================================================
 // SHA-256
 //========================================================================================
@@ -2600,7 +2602,9 @@ static const char *Rld_CheckVrm(const u8 *vrm, size_t size)
 //       first NULL) under gGT->modelPtr[m->id] - an s16 from the file into a
 //       table of 0xe3. Every model must be a pointer and its id -1 (no slot)
 //       or 0..0xe2. The models of the instances as well: INSTANCE_LevInitAll
-//       reads the id of every one without a NULL test.
+//       reads the id of every one without a NULL test. And at most
+//       RLD_LEVEL_INSTANCES_MAX instances (include/rldinstances.h): the
+//       game's largest instance pool holds that many beside its reserve.
 //   C7  ptrSpawnType1 is read unguarded by every race (CAM_EndOfRace reads
 //       ->count): it must be a pointer, its table inside the body, count
 //       0..16, every slot a pointer or NULL, and at count >= 3 slot 2 (the
@@ -2789,7 +2793,12 @@ static const char *Rld_CheckLevTables(const struct RldLevView *view)
 		}
 	}
 
-	// C6: the models of the instances.
+	// C6: the count and the models of the instances.
+	if (numInstances > (u32)RLD_LEVEL_INSTANCES_MAX)
+	{
+		return "the LEV has more than " RLD_INSTANCES_TEXT(RLD_LEVEL_INSTANCES_MAX) " instances (Level.numInstances) - the game's instance pool holds no more";
+	}
+
 	if (numInstances != 0u)
 	{
 		if (Rld_LevPointer(view, RLD_LEVEL_PTR_INSTDEFS, &table) != 1)

@@ -27,6 +27,13 @@ UNRELEASED
   this.
 - Fixed a crash when loading custom tracks with water whose level header
   has no water vertex list (e.g. Sunken Sprint).
+- Custom tracks can have up to 512 placed objects (crates, fruit, letters
+  and every other placed model) instead of 110. A track with more than 90
+  gets a larger object pool in the race; the disc tracks are unchanged.
+- Reload Studio switches off collision boxes that still belong to an object
+  no longer in the track (the game refused to load such a track), and its
+  check now runs the game's own track check, so a track the game would not
+  load is no longer shown as ready.
 - MODS page (Feature Preview, one-player ARCADE and NITRO-PIT races): the
   page is grouped into DRIVERS, RULES and WORLD and scrolls. Everything is
   off at first; with every value at normal the game is exactly as before.

@@ -856,9 +856,8 @@ folders the file dialogs open in are).
 Also good to know:
 - Bots need nav paths. Without them you race alone, auto drive is off, and
   1st place in a CTR challenge is easy.
-- At most 110 placed objects (crates, fruit, letters and every other placed
-  model). Above 90 Reload Studio warns: explosions and weapons may run
-  short of room.
+- At most 512 placed objects (crates, fruit, letters and every other placed
+  model).
 - "Build container" fixes the ids of the letter models c, t and r by their
   names, so the HUD shows C T R in that order, and says so.
 

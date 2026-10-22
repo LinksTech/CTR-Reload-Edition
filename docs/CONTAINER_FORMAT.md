@@ -220,6 +220,7 @@ The game checks it at load, before the load path sees it:
   in the body; no negative count.
 - Models (0x14 count, 0x18 table, up to the count or the first NULL) and the
   models of the instances (0x0C count, 0x10 table, 0x40 bytes each, model at +0x10):
+  - at most 512 instances (`RLD_LEVEL_INSTANCES_MAX`, `include/rldinstances.h`);
   - every model is a mapped pointer;
   - its id (s16 at +0x10) is -1 or 0..0xE2.
 - Spawn table (0x134):

@@ -172,6 +172,7 @@ int NativeTestFiles_MakeDisc(const char *dir);
 // struct Level fields (namespace_Level.h)
 #define NTC_LVL_MESH 0x000u
 #define NTC_LVL_SKY 0x004u
+#define NTC_LVL_NUM_INSTANCES 0x00cu
 #define NTC_LVL_NUM_MODELS 0x014u
 #define NTC_LVL_MODELS 0x018u
 #define NTC_LVL_TEXLOOKUP 0x03cu
@@ -1013,6 +1014,16 @@ internal const char *NativeTestModel_LevContent(const u8 *lev, u32 body, const u
 		if ((numIcon > 4096u) || (((u64)firstIcon + (u64)numIcon * 0x20u) > end))
 		{
 			return NativeTestModel_Why("c1 the icon table (%u icons at 0x%x) lies outside the body", numIcon, firstIcon);
+		}
+	}
+
+	// c6: the instance count the game's instance pool holds (include/rldinstances.h).
+	{
+		const u32 numInstances = NativeTestModel_Get32(lev, NTC_LEV_BODY + NTC_LVL_NUM_INSTANCES);
+
+		if (numInstances > (u32)RLD_LEVEL_INSTANCES_MAX)
+		{
+			return NativeTestModel_Why("c6 %u instances, more than the %u the instance pool holds", numInstances, (u32)RLD_LEVEL_INSTANCES_MAX);
 		}
 	}
 
@@ -1944,6 +1955,13 @@ internal void NativeTestCont_C6(void)
 		NativeTestLev_Set16(&p.lev, NTC_MODEL + NTC_MODEL_ID_OFFSET, ids[i].id);
 		NativeTestCont_EmitParts(ids[i].name, &p, 1);
 	}
+
+	// The count: one instance more than the game's instance pool holds for a
+	// level (RLD_LEVEL_INSTANCES_MAX, include/rldinstances.h). The count is
+	// checked before the table, so the missing InstDefs do not decide.
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_NUM_INSTANCES, (u32)RLD_LEVEL_INSTANCES_MAX + 1u);
+	NativeTestCont_EmitParts("bad-c6-instances-over-limit", &p, 1);
 }
 
 // c7 - CAM.c: ptrSpawnType1 NULL, and slots 2 / 3 NULL at count >= 3 / 4.

@@ -153,7 +153,8 @@ static void INSTANCE_RollbackThreadBirth(struct Thread *t, struct Thread *relati
 
 #if defined(CTR_NATIVE)
 // A birth during the race failed because a pool is full
-// (instances 128, threads 96, small stacks 100 - MainInit_JitPoolsNew). The effect
+// (in a race instances 128, threads 96, small stacks 100, or the large pools
+// of a level with many placed objects - MainInit_JitPoolsNew). The effect
 // is dropped instead of crashing. The first 8 cases of a run are in the log.
 void INSTANCE_NativeBirthSkipped(const char *what)
 {
@@ -346,7 +347,10 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 			// Native: loud instead of silent. Retail stops here; all
 			// following InstDefs stay without an instance. Their ptrInstance becomes NULL,
 			// so that the collision searches skip them (COLL.c, PROC.c).
-			// rldpack rejects LEVs with more than 110 instances.
+			// The container check refuses LEVs with more than
+			// RLD_LEVEL_INSTANCES_MAX instances, and above
+			// RLD_LEVEL_INSTANCES_RETAIL the level gets the large pool
+			// (include/rldinstances.h) - only --instance-pool gets here.
 			Platform_Log("[CTR Inst] level %d: INSTANCE POOL FULL - %d of %d LEV instance(s) placed, %d cut off (pool %d) - those objects are missing on this track\n",
 			             (int)gGT->levelID, i, numInst, numInst - i, (int)gGT->JitPools.instance.maxItems);
 
@@ -513,6 +517,13 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 
 		// next InstDef
 		levInstDef++;
+	}
+
+	// The large pool says what it carried (MainInit_JitPoolsNew); the retail pool stays quiet as before.
+	if (MainInit_InstancePoolLarge())
+	{
+		Platform_Log("[CTR Inst] level %d: all %d LEV instance(s) placed in the large instance pool (%d slots, %d free)\n", (int)gGT->levelID, numInst,
+		             (int)gGT->JitPools.instance.maxItems, (int)gGT->JitPools.instance.free.count);
 	}
 }
 

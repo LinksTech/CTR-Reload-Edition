@@ -301,6 +301,7 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst);
 int JitPool_Add(struct JitPool *AP);
 void JitPool_Clear(struct JitPool *AP);
 void JitPool_Init(struct JitPool *AP, int maxItems, int itemSize, char *name);
+void JitPool_InitAt(struct JitPool *AP, int maxItems, int itemSize, char *name, void *poolData);
 void JitPool_Remove(struct JitPool *AP, struct Item *item);
 
 // LevInstDef
@@ -449,6 +450,7 @@ void MainInit_VisMem(struct GameTracker *gGT);
 void MainInit_RainBuffer(struct GameTracker *gGT);
 void MainInit_Drivers(struct GameTracker *gGT);
 void MainInit_JitPoolsNew(struct GameTracker *gGT);
+int MainInit_InstancePoolLarge(void);
 void MainInit_JitPoolsReset(struct GameTracker *gGT);
 
 void MainInit_PrimMem(struct GameTracker *gGT);

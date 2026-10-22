@@ -19,7 +19,9 @@ void JitPool_Clear(struct JitPool *AP)
 }
 
 
-void JitPool_Init(struct JitPool *AP, int maxItems, int itemSize, char *name)
+// The pool over memory the caller holds (maxItems * itemSize bytes) - the
+// large pools of MainInit_JitPoolsNew, on the PC heap.
+void JitPool_InitAt(struct JitPool *AP, int maxItems, int itemSize, char *name, void *poolData)
 {
 	(void)name;
 
@@ -27,8 +29,13 @@ void JitPool_Init(struct JitPool *AP, int maxItems, int itemSize, char *name)
 	AP->maxItems = maxItems;
 	AP->itemSize = itemSize;
 	AP->poolSize = maxItems * itemSize;
-	AP->ptrPoolData = MEMPACK_AllocMem(AP->poolSize);
+	AP->ptrPoolData = poolData;
 	JitPool_Clear(AP);
+}
+
+void JitPool_Init(struct JitPool *AP, int maxItems, int itemSize, char *name)
+{
+	JitPool_InitAt(AP, maxItems, itemSize, name, MEMPACK_AllocMem(maxItems * itemSize));
 }
 
 
