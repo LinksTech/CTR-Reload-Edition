@@ -1295,6 +1295,10 @@ int ExtZp_StageSkip(struct Thread *t, struct Driver *d, int stage)
 	{
 	case DRIVER_FUNC_APPLY_FORCES:
 		ExtZpc_Tick(d);
+		// the bookkeeping Reload's force stage does for the ground search after it (VehPhysForce_OnApplyForces):
+		// without it COLL_FIXED keeps the first quad it touched, the checkpoint (lap, the helper's target) never moves
+		d->collisionFlags = 0;
+		d->currBlockTouching = NULL;
 		return 1;
 	case DRIVER_FUNC_COLL_MOVED:
 	case DRIVER_FUNC_COLLIDE_DRIVERS:
