@@ -447,6 +447,7 @@ void ExtZp_LogEnd(void)
 // (STEPLOG_FORMAT: 'QRY ' blob, nWrites x {addr, len, bytes}).
 global_variable int s_extZpCoupleContacts; // the coupling configured the contacts for its world
 global_variable int s_extZpcSourceRespawn;  // the source asked to put the kart back this tick (its state 9 ended)
+global_variable uint32_t s_extZpcPlayerKart, s_extZpcPlayerEntity; // seat 0's kart and entity in the port's world
 internal void ExtZp_AnswerWrite(ExtZpCtx *c, uint32_t addr, const void *bytes, uint32_t len)
 {
 	ExtZpMem_Write(c->m, addr, bytes, len); // kept by the memory's write journal for the step log
@@ -526,8 +527,13 @@ void ExtZp_ReloadQuery(ExtZpCtx *c, int kind, const ExtZpQueryArgs *in, ExtZpQue
 	{
 		// the end of the source's state 9: the body back into the world (0x337690) and the kart set down at its
 		// reset place (0x190540) - the source's respawn logic, not ported; the coupling hands the kart to
-		// Reload's respawn after this tick (v0 0, nothing written)
-		s_extZpcSourceRespawn = 1;
+		// Reload's respawn after this tick (v0 0, nothing written). Only for seat 0's kart: the start world holds
+		// the other karts too, whose own state 9 (they stand still in the port) ends the same way (run s1-z9:
+		// kart 0x881A40, entity 0x8716C0) - for them nothing happens, as for every other unported call
+		if ((in->func == 0x00190540u) ? (in->a[0] == s_extZpcPlayerKart) : (in->a[1] == s_extZpcPlayerEntity))
+		{
+			s_extZpcSourceRespawn = 1;
+		}
 	}
 	else if (s_extZpCoupleContacts)
 	{
@@ -840,6 +846,8 @@ internal int ExtZpc_LoadWorld(void)
 	s_extZpc.body = ZmR32(m, s_extZpc.entity + EXT_ZPC_E_BODY);
 	owner = ZmR32(m, s_extZpc.kart + EXT_ZPC_K_OWNER);
 	s_extZpc.input = (owner != 0u) ? owner + EXT_ZPC_OWNER_INPUT : 0u;
+	s_extZpcPlayerKart = s_extZpc.kart;
+	s_extZpcPlayerEntity = s_extZpc.entity;
 	ExtZpc_ConfigureContacts();
 	return (s_extZpc.world != 0u) && (s_extZpc.kart != 0u) && (s_extZpc.entity != 0u) && (s_extZpc.body != 0u) && (s_extZpc.input != 0u) &&
 	       (ExtZpMem_Faults(m) == 0u);
