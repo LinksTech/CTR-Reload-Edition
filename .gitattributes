@@ -1,0 +1,6 @@
+# docs/CREATOR_KIT.html is generated from docs/CREATOR_KIT.md
+# (tools/creator_kit_guide.py), and the self-test creator_kit_guide_check
+# compares it byte for byte with the generator's LF output. Checked out with
+# CRLF (core.autocrlf=true, the Git default on Windows) the test failed on a
+# fresh clone.
+docs/CREATOR_KIT.html text eol=lf
