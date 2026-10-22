@@ -32,11 +32,10 @@
   <a href="#custom-tracks">Custom tracks</a> &middot;
   <a href="#custom-characters">Custom characters</a> &middot;
   <a href="#mods">Mods</a> &middot;
-  <a href="#whats-next">What's next</a> &middot;
+  <a href="#coming-soon">Coming soon</a> &middot;
   <a href="#building-from-source">Building</a> &middot;
   <a href="#reporting-bugs">Bugs</a> &middot;
   <a href="#credits">Credits</a> &middot;
-  <a href="#always-up-to-date">Up to date</a> &middot;
   <a href="#license-and-disclaimer">License</a>
 </p>
 
@@ -44,8 +43,11 @@ CTR Reload Edition runs *Crash Team Racing* (PS1, 1999) natively on Windows,
 without an emulator, and plays custom tracks and custom characters next to
 the original ones.
 
-The current release is **0.7.5 Beta** (Reload Studio 0.9.0). This README
-describes `main`: what is marked *new since 0.7.5* is in the
+It is a PC version, not a 1:1 port: the game logic of the original runs as
+it is, and a native engine draws it the way a PC game can.
+
+The current release is **0.7.5 Beta**. This README describes `main` (Reload
+Studio 0.9.5): what is marked *new since 0.7.5* is in the
 [nightly build](https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/nightly-builds)
 until the next release.
 
@@ -64,6 +66,10 @@ until the next release.
 
 ### 🎨 Graphics
 - New Vulkan renderer
+- *New since 0.7.5:* one-player races are drawn by the native engine -
+  tracks, objects and drivers, hi-res drivers included. `--no-engine` goes
+  back to the original PS1 drawing; races with two to four players use it
+  as before
 - Internal resolution up to 8x, MSAA anti-aliasing
 - Real widescreen: 4:3, 16:9 and 21:9 — the view gets wider, nothing
   is stretched
@@ -85,6 +91,7 @@ until the next release.
   automatically for the track screen
 - *New since 0.7.5:* a track without a start grid gets one, and a track
   without CPU paths gets them generated from its checkpoints
+- *New since 0.7.5:* up to 512 placed objects per track instead of 110
 - Fixes for crashes found in community tracks, and broken track data
   gets caught before you race, not mid-race
 
@@ -131,8 +138,8 @@ until the next release.
   away
 - Notices a new export by itself and checks again; long builds show their
   progress and can be cancelled
-- *New since 0.7.5:* the Creator Kit page, and modules - extra pages as
-  DLLs in a `modules` folder next to the Studio
+- *New since 0.7.5:* the Creator Kit inside the Character page, and
+  modules - extra pages as DLLs in a `modules` folder next to the Studio
 - Dark and light mode, follows the Windows display scale
 
 ### ⚙️ Under the hood
@@ -141,8 +148,9 @@ until the next release.
   tables, with larger draw and clip buffers
 - New VRAM handling: palette textures go through a GPU atlas instead of
   being decoded from emulated PS1 VRAM for every pixel
-- A native engine draws high-detail and hi-res drivers with skinning,
-  real textures and mipmaps next to the original PS1 drawing
+- The native engine draws one-player levels with real textures and
+  mipmaps, and high-detail and hi-res drivers with skinning; a level it
+  cannot load falls back to the original PS1 drawing on its own
 - Less emulation where it doesn't matter: several PS1 rendering steps
   now run natively, like transparency in a single pass
 - Runs out of room gracefully: an effect is left out and logged instead
@@ -168,7 +176,7 @@ until the next release.
    `C:\Program Files`).
 2. Start `ctr_native.exe` and drag your disc image (`.cue` or `.bin`) onto the
    window. The game unpacks what it needs into an `assets` folder next to it,
-   once (about 520 MB).
+   once.
 3. Set up the picture in OPTIONS → GRAPHICS.
 4. Create a folder `tracks` next to the game and put `.rldtrack` files into it.
 5. Race them: ARCADE → NITRO-PIT → RACE, CUP, TIME TRIAL, CRYSTAL or CTR.
@@ -258,8 +266,8 @@ actions on its skeleton: `idle`, `steer_left`, `steer_right`, `jump`,
 few. A Vanilla driver takes shape keys instead (steer_left, steer_right,
 reverse, crash, jump, win and lose) - see [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
 
-**Creator Kit** *(new since 0.7.5)*. The page Creator Kit builds a Blender
-5.2 template from your own copy of the game: the kart, a skeleton, a
+**Creator Kit** *(new since 0.7.5)*. Inside the Character page, the Creator
+Kit builds a Blender 5.2 template from your own copy of the game: the kart, a skeleton, a
 placeholder puppet and all 12 clips, with the export settings stored. You
 replace the puppet with your figure, export it and test it - or start from
 one of your old characters. Files with the kit's kart contain your game data
@@ -306,53 +314,48 @@ is exactly as before.
 Not in CRYSTAL, CTR and TIME TRIAL of NITRO-PIT, Adventure, Battle or with
 two players.
 
-## What's next
+## Coming soon
 
-Planned, in no particular order and without a date:
+In progress, in no particular order and without a date:
 
 - Battle on custom tracks
 - Custom characters in more modes: two players, Adventure and the NITRO-PIT
   challenges
+- The native engine for races with two to four players
 - More mods
 - Skin support for the drivers
-- ...and more
 
-We build continuously; a new version comes out when enough has come together.
-Until then, fixes and additions land here first.
+A new version comes out when enough has come together. Until then, fixes
+and additions land here first.
 
 ## Building from source
 
-Visual Studio 2022, CMake, the Vulkan SDK and Python.
+Windows only, 32-bit (x86) build. You need:
 
-<details>
-<summary>Steps and developer notes</summary>
+- Visual Studio 2022 or Build Tools 2022 with *Desktop development with C++*
+- CMake 3.21 or newer
+- the Vulkan SDK (LunarG)
+- Python 3.10 or newer (for the self-tests)
+
+SDL3 and cgltf are part of the repository; there are no submodules.
 
 From a command prompt in the repository root:
 
     build-msvc.bat
 
-This builds the Release configuration in `build-msvc-x86\` and runs the
-self-tests. Requirements, results, tests and packaging are described in
+This configures, builds the Release configuration and runs the self-tests.
+`ctr_native.exe` and `ReloadStudio.exe` end up in
+`build-msvc-x86\Release\`. The same steps by hand:
+
+    cmake --preset windows-msvc-x86
+    cmake --build --preset windows-msvc-x86-release --parallel
+    ctest --preset windows-msvc-x86-release
+
+The self-tests need no game data. Details, tests and packaging are in
 [BUILDING.md](BUILDING.md).
 
 Quick states and replays exist only behind the developer switch `--dev`. They
 are raw memory snapshots of the game: load only files you made yourself.
-
-`--dev --deterministic` is the measuring mode of the reference runs. VSync
-emits only the VBlanks the game asks for and never catches up by wall clock,
-and audio is rendered per VBlank. Only the script drives the game
-(`--menu-keys`, `--level`, `--autoload-demo`, `--autopilot`, a replay):
-keyboard, mouse, pads and window focus do not reach it. Losing focus or
-minimising never pauses, a display change keeps the aspect, and the debug
-keys, F11, Alt+Enter, Ctrl+Q and the name-entry keys do nothing; closing the
-window still ends the run. The log names this once at start, and at exit
-one line per kind counts what was kept away, only when something was (pad
-triggers and sticks are kept away but not counted). Without `--deterministic` nothing
-changes. Reload Studio records a track preview this way too. The window size
-still reaches the renderer: with `--res-scale native` the picture, and so a
-`--shot`, depends on the size of the window.
-
-</details>
 
 ## Reporting bugs
 
@@ -378,12 +381,11 @@ name out of the log if you mind.
 
 - Built on human-written foundations: ctr-native and the CTR-ModSDK
   decompilation.
-- CTR Reload Edition is developed by two people. We write code ourselves and
-  together with Claude Code (Anthropic), decide what gets built, review every
-  change and test it - with measured reference runs, automated checks and
-  hands-on play testing.
-- Development happens openly, in batches and without fixed dates; how to
-  contribute is described in [CONTRIBUTING.md](CONTRIBUTING.md).
+- CTR Reload Edition is developed by two people. We write the code
+  ourselves and together with Claude Code (Anthropic), decide what gets
+  built, and review and test every change.
+- Development happens openly and without fixed dates; how to contribute is
+  described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
@@ -391,21 +393,16 @@ name out of the log if you mind.
   this edition is based on
 - [CTR-ModSDK](https://github.com/CTR-tools/CTR-ModSDK): the decompilation
   project that ctr-native and this edition are built on
-- **Sunset Vista by Tramadoll**: the track and its extras are his work. This
-  repository only contains a compatibility layer (`game/native_trackmod.c`) so
-  that the track runs natively in CTR Reload. The track itself is not included.
-  Sunset Vista compatibility data used with permission of Tramadoll.
+- **Sunset Vista by Tramadoll**: the track and its extras are Tramadoll's
+  work. This repository only contains a compatibility layer
+  (`game/native_trackmod.c`) so that the track runs natively in CTR Reload.
+  The track itself is not included. Sunset Vista compatibility data used with
+  permission of Tramadoll.
+- **Retro-Fueled by TheRedhotbr** (CTR-ModSDK): the rules behind the Retro
+  Fueled option of the MODS page.
 
 Other components (PsyCross, SDL3 and more), the banner font and their licenses
 are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## Always up to date
-
-This repository is kept up to date with the help of Claude Code
-(Anthropic): the README, the guide in the package, the release notes and the
-automatic builds are brought in line with the code as the project grows, so
-what you read here matches what the newest version does. Every change is
-reviewed by us before it lands.
 
 ## License and disclaimer
 

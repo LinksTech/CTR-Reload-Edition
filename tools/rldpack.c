@@ -1433,7 +1433,7 @@ static int Rld_PtrMapHas(const struct RldPtrMap *map, u32 bodyOffset)
 // THE DEAD HITBOXES. Every BSP leaf names a list of collision boxes
 // (BSP.data.leaf.bspHitboxArray, 0x20 bytes each, ended by a zero word); a box
 // that belongs to an object carries its InstDef at +0x1C (hitbox.instDef,
-// always a pointer into the LEV). A track from the Saphi data (116 objects)
+// always a pointer into the LEV). A community track (116 objects)
 // had three boxes whose InstDef pointer lay far behind the level body - boxes
 // of an object that is no longer in the track. The game refuses such a LEV
 // (Rld_CheckLev, case C5), and rightly: relocated, the word would be a random

@@ -175,6 +175,16 @@ baseline-*/
 test-bats/
 perf-*/
 
+# --- Local working folders (the game folder, measurements, community and
+# extracted data). They live outside the repository; named here so that a
+# copy inside it can never be committed.
+/spielen/
+/messung/
+/saphi/
+/cnk/
+/tmp/
+/character demo/
+
 # --- Build output --------------------------------------------------------
 /build/
 /build-*/
