@@ -1028,19 +1028,19 @@ internal void ExtZpc_Inputs(const struct Driver *d)
 	double steer = 0.0;
 	const uint32_t in = s_extZpc.input;
 
-	// +1 turns the source's kart counter-clockwise about its up (probe on slot 7), which in Reload's
-	// world (as the track is converted and drawn) is a turn to the right: run nl2/m3-kopplung2 had
-	// RIGHT = -1 and the kart turned away from the autopilot's aim for 54 ticks in a row
-	if ((held & BTN_RIGHT) != 0)
+	// +1 turns the source's kart counter-clockwise about its up (probe on slot 7) = left; measured in
+	// the race (frames 122-132, the same key in every run): Reload's own physics and the port with
+	// RIGHT = -1 turn the same way, with RIGHT = +1 the other way (yaw compared over both runs)
+	if ((held & BTN_LEFT) != 0)
 		steer = 1.0;
-	else if ((held & BTN_LEFT) != 0)
+	else if ((held & BTN_RIGHT) != 0)
 		steer = -1.0;
 	else
 	{
 		const int x = (int)pad->stickLX - 0x80;
 		if ((x > 8) || (x < -8))
 		{
-			steer = (double)x / 127.0;
+			steer = -(double)x / 127.0;
 			steer = (steer > 1.0) ? 1.0 : ((steer < -1.0) ? -1.0 : steer);
 		}
 	}
