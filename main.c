@@ -347,6 +347,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-drive-log", "[n]", "log lines of the kart of seat 0: every n race frames (default 15) position, restart point, distance, lap, ground contact; every lap change; every mask grab with its reason and every landing; reads only, for measuring"},
     {"--dev-kart-steer-lead", "<1|2>", "with --dev-kart-steer: steer toward the restart point 1 or 2 (default) ahead of the kart's own; for measuring"},
     {"--dev-kart-steer-unstick", "", "with --dev-kart-steer: a kart that moved less than 1 m in 0.8 s backs off (SQUARE, steering turned round), stuck again soon after: mask grab; every action logged; for measuring"},
+    {"--dev-kart-steer-analog", "", "with --dev-kart-steer: the helper steers with the left stick of an analog pad in proportion to its heading error (full at 0x200 of 4096, none within 0x10) instead of the keys LEFT/RIGHT - for the external track's zone port, whose kart turns much faster at a full key; for measuring"},
     {"--dev-kart-steer-zone-hands-off", "", "with --dev-kart-steer: no steering key while the kart is in an external track's anti-gravity zone (gas and everything else as the helper does); every change logged; for measuring"},
     {"--dev-kart-steer", "[n]", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points; from race n of the run on (default 1) SQUARE (every other time with DOWN) after it got reserves, off the pad; for measuring"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
@@ -1543,6 +1544,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int steerGiven = 0;
 		int unstickGiven = 0;
 		int handsOffGiven = 0;
+		int analogGiven = 0;
 		const char *lead = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
@@ -1563,6 +1565,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				handsOffGiven = 1;
 			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer-analog") == 0)
+			{
+				analogGiven = 1;
+			}
 		}
 		if (unstickGiven && !steerGiven)
 		{
@@ -1575,6 +1581,13 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --dev-kart-steer-zone-hands-off requires --dev-kart-steer\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if (analogGiven && !steerGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --dev-kart-steer-analog requires --dev-kart-steer\n");
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -5591,6 +5604,13 @@ int main(int argc, char *argv[])
 
 				g_cfg_kartSteerZoneHandsOff = 1;
 				printf("[CTR Native] --dev-kart-steer-zone-hands-off: no steering key in an anti-gravity zone\n");
+			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer-analog") == 0)
+			{
+				extern int g_cfg_kartSteerAnalog;
+
+				g_cfg_kartSteerAnalog = 1;
+				printf("[CTR Native] --dev-kart-steer-analog: the helper steers with the left stick in proportion to its heading error\n");
 			}
 			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
 			{

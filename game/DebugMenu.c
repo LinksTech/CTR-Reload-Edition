@@ -1459,6 +1459,25 @@ int g_cfg_kartSteerUnstick = 0;
 //   [CTR Debug] --dev-kart-steer-zone-hands-off: hands off|along|on frame F zone Z
 int g_cfg_kartSteerZoneHandsOff = 0;
 
+// --dev-kart-steer-analog (only beside --dev-kart-steer; without it the helper is
+// unchanged to the last pad bit). For the external track's zone port, whose
+// source kart turns at a full ±1 far faster than Reload's: instead of a steering
+// key the helper sets the left stick (an analog pad, id 0x73) in proportion to
+// its heading error - full at a quarter turn's half (0x200), nothing within
+// 0x10 - with the same choice of side as the key (the learnt LEFT sign); the
+// keys LEFT and RIGHT stay up. One log line at the start.
+int g_cfg_kartSteerAnalog = 0;
+
+// The stick value for a turn to the side of `leftKey` (1 = the side LEFT turns)
+// by the heading error diff (4096 = a turn).
+internal int DebugMenu_KartSteerStick(int leftKey, int diff)
+{
+	const int a = (diff < 0) ? -diff : diff;
+	int mag = (a <= 0x10) ? 0 : ((a >= 0x200) ? 0x7f : (a * 0x7f) / 0x200);
+
+	return leftKey ? (0x80 - mag) : (0x80 + mag);
+}
+
 enum
 {
 	KART_UNSTICK_MOVE = 64,   // 1 m
@@ -1477,6 +1496,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 	local_persist int votes = 0;
 	local_persist int lastAngle = 0;
 	local_persist u16 lastWord = 0xffff;
+	local_persist int lastStick = 0x80; // --dev-kart-steer-analog: the stick of the frame before
 	local_persist int hadReserves = 0;
 	local_persist int pending = 0;
 	local_persist int race = 0;
@@ -1502,6 +1522,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 	u16 word = 0xffff;
 	int slot;
 	int steerDiff = 0;
+	int stick = 0x80; // --dev-kart-steer-analog
 
 	if (!g_cfg_kartSteer)
 	{
@@ -1612,11 +1633,11 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			// steering key was held in the frame before.
 			// (Not after a back-off frame of --dev-kart-steer-unstick: reversing
 			// turns the heading the other way.)
-			if (!usLastBack && ((lastWord & RAW_BTN_LEFT) == 0) && (turned != 0))
+			if (!usLastBack && (g_cfg_kartSteerAnalog ? (lastStick < 0x80 - 0x20) : ((lastWord & RAW_BTN_LEFT) == 0)) && (turned != 0))
 			{
 				votes += (turned > 0) ? 1 : -1;
 			}
-			else if (!usLastBack && ((lastWord & RAW_BTN_RIGHT) == 0) && (turned != 0))
+			else if (!usLastBack && (g_cfg_kartSteerAnalog ? (lastStick > 0x80 + 0x20) : ((lastWord & RAW_BTN_RIGHT) == 0)) && (turned != 0))
 			{
 				votes += (turned > 0) ? -1 : 1;
 			}
@@ -1635,7 +1656,11 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			steerDiff = diff;
 
 			word &= (u16)~RAW_BTN_CROSS;
-			if ((diff > 0x40) || (diff < -0x40))
+			if (g_cfg_kartSteerAnalog)
+			{
+				stick = DebugMenu_KartSteerStick(((diff > 0) ? 1 : -1) == leftSign, diff);
+			}
+			else if ((diff > 0x40) || (diff < -0x40))
 			{
 				word &= (u16)~((((diff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_LEFT : RAW_BTN_RIGHT);
 			}
@@ -1736,7 +1761,11 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			// Backwards: no gas, the brake reverses; the steering is turned round.
 			word |= (u16)(RAW_BTN_CROSS | RAW_BTN_LEFT | RAW_BTN_RIGHT | RAW_BTN_DOWN);
 			word &= (u16)~RAW_BTN_SQUARE;
-			if ((steerDiff > 0x40) || (steerDiff < -0x40))
+			if (g_cfg_kartSteerAnalog)
+			{
+				stick = DebugMenu_KartSteerStick(((steerDiff > 0) ? 1 : -1) != leftSign, steerDiff);
+			}
+			else if ((steerDiff > 0x40) || (steerDiff < -0x40))
 			{
 				word &= (u16)~((((steerDiff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_RIGHT : RAW_BTN_LEFT);
 			}
@@ -1799,10 +1828,18 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		if (mode != 0)
 		{
 			word |= (u16)(RAW_BTN_LEFT | RAW_BTN_RIGHT);
+			stick = 0x80;
 		}
 		if ((mode == 1) && (usBackLeft == 0) && haveDiff && ((diff > 4) || (diff < -4)))
 		{
-			word &= (u16)~((((diff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_LEFT : RAW_BTN_RIGHT);
+			if (g_cfg_kartSteerAnalog)
+			{
+				stick = DebugMenu_KartSteerStick(((diff > 0) ? 1 : -1) == leftSign, diff);
+			}
+			else
+			{
+				word &= (u16)~((((diff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_LEFT : RAW_BTN_RIGHT);
+			}
 		}
 	}
 
@@ -1816,11 +1853,21 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			pads[slot].connected = 1;
 			pads[slot].status = 0;
 			pads[slot].id = 0x41;
+			if (g_cfg_kartSteerAnalog)
+			{
+				// an analog pad: right stick at rest, left stick x = the helper's turn
+				pads[slot].id = 0x73;
+				pads[slot].analog[0] = 0x80;
+				pads[slot].analog[1] = 0x80;
+				pads[slot].analog[2] = (u8)stick;
+				pads[slot].analog[3] = 0x80;
+			}
 		}
 	}
 	Platform_InputInstallPadSnapshots(pads, 4);
 	armed = 1;
 	lastWord = word;
+	lastStick = stick;
 }
 
 // ---------------------------------------------------------------------------
