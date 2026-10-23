@@ -38,10 +38,17 @@ global_variable SceneBank g_sceneBanks[ENGINE_SCENE_BANKS];
 global_variable int g_sceneBank;
 global_variable u32 g_sceneOverflows;
 // The most draws one view held in a frame since the start, and that view
-// (the exit report); whether a full list has been said in the log.
+// (the exit report).
 global_variable int g_scenePeak;
 global_variable int g_scenePeakView;
-global_variable int g_sceneFullSaid;
+// THE FULL LIST, per level (Engine_SceneLevelReport): draws refused because
+// a view's list was full, the frames with at least one such refusal, whether
+// the running frame already has one, and the level's own peak. Said in the
+// log at the first refusal of a level and summed up when the level ends.
+global_variable u32 g_sceneLevelRefused;
+global_variable u32 g_sceneLevelFullFrames;
+global_variable int g_sceneFrameFull;
+global_variable int g_sceneLevelPeak;
 
 int Engine_SceneRingsAlloc(void)
 {
@@ -115,6 +122,23 @@ void Engine_SceneBeginFrame(void)
 	}
 	b->dynVertexUsed = 0;
 	b->dynIndexUsed = 0;
+	g_sceneFrameFull = 0;
+}
+
+// At the end of a level (Engine_LevelEnd) and at exit (Engine_RenderReport):
+// if a view's draw list was full on this level, one line with what it cost;
+// then the level's counters start again. Nothing to say, no line.
+void Engine_SceneLevelReport(void)
+{
+	if (g_sceneLevelRefused != 0u)
+	{
+		Platform_LogWarn("[CTR Engine] draw list full on this level: %u draw(s) refused in %u frame(s), peak %d of %d draws per view\n",
+		                 g_sceneLevelRefused, g_sceneLevelFullFrames, g_sceneLevelPeak, ENGINE_DRAWS_PER_VIEW);
+	}
+	g_sceneLevelRefused = 0u;
+	g_sceneLevelFullFrames = 0u;
+	g_sceneFrameFull = 0;
+	g_sceneLevelPeak = 0;
 }
 
 int Engine_SceneSubmit(int view, const EngineDraw *draw)
@@ -134,12 +158,17 @@ int Engine_SceneSubmit(int view, const EngineDraw *draw)
 	if (b->count[view] >= ENGINE_DRAWS_PER_VIEW)
 	{
 		g_sceneOverflows++;
-		if (!g_sceneFullSaid)
+		if (g_sceneLevelRefused == 0u)
 		{
-			g_sceneFullSaid = 1;
-			Platform_LogWarn("[CTR Engine] the draw list of view %d is full (%d draws) - the rest of the frame's draws in it are refused "
-			                 "(\"scene\" in the exit report); said once\n",
+			Platform_LogWarn("[CTR Engine] the draw list of view %d is full (%d draws) - further draws of the frame in it are refused "
+			                 "(an instance goes to the PS1 drawing, a track group is left out); the level's count follows at its end\n",
 			                 view, ENGINE_DRAWS_PER_VIEW);
+		}
+		g_sceneLevelRefused++;
+		if (!g_sceneFrameFull)
+		{
+			g_sceneFrameFull = 1;
+			g_sceneLevelFullFrames++;
 		}
 		return -1;
 	}
@@ -173,6 +202,10 @@ int Engine_SceneSubmit(int view, const EngineDraw *draw)
 	{
 		g_scenePeak = index + 1;
 		g_scenePeakView = view;
+	}
+	if ((index + 1) > g_sceneLevelPeak)
+	{
+		g_sceneLevelPeak = index + 1;
 	}
 	return index;
 }

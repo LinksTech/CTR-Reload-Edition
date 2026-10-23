@@ -522,13 +522,16 @@ static inline int Engine_RangeSkipped(u64 rangeSkip, u32 range)
 #define ENGINE_DRAW_NO_DEPTH 0x0002u    // no depth test (overlays)
 
 #define ENGINE_VIEWS 4
-// Draws one view holds per frame: one for every slot of the largest instance
-// pool (RLD_INSTANCE_POOL_LARGE, include/rldinstances.h - a track may place
-// up to RLD_LEVEL_INSTANCES_MAX objects) and as many again for the track's
-// draw groups, the effects and the second draw of split or reflecting models.
-// A full list refuses the rest of the frame's draws in that view; the exit
-// report gives the peak ("draws per view").
-#define ENGINE_DRAWS_PER_VIEW (2 * RLD_INSTANCE_POOL_LARGE)
+// Draws one view holds per frame, three per slot of the largest instance pool
+// (RLD_INSTANCE_POOL_LARGE, include/rldinstances.h - a track may place up to
+// RLD_LEVEL_INSTANCES_MAX objects). Measured on a custom track of 116 objects:
+// 289 draws in one view at an instance pool peak of 137 - 2.11 draws per pool
+// slot, the track's draw groups, effects and second draws included. A full
+// pool of 640 at that rate is 1350 draws, with a quarter in reserve 1688:
+// 2.64 per slot, so 3 (1920). A full list refuses the rest of the frame's
+// draws in that view, said in the log once per level and summed up at its end
+// (Engine_SceneLevelReport); the exit report gives the peak ("draws per view").
+#define ENGINE_DRAWS_PER_VIEW (3 * RLD_INSTANCE_POOL_LARGE)
 // The dynamic geometry per bank and frame: ENGINE_DYN_VERTICES_PER_FRAME vertices
 // and 3/2 of that in indices (the scene's rings) and in expanded vertices (the
 // renderer's store and each region of the GPU buffer). Heap memory made when the
@@ -564,6 +567,7 @@ int Engine_SceneSorted(int view, const EngineDraw **out);
 int Engine_SceneSortedBank(int bank, int view, const EngineDraw **out);
 u32 Engine_SceneOverflows(void); // draws refused since the start (list or ring full)
 int Engine_ScenePeak(int *view);  // the most draws one view held in a frame since the start; view: which one
+void Engine_SceneLevelReport(void); // a full draw list on this level: one line with its cost, then the level's counters start again
 
 // --------------------------------------------------------------------------
 // EFFECT GEOMETRY (platform/engine_fx.c)

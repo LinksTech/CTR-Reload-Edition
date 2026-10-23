@@ -110,6 +110,9 @@ int Engine_DefaultOn(int engineOnLine, int noEngine)
 // had off come back, so the unload clears what the engine left of it.
 void Engine_LevelEnd(void)
 {
+	// What a full draw list cost on the level that goes, if anything.
+	Engine_SceneLevelReport();
+
 	if (s_engineLevelOff == ENGINE_LEVEL_OFF_NONE)
 	{
 		return;

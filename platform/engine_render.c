@@ -1228,5 +1228,7 @@ void Engine_RenderReport(void)
 
 		Platform_Log("[CTR Engine] draws per view: peak %d of %d (view %d)\n", peak, ENGINE_DRAWS_PER_VIEW, peakView);
 	}
+	// The level that runs at exit has had no Engine_LevelEnd.
+	Engine_SceneLevelReport();
 	Platform_Log("[CTR Engine] track mosaic: table ranges drawn %u\n", s_engCount.tableRanges);
 }
