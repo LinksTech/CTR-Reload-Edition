@@ -5565,6 +5565,141 @@ static int Rld_SelftestMake(void)
 		}
 	}
 
+	// DEAD HITBOXES (Rld_DeadHitboxes): two BSP leaves share one hitbox list
+	// of a live box, a box whose InstDef points behind the body (mapped), a
+	// box with an unmapped word behind the body, and the end. Counting
+	// changes nothing; applying switches off only the mapped dead box, once,
+	// takes its map entry out (the map closes up, the bytes behind it move
+	// up) and touches nothing else; a second pass and a LEV without a dead
+	// box stay byte for byte as they are.
+	{
+		enum
+		{
+			BODY = 0x300,
+			MAP_AT = 4 + BODY,
+			ENTRIES = 6,
+			SIZE = MAP_AT + 4 + (ENTRIES * 4) + 8
+		};
+		static const u32 sites[ENTRIES] = {0x000u, 0x29cu, 0x218u, 0x234u, 0x254u, 0x27cu};
+		static const u32 kept[ENTRIES - 1] = {0x000u, 0x218u, 0x234u, 0x254u, 0x27cu};
+		u8 lev[SIZE];
+		u8 before[SIZE];
+		u8 *body = &lev[4];
+		struct RldHitboxFix fix;
+		size_t size = SIZE;
+		int bad = 0;
+		int i;
+
+		memset(lev, 0, sizeof(lev));
+		Rld_WriteLE32(&lev[0], BODY);
+		Rld_WriteLE32(&body[0x000], 0x200u);  // mesh_info
+		Rld_WriteLE32(&body[0x218], 0x220u);  // mesh_info.bspRoot
+		Rld_WriteLE32(&body[0x21c], 2u);      // mesh_info.numBspNodes
+		Rld_WriteLE16(&body[0x220], 1u);      // node 0: leaf
+		Rld_WriteLE32(&body[0x234], 0x260u);  //   its hitbox list
+		Rld_WriteLE16(&body[0x240], 1u);      // node 1: leaf
+		Rld_WriteLE32(&body[0x254], 0x260u);  //   the same list
+		for (i = 0; i < 3; i++)
+		{
+			const u32 box = 0x260u + ((u32)i * RLD_HITBOX_BYTES);
+			int k;
+
+			Rld_WriteLE16(&body[box], (i == 2) ? 0x0440u : 0x04c0u);
+			for (k = 0; k < 6; k++)
+			{
+				Rld_WriteLE16(&body[box + 4u + ((u32)k * 2u)], (u32)(10 * i + k + 1));
+			}
+		}
+		Rld_WriteLE32(&body[0x27c], 0x2e0u);     // live: an InstDef in the body
+		Rld_WriteLE32(&body[0x29c], 0x694c0cu);  // dead, mapped
+		Rld_WriteLE32(&body[0x2bc], 0x700000u);  // behind the body, not mapped
+		Rld_WriteLE32(&lev[MAP_AT], ENTRIES * 4);
+		for (i = 0; i < ENTRIES; i++)
+		{
+			Rld_WriteLE32(&lev[MAP_AT + 4 + (i * 4)], sites[i]);
+		}
+		memset(&lev[SIZE - 8], 0xa5, 8);
+		memcpy(before, lev, sizeof(lev));
+
+		Rld_DeadHitboxes(lev, &size, 0, &fix);
+		if ((fix.fixed != 1u) || (fix.site[0] != 0x29cu) || (fix.before[0] != 0x694c0cu) || (size != SIZE) || (memcmp(lev, before, SIZE) != 0))
+		{
+			bad |= 1;
+		}
+
+		Rld_DeadHitboxes(lev, &size, 1, &fix);
+		if ((fix.fixed != 1u) || (size != (SIZE - 4)))
+		{
+			bad |= 2;
+		}
+		if ((Rld_ReadLE32At(body, 0x280) & 0xffffu) != 0x0440u)
+		{
+			bad |= 4;
+		}
+		for (i = 0; i < 3; i++)
+		{
+			if (((Rld_ReadLE32At(body, 0x284u + ((u32)i * 2u)) & 0xffffu) != 0x7fffu) ||
+			    ((Rld_ReadLE32At(body, 0x28au + ((u32)i * 2u)) & 0xffffu) != 0x8000u))
+			{
+				bad |= 8;
+			}
+		}
+		if (Rld_ReadLE32At(body, 0x29c) != 0u)
+		{
+			bad |= 16;
+		}
+		if (Rld_ReadLE32At(lev, MAP_AT) != ((ENTRIES - 1) * 4))
+		{
+			bad |= 32;
+		}
+		for (i = 0; i < ENTRIES - 1; i++)
+		{
+			if (Rld_ReadLE32At(lev, MAP_AT + 4 + (i * 4)) != kept[i])
+			{
+				bad |= 64;
+			}
+		}
+		for (i = 0; i < 8; i++)
+		{
+			if (lev[MAP_AT + 4 + ((ENTRIES - 1) * 4) + i] != 0xa5u)
+			{
+				bad |= 128;
+			}
+		}
+		// Everything but the switched-off box is as it was: the body up to it,
+		// the live box, the unmapped one and the end.
+		if ((memcmp(lev, before, 4 + 0x280) != 0) || (memcmp(&lev[4 + 0x2a0], &before[4 + 0x2a0], BODY - 0x2a0) != 0))
+		{
+			bad |= 256;
+		}
+
+		memcpy(before, lev, size);
+		Rld_DeadHitboxes(lev, &size, 1, &fix);
+		if ((fix.fixed != 0u) || (size != (SIZE - 4)) || (memcmp(lev, before, size) != 0))
+		{
+			bad |= 512;
+		}
+
+		// No dead box at all: nothing found, nothing written.
+		Rld_WriteLE32(&body[0x29c], 0x2e0u);
+		memcpy(before, lev, size);
+		Rld_DeadHitboxes(lev, &size, 1, &fix);
+		if ((fix.fixed != 0u) || (size != (SIZE - 4)) || (memcmp(lev, before, size) != 0))
+		{
+			bad |= 1024;
+		}
+
+		if (bad != 0)
+		{
+			printf("  FAIL dead hitboxes: case mask %d\n", bad);
+			failed = 1;
+		}
+		else
+		{
+			printf("  ok   dead hitboxes: one mapped dead box in a shared list switched off once, its map entry out, the rest unchanged; counting, a second pass and a clean LEV write nothing\n");
+		}
+	}
+
 	// LETTERS BY NAME ("CTR Test"): t carries 0x95, r 0x94 -> swapped,
 	// InstDef.modelID follows; "tr" with 0x94 stays; with apply 0 only reported.
 	{
