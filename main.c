@@ -101,6 +101,7 @@
 #include "platform/engine_render.c"
 #include "platform/engine_oracle.c"
 #include "platform/engine_frame.c"
+#include "platform/engine_psx_depth.c"
 #include "platform/engine_testscene.c"
 #include "platform/engine_model.c"
 #include "platform/engine_driver.c"
@@ -360,6 +361,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ctr-grab", "<n>", "NITRO-PIT -> CTR: collects n letters through their collision path (test probe, sets no place)"},
     {"--settings-defaults", "", "built-in defaults, ctr-settings.cfg and track-ids.tsv neither read nor written"},
     {"--msaa-at", "<V:L,V:L,...>", "switch anti-aliasing to level L (1, 2 or 4) at VBlank V, for this run only (up to 32 pairs)"},
+    {"--dev-psx-depth-calib", "<vblanks>", "measuring: log the cells of the PS1 world triangles, the retail instances and the depth-writing engine triangles of the first frame at or after each VBlank (up to 16)"},
     {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison (default textured)"},
     {"--level", "<n>", "jump straight into level id n as soon as the main menu is up; without --dev only in the test start of --char"},
     {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash); without --dev only in the test start of --char"},
@@ -597,6 +599,7 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--shot-name", PLATFORM_ARG_PATH_MAX, 0},
     {"--dump-prefix", PLATFORM_ARG_PATH_MAX, 0},
     {"--msaa-at", NATIVE_ARG_LIST_MAX, 0},
+    {"--dev-psx-depth-calib", NATIVE_ARG_LIST_MAX, 0},
     {"--perf-dir", NATIVE_PERF_PATH_MAX, 0},
     {"--tracks-dir", sizeof(s_nativeTrackFolder), 0},
     {"--chars-dir", NATIVE_CHAR_PATH_MAX, 0},
@@ -4916,6 +4919,23 @@ int main(int argc, char *argv[])
 
 				g_cfg_feedbackReport = 1;
 				printf("[CTR Native] feedback report: one line per feedback pack, at most 500\n");
+			}
+			else if ((strcmp(argv[argIndex], "--dev-psx-depth-calib") == 0) && ((argIndex + 1) < argc))
+			{
+				// "V,V,..." ascending: the measuring frames of the PSX depth
+				// (include/platform/engine.h, PSX DEPTH).
+				char buffer[NATIVE_ARG_LIST_MAX];
+				char *cursor;
+				char *token;
+
+				snprintf(buffer, sizeof(buffer), "%s", argv[++argIndex]);
+				g_cfg_psxDepthCalibCount = 0;
+				cursor = buffer;
+				while (((token = strtok(cursor, ",")) != NULL) && (g_cfg_psxDepthCalibCount < ENGINE_PSX_DEPTH_CALIB_MAX))
+				{
+					cursor = NULL;
+					g_cfg_psxDepthCalib[g_cfg_psxDepthCalibCount++] = atoi(token);
+				}
 			}
 			else if ((strcmp(argv[argIndex], "--msaa-at") == 0) && ((argIndex + 1) < argc))
 			{

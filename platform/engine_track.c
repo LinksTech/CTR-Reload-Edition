@@ -5936,7 +5936,21 @@ internal int EngTrack_PodiumRoute(struct Instance *inst, struct InstDrawPerPlaye
 //
 // Declined (0, counted): the model has no import, a screen-space or billboard
 // or hidden instance, a frame out of range, or the submit refusing.
+internal int EngTrack_InstanceRouteDecide(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+
 int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
+{
+	const int drawn = EngTrack_InstanceRouteDecide(inst, idpp, pb);
+
+	// MEASURING (--dev-psx-depth-calib): the instances the retail handler draws.
+	if (!drawn && Engine_PsxDepthCalibArmed())
+	{
+		Engine_PsxDepthCalibInstance(inst, idpp, pb);
+	}
+	return drawn;
+}
+
+internal int EngTrack_InstanceRouteDecide(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
 {
 	EngTrackModel *em;
 

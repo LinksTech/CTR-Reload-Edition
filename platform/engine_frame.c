@@ -41,6 +41,8 @@ void Engine_FrameCollect(struct GameTracker *gGT)
 			s_engineCam[view].valid = 0;
 		}
 	}
+	// The measuring frames of --dev-psx-depth-calib (engine_psx_depth.c), with the camera of the frame.
+	Engine_PsxDepthFrameBegin(gGT);
 
 	if (g_cfg_engineTestScene)
 	{

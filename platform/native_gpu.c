@@ -2677,6 +2677,31 @@ internal bool NativeGpu_IsUIOTRoot(const void *packet)
 	return (uintptr_t)packet == ((uintptr_t)sdata->gGT->pushBuffer_UI.ptrOT - sizeof(u32));
 }
 
+// MEASURING (--dev-psx-depth-calib, engine.h PSX DEPTH): the triangles a world
+// primitive wrote, one line each, corners minus the draw offset so they are
+// view points as the GTE wrote them; the cell and whether the primitive lies in
+// an instance's sub-range.
+internal void NativeGpu_PsxDepthCalibPrim(int firstVertex)
+{
+	float ofsX;
+	float ofsY;
+	int cell;
+
+	if (!Engine_PsxDepthCalibArmed() || s_gpu.uiViewActive || ((cell = Engine_PsxDepthCell()) < 0))
+	{
+		return;
+	}
+	DrawEnvOffset(&ofsX, &ofsY);
+	for (int v = firstVertex; v + 2 < s_gpu.vertexIndex; v += 3)
+	{
+		const GrVertex *g = &s_gpu.vertexBuffer[v];
+
+		Platform_Log("[CTR PsxDepth] P %d %d %.0f %.0f %.0f %.0f %.0f %.0f\n", cell, Engine_PsxDepthInSubRange(), g[0].x - ofsX, g[0].y - ofsY, g[1].x - ofsX,
+		             g[1].y - ofsY, g[2].x - ofsX, g[2].y - ofsY);
+		Engine_PsxDepthCalibNoteTriangle();
+	}
+}
+
 internal void NativeGpu_NoteUIVertexRange(int firstVertex, const void *packet)
 {
 	struct NativeGpuUiPrim *prim;
@@ -3863,6 +3888,8 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 	{
 		// walk OT_TAG linked list
 		u8 *basePacket = (u8 *)p;
+
+		Engine_PsxDepthWalkBegin();
 		while (true)
 		{
 			// uiViewActive is exactly "the walk is inside the UI ordering
@@ -3903,6 +3930,7 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			}
 
 			const int tagLength = getlen(basePacket);
+			Engine_PsxDepthPacket(basePacket, tagLength);
 			if (tagLength > 0)
 			{
 				if (tagLength > 32)
@@ -3925,6 +3953,7 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 
 					primLength = ParsePrimitive((P_TAG *)currentPacket);
 					NativeGpu_NoteUIVertexRange(uiVertexStart, currentPacket);
+					NativeGpu_PsxDepthCalibPrim(uiVertexStart);
 					currentPacket += (primLength + P_LEN) * sizeof(u32);
 				}
 
@@ -3934,6 +3963,7 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 
 					primLength = ParseTaglessPrimitive((u32 *)currentPacket);
 					NativeGpu_NoteUIVertexRange(uiVertexStart, currentPacket);
+					NativeGpu_PsxDepthCalibPrim(uiVertexStart);
 					currentPacket += primLength * sizeof(u32);
 				}
 
@@ -3972,6 +4002,8 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 
 			basePacket = nextPacket;
 		}
+
+		Engine_PsxDepthWalkEnd();
 	}
 
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_DRAW_OTAG_PARSE);
@@ -4953,6 +4985,10 @@ internal void NativeGpu_AddNativeSplit(u32 item, u32 flags)
 	{
 		s_gpuNativeRefused++;
 		return;
+	}
+	if ((item & ENGINE_MARKER_FLAG) != 0u)
+	{
+		Engine_PsxDepthMarker(item);
 	}
 
 	GPUDrawSplit *curSplit = &s_gpu.splits[s_gpu.splitIndex];

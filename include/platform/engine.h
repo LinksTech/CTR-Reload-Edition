@@ -1863,6 +1863,62 @@ void EngineFx_HeatNote(void);
 int Engine_SelfTestWeather(int *checks); // engine_fx_weather.c: rule, geometry, line and quad corners
 
 // --------------------------------------------------------------------------
+// PSX DEPTH (platform/engine_psx_depth.c; round of 2026-10-23)
+//
+// THE FAULT. In a one-player race the engine draws the whole opaque track as
+// one marker in OT cell 0x3fe (engine_track.c, EGT_CELL_OPAQUE), right after
+// the sky, and writes depth. Everything the PS1 path still draws into the
+// view's ordering table - retail drivers with their tires, shadows and skid
+// marks, threaded runtime instances, level instances the engine declines (the
+// crates and fruit of a retail track) - comes later in the walk and has no
+// depth, so it lands on top of every wall.
+//
+// THE CELL IS A DEPTH. Every producer of the world table picks its cell from
+// the view z of the GTE, the same z the engine camera uses (engine_camera.c):
+// an instance's sub-range hangs in cell (vz >> 6) + depthBias
+// (RenderBucket_QueueExecute.c, RenderBucket_AllocateOTRange), a shadow in
+// (4 vz >> 8) + bias + 1 (VehGroundShadow.c), a skid mark in (4 vz >> 2 >> 6)
+// plus its fade (VehGroundSkids.c). So cell c stands for view z 64 c .. 64 c + 63
+// plus a bias that only ever pushes back. The walk knows the cell it is in: the
+// main table's entries are visited in order (0x3ff first), and every packet
+// after entry c - an instance's whole sub-range included - belongs to cell c
+// until the next entry.
+//
+// The walk (native_gpu.c, ParsePrimitivesLinkedList) reports its start and end,
+// every engine marker it parses and every packet; Engine_PsxDepthCell gives the
+// cell of the primitive being built, -1 outside the world table of a frame the
+// engine drew the track in (a menu, the UI table, two to four players, the PS1
+// path). Cell 0 (the HUD pieces the game hangs into the world table: the start
+// lights, FINAL LAP, the roulette shine, the fade quad) and the sky cell 0x3ff
+// count as no cell.
+//
+// MEASURING (--dev-psx-depth-calib <vblank>[,...], dev): in the first frame at
+// or after each vblank, one log line per PS1 world triangle (cell, in a
+// sub-range or hung into the cell directly, screen corners minus the draw
+// offset), per retail instance (model, cell as the queue computes it, view z
+// of its centre, the nearest and farthest view z of its depth range) and per
+// triangle of a depth-writing dynamic engine draw (screen corners with their
+// view z: the track), so the order the cells give can be checked against the
+// order of the real depths offline.
+#define ENGINE_PSX_DEPTH_CELL_SKY 0x3ff
+#define ENGINE_PSX_DEPTH_CALIB_MAX 16
+extern int g_cfg_psxDepthCalibCount;
+extern int g_cfg_psxDepthCalib[ENGINE_PSX_DEPTH_CALIB_MAX];
+void Engine_PsxDepthFrameBegin(struct GameTracker *gGT); // from Engine_FrameCollect
+void Engine_PsxDepthWalkBegin(void);                      // a full walk of the ordering table starts
+void Engine_PsxDepthWalkEnd(void);
+void Engine_PsxDepthMarker(u32 item);                       // the walk parsed an engine marker
+void Engine_PsxDepthPacket(const void *packet, int length); // the walk visits a packet (length 0 = an entry)
+int Engine_PsxDepthCell(void);                              // the cell of the primitive being built, -1 = none
+int Engine_PsxDepthInSubRange(void);                        // 1 = that primitive lies in an instance's sub-range
+int Engine_PsxDepthCalibArmed(void);
+// Measuring only: a triangle line the walk wrote, a retail instance, a dynamic
+// engine draw that writes depth.
+void Engine_PsxDepthCalibNoteTriangle(void);
+void Engine_PsxDepthCalibInstance(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb);
+void Engine_PsxDepthCalibDraw(int view, const EngineDraw *draw);
+
+// --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
 // engine_selftest). Each module's test returns its failure count and adds its
 // checks to *checks; it prints one line per failing check.

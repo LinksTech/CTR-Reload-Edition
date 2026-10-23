@@ -708,6 +708,10 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 		rec->dynFirst = s_engDynUsed[bank];
 		rec->dynCount = triangles * 3u;
 		s_engDynUsed[bank] += triangles * 3u;
+		if (Engine_PsxDepthCalibArmed())
+		{
+			Engine_PsxDepthCalibDraw(view, draw);
+		}
 	}
 	if (index >= s_engDrawCount[bank][view])
 	{
