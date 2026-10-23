@@ -17,6 +17,7 @@
 // give them), before the internal resolution factor.
 
 #include <macros.h>
+#include <rldinstances.h>
 
 // --------------------------------------------------------------------------
 // Switches (main.c). 0 = off, the default.
@@ -521,7 +522,13 @@ static inline int Engine_RangeSkipped(u64 rangeSkip, u32 range)
 #define ENGINE_DRAW_NO_DEPTH 0x0002u    // no depth test (overlays)
 
 #define ENGINE_VIEWS 4
-#define ENGINE_DRAWS_PER_VIEW 512
+// Draws one view holds per frame: one for every slot of the largest instance
+// pool (RLD_INSTANCE_POOL_LARGE, include/rldinstances.h - a track may place
+// up to RLD_LEVEL_INSTANCES_MAX objects) and as many again for the track's
+// draw groups, the effects and the second draw of split or reflecting models.
+// A full list refuses the rest of the frame's draws in that view; the exit
+// report gives the peak ("draws per view").
+#define ENGINE_DRAWS_PER_VIEW (2 * RLD_INSTANCE_POOL_LARGE)
 // The dynamic geometry per bank and frame: ENGINE_DYN_VERTICES_PER_FRAME vertices
 // and 3/2 of that in indices (the scene's rings) and in expanded vertices (the
 // renderer's store and each region of the GPU buffer). Heap memory made when the
@@ -556,6 +563,7 @@ int Engine_SceneSorted(int view, const EngineDraw **out);
 // was written in). Returns 0 and *out = NULL for an invalid bank or view.
 int Engine_SceneSortedBank(int bank, int view, const EngineDraw **out);
 u32 Engine_SceneOverflows(void); // draws refused since the start (list or ring full)
+int Engine_ScenePeak(int *view);  // the most draws one view held in a frame since the start; view: which one
 
 // --------------------------------------------------------------------------
 // EFFECT GEOMETRY (platform/engine_fx.c)

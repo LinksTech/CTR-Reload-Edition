@@ -37,6 +37,11 @@ typedef struct
 global_variable SceneBank g_sceneBanks[ENGINE_SCENE_BANKS];
 global_variable int g_sceneBank;
 global_variable u32 g_sceneOverflows;
+// The most draws one view held in a frame since the start, and that view
+// (the exit report); whether a full list has been said in the log.
+global_variable int g_scenePeak;
+global_variable int g_scenePeakView;
+global_variable int g_sceneFullSaid;
 
 int Engine_SceneRingsAlloc(void)
 {
@@ -129,6 +134,13 @@ int Engine_SceneSubmit(int view, const EngineDraw *draw)
 	if (b->count[view] >= ENGINE_DRAWS_PER_VIEW)
 	{
 		g_sceneOverflows++;
+		if (!g_sceneFullSaid)
+		{
+			g_sceneFullSaid = 1;
+			Platform_LogWarn("[CTR Engine] the draw list of view %d is full (%d draws) - the rest of the frame's draws in it are refused "
+			                 "(\"scene\" in the exit report); said once\n",
+			                 view, ENGINE_DRAWS_PER_VIEW);
+		}
 		return -1;
 	}
 	if (draw->dynVertexCount > 0)
@@ -157,7 +169,23 @@ int Engine_SceneSubmit(int view, const EngineDraw *draw)
 	}
 	b->count[view] = index + 1;
 	b->dirty[view] = 1;
+	if ((index + 1) > g_scenePeak)
+	{
+		g_scenePeak = index + 1;
+		g_scenePeakView = view;
+	}
 	return index;
+}
+
+// The peak of Engine_SceneSubmit: the most draws one view held in a frame,
+// and that view.
+int Engine_ScenePeak(int *view)
+{
+	if (view != NULL)
+	{
+		*view = g_scenePeakView;
+	}
+	return g_scenePeak;
 }
 
 internal int Scene_EffectiveMaterial(const EngineDraw *d)

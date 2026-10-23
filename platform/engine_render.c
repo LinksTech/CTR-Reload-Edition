@@ -1222,5 +1222,11 @@ void Engine_RenderReport(void)
 	             s_engCount.refusedBadMesh, s_engCount.refusedBadMaterial, s_engCount.refusedBadRange, s_engCount.uploadFailed);
 	Platform_Log("[CTR Engine] submits per view: %u %u %u %u\n", s_engCount.submittedPerView[0], s_engCount.submittedPerView[1],
 	             s_engCount.submittedPerView[2], s_engCount.submittedPerView[3]);
+	{
+		int peakView = 0;
+		const int peak = Engine_ScenePeak(&peakView);
+
+		Platform_Log("[CTR Engine] draws per view: peak %d of %d (view %d)\n", peak, ENGINE_DRAWS_PER_VIEW, peakView);
+	}
 	Platform_Log("[CTR Engine] track mosaic: table ranges drawn %u\n", s_engCount.tableRanges);
 }
