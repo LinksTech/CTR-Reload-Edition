@@ -50,7 +50,7 @@
 // 0.5 H and H along the kart's up (AxisAngle2_normalVec, the drawn kart's);
 // occ = 1 when a ground or wall triangle (both faces) lies on the segment from
 // the eye towards the kart's middle (the mid point, 0.5 H along the kart's up:
-// gate F2's reference point, PLAN section 5 21:40), leaving out its last H / 2;
+// gate F2's reference point), leaving out its last H / 2;
 // at = that hit's distance from the eye (-1 none), len = eye to the kart's
 // middle. Once per level "measure on" with H,
 // at exit the number of lines and how often the eye moved between the logic and
@@ -456,7 +456,7 @@ void ExtCam_OnLogicFrame(void)
 			p[i] = k->kart[i] + g_cfg_extCamLogH * k->kartUp[i];
 		}
 		ExtCam_MeasureProject(&pb->matrix_ViewProj, k->screen, k->rectW, k->rectH, p, top);
-		// the reference point of gate F2 (PLAN section 5, 21:40): the kart's middle
+		// the reference point of gate F2: the kart's middle
 		occ = ExtCam_MeasureOccluded(eye, midPoint, keep, &at, &len);
 		if ((pb->matrix_Camera.t[0] != k->pbPos[0]) || (pb->matrix_Camera.t[1] != k->pbPos[1]) || (pb->matrix_Camera.t[2] != k->pbPos[2]))
 		{

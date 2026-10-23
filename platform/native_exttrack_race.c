@@ -21,7 +21,7 @@
 // index of every quadblock comes with the collision (native_extcoll.c,
 // attribute _CHECKPOINT of collision.glb).
 //
-// THE TABLE (variant R, P0_M3.md 2.3): node 0 on the finish line; per CNK
+// THE TABLE (variant R): node 0 on the finish line; per CNK
 // restart point a node, and after each a direction node 1.5 m ahead along the
 // AI line - the respawn looks from a node toward its next one
 // (VehStuckProc.c:202), so it looks along the driving line. Quadblocks and nav
@@ -867,7 +867,7 @@ internal void ExtRace_WatchAfterRespawn(struct GameTracker *gGT)
 	{
 		// In the air the game resets the up to world up every frame (VehPhysForce.c:570-572), so a kart
 		// put back over a ramp lands with the attitude of its fall; on the ground it lines up. B5 judges
-		// the up here (PLAN section 7).
+		// the up here.
 		const int upTenths = ExtRace_VecAngleTenths(d->matrixFacingDir.m[0][1], d->matrixFacingDir.m[1][1], d->matrixFacingDir.m[2][1],
 		                                            d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z);
 		const int worldTenths = ExtRace_VecAngleTenths(d->AxisAngle1_normalVec.x, d->AxisAngle1_normalVec.y, d->AxisAngle1_normalVec.z, 0, 4096, 0);

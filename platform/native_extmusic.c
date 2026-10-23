@@ -31,7 +31,7 @@
 //
 // LOG. "[CTR ExtMusic] opened ...", "refused: ..." once per run; at exit
 // "[CTR ExtMusic] at exit: frames mixed M, loops L, silent frames S; level song
-// notes muted N" (cnk\tools\poc_m5_pruef.py, gate D9).
+// notes muted N" (gate D9).
 
 #define EXTMUSIC_RATE      44100
 #define EXTMUSIC_MAX_BYTES (64u * 1024u * 1024u)

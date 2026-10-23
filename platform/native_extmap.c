@@ -13,7 +13,7 @@
 // For the external track picture and table are the donor's.
 //
 // WHAT THIS DOES, ONLY WITH --ext-track AND A "map" SECTION ({"line": [[x, z],
-// ...]} in world units, the driven line projected; cnk\tools\tr1_map.py), at
+// ...]} in world units, the driven line projected), at
 // stage 8 of the slot's level (Engine_ExtTrackLoad), drawing data only:
 //   - the table: a copy of the donor's (its topHalfMode kept) with a mode, start,
 //     size and range chosen so that the line fills the picture's rectangle; the
@@ -28,7 +28,7 @@
 //     donor's colour table and semi-transparency stay.
 // Without the section: nothing changes. Log: one line at load, one line every
 // 30 drawn frames with the player marker and its distance to the line (HUD
-// pixels), one summary at exit (cnk\tools\tr1_map.py eval, gate A6).
+// pixels), one summary at exit (gate A6).
 
 #define EXT_MAP_POINTS_MAX 1024
 #define EXT_MAP_RANGE 32000 // world range of the made table on both axes (-16000..16000)

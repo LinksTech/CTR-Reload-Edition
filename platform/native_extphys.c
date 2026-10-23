@@ -33,7 +33,7 @@ enum
 	EXT_PHYS_ZONE_AIR_HOLD_MS = 1500,
 	EXT_PHYS_ZONE_UP_BLEND = 64,
 	EXT_PHYS_ZONE_MAX_UP_DEG = 150,
-	// the source game's anti-gravity data (night run 1, cnk\report\poc\NL1_M1_SPEZ.md)
+	// the source game's anti-gravity data (night run 1)
 	EXT_PHYS_MAGLEV_MAX = 32,
 	EXT_PHYS_MAGGRAV_MAX = 16,
 	EXT_PHYS_SPLINES_MAX = 16,
@@ -53,7 +53,7 @@ typedef struct
 	char name[32];
 } ExtPhysBox;
 
-// the gravity types of a maggrav spline (eGRAVTYPE, NL1_M1_SPEZ.md D5)
+// the gravity types of a maggrav spline (eGRAVTYPE)
 enum
 {
 	EXT_PHYS_GRAV_PLANE = 0,
@@ -120,7 +120,7 @@ typedef struct
 	} volumes[EXT_PHYS_VOLUMES_MAX];
 	// the source game's maglev switching boxes (physics.maglev_volumes): a
 	// driver outside a zone enters it in an "on" box, one in a zone leaves it
-	// in an "off" box (NL1_M1_SPEZ.md Z2)
+	// in an "off" box
 	int maglevCount;
 	struct
 	{
@@ -294,7 +294,7 @@ internal int ExtPhys_InBox(const ExtPhysBox *b, const double p[3])
 }
 
 // physics.maglev_volumes, physics.maggrav_volumes, physics.maggrav_splines,
-// physics.maglev_low_speed (tr1_phys.py antigrav_section).
+// physics.maglev_low_speed (the converter's anti-gravity section).
 internal void ExtPhys_ReadAntigrav(const ExtJsonDoc *doc, const char *name, int key, ExtPhysParams *p)
 {
 	if (strcmp(name, "maglev_volumes") == 0)
@@ -1197,7 +1197,7 @@ internal void ExtPhys_ZoneStep(int seat, const struct Driver *d, int grounded, i
 	}
 }
 
-// THE MAGGRAV SPLINES (night run 1, NL1_M1_SPEZ.md Z5-Z7, G1-G6, K4). A
+// THE MAGGRAV SPLINES (night run 1). A
 // driver in a maggrav box follows the box's spline: on entering the nearest
 // node over the whole spline, then every frame the nearest segment of the old
 // node and its neighbours. In a zone the gravity then points along the
@@ -1388,8 +1388,7 @@ internal void ExtPhys_MaggravStep(int seat, const struct Driver *d)
 
 // K4/K5: the gravity's direction (4096) from the driver's spline; 0 when the
 // zone's up keeps it: no spline (or no low speed read), or on the ground
-// slower than maglev_low_speed (the speed in the plane of the zone's up,
-// NL1_M1_SPEZ.md A4).
+// slower than maglev_low_speed (the speed in the plane of the zone's up).
 internal int ExtPhys_SplineGravityWith(const ExtPhysParams *p, const ExtPhysMag *m, const struct Driver *d, SVec3 up, s16 dir[3])
 {
 	double pos[3], out[3], v[3], vn, speed2;
@@ -1596,7 +1595,7 @@ internal void ExtPhys_AlignStep(int seat, const struct Driver *d, int grounded, 
 	}
 }
 
-// THE MAGLEV BOXES (night run 1, NL1_M1_SPEZ.md Z2). The source game switches
+// THE MAGLEV BOXES (night run 1). The source game switches
 // its anti-gravity state also by boxes: a driver outside a zone that is in a
 // "maglev-on" box enters the track's first zone (its up stays world up until
 // it stands on the zone's surface), one in a zone that is in a "maglev-off"

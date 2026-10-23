@@ -35,7 +35,7 @@
 // point 25 above the kart). Without center_y the cube stays around the origin,
 // exactly as before.
 //
-// LOG (cnk\tools\poc_m5_pruef.py, gate D8): one line per crate and one summary
+// LOG (gate D8): one line per crate and one summary
 // at the first build of a run, one line per contact, one line at exit. With
 // --dev-ext-crate-log in addition the measuring lines "[CTR ExtCrateLog]"
 // (report, hit, back; format at g_cfg_extCrateLog below).
