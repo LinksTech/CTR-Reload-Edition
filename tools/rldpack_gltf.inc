@@ -464,9 +464,14 @@ static void RldGltf_RemoveCopies(void)
 	s_rldGltfCopyCount = 0;
 }
 
-// The image `bytes` as a file of this run: <folder><name>-<n><type>, made
-// new (fopen "wbx": the first n no other file has), or the copy this run
-// made already. 0 = no folder, or no file could be made there.
+// The image `bytes` as a file of this run: <folder><name>-<pid>-<n><type>,
+// made new - the process ID keeps every run apart, and n is the first one no
+// file has yet (asked by opening it for reading) - or the copy this run made
+// already. 0 = no folder, or no file could be made there.
+//
+// Not fopen "wbx": the C11 exclusive mode is unknown to msvcrt, which the
+// MinGW i686 build links, so every try failed there and the self-test with
+// it (format 4.2 golden files; the Nightly's MinGW step since 4a064f5).
 static int RldGltf_TempCopy(const char *name, const char *type, const u8 *bytes, size_t size, char *out, size_t outSize)
 {
 	char folder[RLD_PATH_MAX];
@@ -490,7 +495,7 @@ static int RldGltf_TempCopy(const char *name, const char *type, const u8 *bytes,
 	}
 	for (n = 0; n < RLDGLTF_COPY_TRIES; n++)
 	{
-		const int written = snprintf(out, outSize, "%s%s-%u%s", folder, name, n, type);
+		const int written = snprintf(out, outSize, "%s%s-%lu-%u%s", folder, name, RldRed_ProcessId(), n, type);
 		FILE *file;
 		int ok;
 
@@ -498,10 +503,16 @@ static int RldGltf_TempCopy(const char *name, const char *type, const u8 *bytes,
 		{
 			return 0;
 		}
-		file = fopen(out, "wbx");
+		file = fopen(out, "rb");
+		if (file != NULL)
+		{
+			fclose(file);
+			continue;
+		}
+		file = fopen(out, "wb");
 		if (file == NULL)
 		{
-			continue;
+			return 0;
 		}
 		ok = (fwrite(bytes, 1, size, file) == size);
 		ok = (fclose(file) == 0) && ok;
