@@ -8,6 +8,10 @@
 int NativeChar_ModelShadow(const struct Model *model, s16 quad[4]);
 void NativeChar_NoteShadow(int mode);
 void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3]);
+// From platform/engine_psx_depth.c (include/platform/engine.h, PSX DEPTH): the
+// view z of the four quads, so a frame the engine draws the track in tests
+// them against its depth. Records only.
+void Engine_PsxDepthNotePrims(const void *first, const void *end, float vz);
 
 #ifdef CTR_NATIVE
 // From platform/engine_fx_common.c and platform/engine_fx_shadow.c (the native
@@ -644,12 +648,16 @@ void VehGroundShadow_Main(void)
 			else
 #endif
 			{
+				const void *firstQuad = prim;
+
 				for (int quadIndex = 0; quadIndex < VEH_GROUND_SHADOW_NUM_QUADS; quadIndex++)
 				{
 					const struct TextureLayout *texture = (quadIndex & 1) != 0 ? shadowTex1 : shadowTex0;
 
 					VehGroundShadow_EmitQuad(&prim, otBase, texture, color, sxy, depth[0], entry->depthBias, quadIndex);
 				}
+				// depth is the GTE's of the four-times camera-relative points: view z times 4.
+				Engine_PsxDepthNotePrims(firstQuad, prim, (float)depth[0] * 0.25f);
 			}
 		}
 	}

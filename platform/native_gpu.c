@@ -144,6 +144,11 @@ typedef struct
 	// and from g_gfx_sampleShading, which only changes at the frame boundary.
 	bool sampleShading;
 
+	// PSX DEPTH (include/platform/engine.h): the depth value a world primitive
+	// of an engine frame is tested with (Engine_PsxDepthNow), 0 = no test. Part
+	// of the state: primitives of different depths never share a split.
+	float psxDepth;
+
 	u16 startVertex;
 	u16 numVerts;
 
@@ -327,6 +332,7 @@ enum
 	NGPU_SR_DFE,
 	NGPU_SR_DBGTEXT,
 	NGPU_SR_FIRST, // first split of a batch, against the sentinel 0
+	NGPU_SR_DEPTH, // PSX depth: another depth value (engine.h, PSX DEPTH)
 	NGPU_SR_COUNT
 };
 
@@ -396,7 +402,7 @@ internal int NativeGpu_SplitStateEqual(const GPUDrawSplit *a, const GPUDrawSplit
 	return a->blendMode == b->blendMode && a->textureId == b->textureId && a->drawPrimMode == b->drawPrimMode &&
 	       a->psxTexturedSemiTrans == b->psxTexturedSemiTrans && a->psxTextureOutputSTP == b->psxTextureOutputSTP && a->psxDrawMaskSet == b->psxDrawMaskSet &&
 	       a->drawenv.clip.x == b->drawenv.clip.x && a->drawenv.clip.y == b->drawenv.clip.y && a->drawenv.clip.w == b->drawenv.clip.w &&
-	       a->drawenv.clip.h == b->drawenv.clip.h && a->drawenv.dfe == b->drawenv.dfe && a->debugText == b->debugText;
+	       a->drawenv.clip.h == b->drawenv.clip.h && a->drawenv.dfe == b->drawenv.dfe && a->debugText == b->debugText && a->psxDepth == b->psxDepth;
 }
 
 internal unsigned int NativeGpu_SplitStateHash(const GPUDrawSplit *s)
@@ -986,10 +992,10 @@ internal int NativeGpu_PopCount(unsigned int v)
 
 internal void NativeGpu_SplitPrintBlock(void)
 {
-	Platform_Log("[CTR Split] block: %llu split(s) in %llu batch(es); why a new split: textured semi-trans gets its own %llu (state equal to its predecessor %llu), blend %llu, texture format 0 (rides in the vertex; changed inside a split %llu time(s)), texture id %llu, prim mode %llu, semi flag %llu, stp %llu, mask %llu, clip %llu, dfe %llu, debug text %llu, first of batch %llu\n",
+	Platform_Log("[CTR Split] block: %llu split(s) in %llu batch(es); why a new split: textured semi-trans gets its own %llu (state equal to its predecessor %llu), blend %llu, texture format 0 (rides in the vertex; changed inside a split %llu time(s)), texture id %llu, prim mode %llu, semi flag %llu, stp %llu, mask %llu, clip %llu, dfe %llu, debug text %llu, first of batch %llu, psx depth %llu\n",
 	             s_splitTotal, s_splitBatches, s_splitReason[NGPU_SR_FORCED_SEMI], s_splitForcedSameState, s_splitReason[NGPU_SR_BLEND], s_splitReason[NGPU_SR_TEXFMT],
 	             s_splitReason[NGPU_SR_TEXID], s_splitReason[NGPU_SR_PRIMMODE], s_splitReason[NGPU_SR_SEMIFLAG], s_splitReason[NGPU_SR_STP], s_splitReason[NGPU_SR_MASK],
-	             s_splitReason[NGPU_SR_CLIP], s_splitReason[NGPU_SR_DFE], s_splitReason[NGPU_SR_DBGTEXT], s_splitReason[NGPU_SR_FIRST]);
+	             s_splitReason[NGPU_SR_CLIP], s_splitReason[NGPU_SR_DFE], s_splitReason[NGPU_SR_DBGTEXT], s_splitReason[NGPU_SR_FIRST], s_splitReason[NGPU_SR_DEPTH]);
 	Platform_Log("[CTR Split] block: semi-trans joined into its predecessor %llu time(s); kept its own split because the predecessor was not semi-trans %llu, another state %llu, boxes overlap %llu\n",
 	             s_semiJoined, s_semiKeptNoTwin, s_semiKeptState, s_semiKeptOverlap);
 	s_semiJoined = 0;
@@ -1986,6 +1992,10 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	// not only polygon edges.
 	const bool sampleShading = textured && (g_gfx_sampleShading != 0);
 
+	// PSX DEPTH: the depth of a world primitive in a frame the engine drew the
+	// track in; 0 in the UI table and everywhere else.
+	const float psxDepth = s_gpu.uiViewActive ? 0.0f : Engine_PsxDepthNow();
+
 	// MEASUREMENT: which pages are used, and WHY a new split
 	// comes into being right away. The comparison below is unchanged; the
 	// measurement only reads along, in the same order.
@@ -2006,7 +2016,7 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	                      curSplit->psxTextureOutputSTP == psxTextureOutputSTP && curSplit->psxDrawMaskSet == s_gpu.psxDrawMaskSet &&
 	                      curSplit->drawenv.clip.x == activeDrawEnv.clip.x && curSplit->drawenv.clip.y == activeDrawEnv.clip.y &&
 	                      curSplit->drawenv.clip.w == activeDrawEnv.clip.w && curSplit->drawenv.clip.h == activeDrawEnv.clip.h &&
-	                      curSplit->drawenv.dfe == activeDrawEnv.dfe && curSplit->debugText == s_gpu.currentSplitDebugText;
+	                      curSplit->drawenv.dfe == activeDrawEnv.dfe && curSplit->debugText == s_gpu.currentSplitDebugText && curSplit->psxDepth == psxDepth;
 	{
 		// No longer a reason since the format travels in the vertex, but counted: how often the format
 		// changes while the split runs on - those are the draws that
@@ -2071,6 +2081,10 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 		{
 			splitReason = NGPU_SR_DFE;
 		}
+		else if (curSplit->psxDepth != psxDepth)
+		{
+			splitReason = NGPU_SR_DEPTH;
+		}
 		else
 		{
 			splitReason = NGPU_SR_DBGTEXT;
@@ -2129,6 +2143,7 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	split->psxTextureOutputSTP = psxTextureOutputSTP;
 	split->psxDrawMaskSet = s_gpu.psxDrawMaskSet;
 	split->sampleShading = sampleShading;
+	split->psxDepth = psxDepth;
 	split->drawenv = activeDrawEnv;
 	split->dispenv = activeDispEnv;
 	split->debugText = s_gpu.currentSplitDebugText;
@@ -2273,6 +2288,12 @@ void DrawSplit(const GPUDrawSplit *split)
 	NativeRenderer_SetupClipMode(&split->drawenv.clip, &split->dispenv, drawOnScreen);
 	NativeRenderer_SetOffscreenState(&split->drawenv.clip, !drawOnScreen);
 	NativeRenderer_SetProjection(&split->drawenv.clip, &split->dispenv, !drawOnScreen);
+	if (split->psxDepth > 0.0f)
+	{
+		// PSX DEPTH (include/platform/engine.h): tested against the engine's depth.
+		NativeRenderer_SetPsxDepth(split->psxDepth);
+		Engine_PsxDepthNoteSplit();
+	}
 
 	// The split's start vertex counts from the batch it was recorded in, and a
 	// batch no longer always begins at the front of the buffer - see the note on
@@ -2317,6 +2338,11 @@ void DrawSplit(const GPUDrawSplit *split)
 	if (split->sampleShading)
 	{
 		NativeRenderer_SetSampleShading(0);
+	}
+
+	if (split->psxDepth > 0.0f)
+	{
+		NativeRenderer_SetPsxDepth(0.0f);
 	}
 
 	if (split->debugText)
@@ -2679,12 +2705,17 @@ internal bool NativeGpu_IsUIOTRoot(const void *packet)
 
 // MEASURING (--dev-psx-depth-calib, engine.h PSX DEPTH): the triangles a world
 // primitive wrote, one line each, corners minus the draw offset so they are
-// view points as the GTE wrote them; the cell and whether the primitive lies in
-// an instance's sub-range.
+// view points as the GTE wrote them; the cell, whether the primitive lies in
+// an instance's sub-range, then the range's nearest view z, second range or
+// not, the view z its producer registered and the depth value it is drawn with.
 internal void NativeGpu_PsxDepthCalibPrim(int firstVertex)
 {
 	float ofsX;
 	float ofsY;
+	float rangeNear;
+	float primVz;
+	float depth;
+	int secondary;
 	int cell;
 
 	if (!Engine_PsxDepthCalibArmed() || s_gpu.uiViewActive || ((cell = Engine_PsxDepthCell()) < 0))
@@ -2692,12 +2723,13 @@ internal void NativeGpu_PsxDepthCalibPrim(int firstVertex)
 		return;
 	}
 	DrawEnvOffset(&ofsX, &ofsY);
+	Engine_PsxDepthCalibWalk(&rangeNear, &secondary, &primVz, &depth);
 	for (int v = firstVertex; v + 2 < s_gpu.vertexIndex; v += 3)
 	{
 		const GrVertex *g = &s_gpu.vertexBuffer[v];
 
-		Platform_Log("[CTR PsxDepth] P %d %d %.0f %.0f %.0f %.0f %.0f %.0f\n", cell, Engine_PsxDepthInSubRange(), g[0].x - ofsX, g[0].y - ofsY, g[1].x - ofsX,
-		             g[1].y - ofsY, g[2].x - ofsX, g[2].y - ofsY);
+		Platform_Log("[CTR PsxDepth] P %d %d %.0f %.0f %.0f %.0f %.0f %.0f %.1f %d %.1f %.6f\n", cell, Engine_PsxDepthInSubRange(), g[0].x - ofsX, g[0].y - ofsY,
+		             g[1].x - ofsX, g[1].y - ofsY, g[2].x - ofsX, g[2].y - ofsY, rangeNear, secondary, primVz, depth);
 		Engine_PsxDepthCalibNoteTriangle();
 	}
 }
@@ -5006,6 +5038,7 @@ internal void NativeGpu_AddNativeSplit(u32 item, u32 flags)
 	split->psxTextureOutputSTP = false;
 	split->psxDrawMaskSet = s_gpu.psxDrawMaskSet;
 	split->sampleShading = false;
+	split->psxDepth = 0.0f;
 	split->drawenv = activeDrawEnv;
 	split->dispenv = activeDispEnv;
 	split->debugText = s_gpu.currentSplitDebugText;

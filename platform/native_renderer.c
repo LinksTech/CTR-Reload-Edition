@@ -5193,6 +5193,35 @@ void NativeRenderer_SetOffscreenState(const RECT16 *offscreenRect, int enable)
 	}
 }
 
+// PSX DEPTH. The PSX vertex stage computes Projection * (x, y, 0, 1), so the z
+// of every vertex is projection[14] - Ortho2D(..., -1, 1) leaves it 0. A split
+// of world primitives in an engine frame puts its depth value there (reverse Z,
+// zNear / vz as the engine writes it) and tests it GREATER_OR_EQUAL against the
+// depth of the main target without writing; the next SetProjection of a split
+// compares the whole matrix and puts the plain one back.
+void NativeRenderer_SetPsxDepth(float depth)
+{
+	if (depth > 0.0f)
+	{
+		NativeGfxDrawState state;
+
+		memset(&state, 0, sizeof(state));
+		state.depthTest = 1;
+		state.depthWrite = 0;
+		state.depthCompare = NATIVE_GFX_COMPARE_GREATER_OR_EQUAL;
+		NativeGfx_SetDrawState(&state);
+	}
+	else
+	{
+		NativeGfx_SetDrawState(NULL);
+	}
+	if (s_psxUniforms.projection[14] != depth)
+	{
+		s_psxUniforms.projection[14] = depth;
+		NativeRenderer_MarkPSXUniformsDirty();
+	}
+}
+
 void NativeRenderer_SetProjection(const RECT16 *drawRect, const DISPENV *displayEnv, int offscreen)
 {
 	if (offscreen)

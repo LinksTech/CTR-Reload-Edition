@@ -2104,6 +2104,12 @@ static int RenderBucket_BuildDepthRange(struct Instance *inst, struct ModelFrame
 
 	idpp->otRangeNormal = primaryRange;
 	idpp->otRangeSecondary = primaryRange;
+	// PSX DEPTH (include/platform/engine.h): the engine notes every range that
+	// hangs in the world table, with its instance's depth (records only).
+	if ((*instFlags & PUSHBUFFER_EXISTS) == 0)
+	{
+		Engine_PsxDepthNoteRange((u32)primaryRange, minDepth, maxDepth, viewDepth, *instFlags, 0);
+	}
 
 	if (RenderBucket_ShouldAllocateSecondaryRange(*instFlags, split) != 0)
 	{
@@ -2118,6 +2124,7 @@ static int RenderBucket_BuildDepthRange(struct Instance *inst, struct ModelFrame
 		}
 
 		idpp->otRangeSecondary = secondaryRange;
+		Engine_PsxDepthNoteRange((u32)secondaryRange, minDepth, maxDepth, viewDepth, *instFlags, 1);
 	}
 
 	return 1;

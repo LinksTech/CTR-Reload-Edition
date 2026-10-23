@@ -361,6 +361,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ctr-grab", "<n>", "NITRO-PIT -> CTR: collects n letters through their collision path (test probe, sets no place)"},
     {"--settings-defaults", "", "built-in defaults, ctr-settings.cfg and track-ids.tsv neither read nor written"},
     {"--msaa-at", "<V:L,V:L,...>", "switch anti-aliasing to level L (1, 2 or 4) at VBlank V, for this run only (up to 32 pairs)"},
+    {"--no-psx-depth", "", "PS1 world primitives of an engine frame without the depth test, the picture before it (the debug menu row VIDEO -> PSX DEPTH)"},
     {"--dev-psx-depth-calib", "<vblanks>", "measuring: log the cells of the PS1 world triangles, the retail instances and the depth-writing engine triangles of the first frame at or after each VBlank (up to 16)"},
     {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison (default textured)"},
     {"--level", "<n>", "jump straight into level id n as soon as the main menu is up; without --dev only in the test start of --char"},
@@ -4919,6 +4920,12 @@ int main(int argc, char *argv[])
 
 				g_cfg_feedbackReport = 1;
 				printf("[CTR Native] feedback report: one line per feedback pack, at most 500\n");
+			}
+			else if (strcmp(argv[argIndex], "--no-psx-depth") == 0)
+			{
+				// The depth test of the PS1 world primitives off for this run
+				// (include/platform/engine.h, PSX DEPTH).
+				g_cfg_psxDepth = 0;
 			}
 			else if ((strcmp(argv[argIndex], "--dev-psx-depth-calib") == 0) && ((argIndex + 1) < argc))
 			{

@@ -20,6 +20,14 @@
 // (0x3ff) or the track (0x3fe), both before any cell a PS1 world primitive can
 // have below them. A menu with the engine's menu scene, two to four players
 // and the PS1 path never get a cell.
+//
+// THE RANGES. The queue registers each range it links into the world table
+// (Engine_PsxDepthNoteRange): its entries and the nearest view z of the
+// instance. The queue allocates them one after another from the same arena, so
+// they come in ascending address order and a sub-range entry the walk meets is
+// found by a binary search (the last hit is tried first: a range's entries come
+// one after another). The table is started afresh with the first range of a
+// new game frame (sdata->frameCounter).
 
 typedef struct
 {
@@ -27,10 +35,187 @@ typedef struct
 	int engineSeen;    // an engine marker of view 0 was parsed in this walk
 	int cell;          // the cell of the last entry of the world table, -1 before the first
 	int inSubRange;    // a sub-range entry was met after that entry
+	float rangeNear;   // the nearest view z of that sub-range's instance, 0 = not registered
+	int rangeSecond;   // that sub-range is the instance's second one
+	float primVz;      // the view z a producer registered for the packet being parsed, 0 = none
+	float zNear;       // of the camera of view 0
 	const u32 *table;  // pushBuffer[0].ptrOT of the walk
 } EnginePsxDepthWalk;
 
 internal EnginePsxDepthWalk s_epdWalk;
+
+int g_cfg_psxDepth = 1;
+
+typedef struct
+{
+	uintptr_t first; // address of the range's first entry
+	uintptr_t last;  // address of its last entry
+	float nearZ;     // nearest view z of the instance
+	int secondary;   // the instance's second range
+} EnginePsxDepthRange;
+
+typedef struct
+{
+	uintptr_t first; // the first primitive
+	uintptr_t end;   // behind the last one
+	float vz;
+} EnginePsxDepthPrims;
+
+internal EnginePsxDepthPrims s_epdPrims[ENGINE_PSX_DEPTH_PRIMS_MAX];
+internal int s_epdPrimCount;
+internal int s_epdPrimFrame = -1;
+internal u32 s_epdPrimsDropped;
+
+internal EnginePsxDepthRange s_epdRanges[ENGINE_PSX_DEPTH_RANGES_MAX];
+internal int s_epdRangeCount;
+internal int s_epdRangeFrame = -1;
+internal int s_epdRangeSorted;
+internal int s_epdRangeLast;
+internal u32 s_epdRangesDropped; // a frame with more ranges than the table holds (they keep no depth test)
+internal u32 s_epdSplitsWithDepth;
+internal int s_epdReportOn;
+
+internal void Engine_PsxDepthReport(void)
+{
+	Platform_Log("[CTR PsxDepth] at exit: %s; %u PS1 split(s) drawn with depth, %u range(s) and %u primitive group(s) beyond the table\n",
+	             g_cfg_psxDepth ? "on" : "off (--no-psx-depth or the debug menu)", s_epdSplitsWithDepth, s_epdRangesDropped, s_epdPrimsDropped);
+}
+
+internal void Engine_PsxDepthReportOn(void)
+{
+	if (!s_epdReportOn)
+	{
+		s_epdReportOn = 1;
+		Platform_AtExitReport(Engine_PsxDepthReport);
+	}
+}
+
+internal int Engine_PsxDepthRecording(void)
+{
+	return g_cfg_engine && (sdata != NULL) && (sdata->gGT != NULL) && (sdata->gGT->numPlyrCurrGame == 1);
+}
+
+void Engine_PsxDepthNotePrims(const void *first, const void *end, float vz)
+{
+	EnginePsxDepthPrims *g;
+
+	if (!Engine_PsxDepthRecording() || (first == NULL) || ((uintptr_t)end <= (uintptr_t)first))
+	{
+		return;
+	}
+	if (s_epdPrimFrame != sdata->frameCounter)
+	{
+		s_epdPrimFrame = sdata->frameCounter;
+		s_epdPrimCount = 0;
+	}
+	if (s_epdPrimCount >= ENGINE_PSX_DEPTH_PRIMS_MAX)
+	{
+		s_epdPrimsDropped++;
+		return;
+	}
+	g = &s_epdPrims[s_epdPrimCount++];
+	g->first = (uintptr_t)first;
+	g->end = (uintptr_t)end;
+	g->vz = vz;
+	Engine_PsxDepthReportOn();
+}
+
+// The registered view z of a primitive hung into its cell directly, 0 = none.
+// A handful per frame (four quads per retail driver): searched from the end.
+internal float Engine_PsxDepthFindPrim(uintptr_t address)
+{
+	for (int i = s_epdPrimCount - 1; i >= 0; i--)
+	{
+		if ((address >= s_epdPrims[i].first) && (address < s_epdPrims[i].end))
+		{
+			return s_epdPrims[i].vz;
+		}
+	}
+	return 0.0f;
+}
+
+void Engine_PsxDepthNoteRange(u32 activeRange, int minDepth, int maxDepth, int viewDepth, u32 instFlags, int secondary)
+{
+	EnginePsxDepthRange *r;
+	int shift;
+	float unit;
+
+	if (!Engine_PsxDepthRecording() || (activeRange == 0u) || (maxDepth < minDepth))
+	{
+		return;
+	}
+	if (s_epdRangeFrame != sdata->frameCounter)
+	{
+		s_epdRangeFrame = sdata->frameCounter;
+		s_epdRangeCount = 0;
+		s_epdRangeSorted = 1;
+		s_epdRangeLast = 0;
+	}
+	if (s_epdRangeCount >= ENGINE_PSX_DEPTH_RANGES_MAX)
+	{
+		s_epdRangesDropped++;
+		return;
+	}
+	// The units of the bins: the queue projects an instance nearer than view z
+	// 0x1000 four times as large and a DRAW_HUGE one a quarter as large
+	// (RenderBucket_AdjustViewPositionForMvp); a bin is 32 of those units
+	// (minZ >> 5). minDepth is two bins in front of the nearest corner.
+	shift = ((viewDepth < 0x1000) ? 2 : 0) - (((instFlags & DRAW_HUGE) != 0u) ? 2 : 0);
+	unit = (shift >= 0) ? (32.0f / (float)(1 << shift)) : (32.0f * (float)(1 << -shift));
+	r = &s_epdRanges[s_epdRangeCount];
+	// activeRange = first entry - minDepth entries (RenderBucket_AllocateOTRange).
+	r->first = (uintptr_t)activeRange + (uintptr_t)((u32)minDepth * sizeof(u32));
+	r->last = r->first + (uintptr_t)((u32)(maxDepth - minDepth) * sizeof(u32));
+	r->nearZ = (float)(minDepth + 2) * unit;
+	r->secondary = secondary;
+	if ((s_epdRangeCount > 0) && (r->first <= s_epdRanges[s_epdRangeCount - 1].first))
+	{
+		s_epdRangeSorted = 0;
+	}
+	s_epdRangeCount++;
+	Engine_PsxDepthReportOn();
+}
+
+// The registered range holding this entry, or -1.
+internal int Engine_PsxDepthFindRange(uintptr_t address)
+{
+	int lo = 0;
+	int hi = s_epdRangeCount - 1;
+
+	if ((s_epdRangeLast < s_epdRangeCount) && (address >= s_epdRanges[s_epdRangeLast].first) && (address <= s_epdRanges[s_epdRangeLast].last))
+	{
+		return s_epdRangeLast;
+	}
+	if (!s_epdRangeSorted)
+	{
+		for (int i = 0; i < s_epdRangeCount; i++)
+		{
+			if ((address >= s_epdRanges[i].first) && (address <= s_epdRanges[i].last))
+			{
+				return s_epdRangeLast = i;
+			}
+		}
+		return -1;
+	}
+	while (lo <= hi)
+	{
+		const int mid = (lo + hi) / 2;
+
+		if (address < s_epdRanges[mid].first)
+		{
+			hi = mid - 1;
+		}
+		else if (address > s_epdRanges[mid].last)
+		{
+			lo = mid + 1;
+		}
+		else
+		{
+			return s_epdRangeLast = mid;
+		}
+	}
+	return -1;
+}
 
 int g_cfg_psxDepthCalibCount = 0;
 int g_cfg_psxDepthCalib[ENGINE_PSX_DEPTH_CALIB_MAX];
@@ -66,6 +251,7 @@ int Engine_PsxDepthCalibArmed(void)
 void Engine_PsxDepthWalkBegin(void)
 {
 	const struct GameTracker *gGT = (sdata != NULL) ? sdata->gGT : NULL;
+	const EngineCamera *cam;
 
 	memset(&s_epdWalk, 0, sizeof(s_epdWalk));
 	s_epdWalk.cell = -1;
@@ -73,7 +259,13 @@ void Engine_PsxDepthWalkBegin(void)
 	{
 		return;
 	}
+	cam = Engine_FrameCamera(0);
+	if (cam == NULL)
+	{
+		return;
+	}
 	s_epdWalk.active = 1;
+	s_epdWalk.zNear = cam->zNear;
 	s_epdWalk.table = (const u32 *)gGT->pushBuffer[0].ptrOT;
 }
 
@@ -103,17 +295,42 @@ void Engine_PsxDepthPacket(const void *packet, int length)
 	uintptr_t address;
 	uintptr_t first;
 
-	if (!s_epdWalk.active || (length != 0))
+	if (!s_epdWalk.active)
 	{
 		return;
 	}
 	address = (uintptr_t)packet;
+	if (length != 0)
+	{
+		// A primitive: inside a sub-range it takes the range's depth, hung
+		// into the cell directly the depth its producer registered.
+		s_epdWalk.primVz = s_epdWalk.inSubRange ? 0.0f : Engine_PsxDepthFindPrim(address);
+		return;
+	}
 	first = (uintptr_t)s_epdWalk.table;
 	if ((address >= first) && (address < first + (ENGINE_PSX_DEPTH_CELL_SKY + 1) * sizeof(u32)))
 	{
 		s_epdWalk.cell = (int)((address - first) / sizeof(u32));
 		s_epdWalk.inSubRange = 0;
+		s_epdWalk.rangeNear = 0.0f;
 		return;
+	}
+	{
+		const int found = Engine_PsxDepthFindRange(address);
+
+		// The range's first entry is the bin minDepth, two bins in front of
+		// the instance's nearest corner and so empty; it links on to what the
+		// cell held before the range was hung in (rangeStart[0] = the cell's old
+		// head, RenderBucket_AllocateOTRange): from here on the walk is back in
+		// the cell itself.
+		if ((found >= 0) && (address == s_epdRanges[found].first))
+		{
+			s_epdWalk.inSubRange = 0;
+			s_epdWalk.rangeNear = 0.0f;
+			return;
+		}
+		s_epdWalk.rangeNear = (found >= 0) ? s_epdRanges[found].nearZ : 0.0f;
+		s_epdWalk.rangeSecond = (found >= 0) ? s_epdRanges[found].secondary : 0;
 	}
 	s_epdWalk.inSubRange = 1;
 }
@@ -130,6 +347,51 @@ int Engine_PsxDepthCell(void)
 int Engine_PsxDepthInSubRange(void)
 {
 	return s_epdWalk.inSubRange;
+}
+
+float Engine_PsxDepthNow(void)
+{
+	float vz;
+
+	if (!g_cfg_psxDepth || (Engine_PsxDepthCell() < 0) || (s_epdWalk.zNear <= 0.0f))
+	{
+		return 0.0f;
+	}
+	if (s_epdWalk.inSubRange)
+	{
+		if (s_epdWalk.rangeNear <= 0.0f)
+		{
+			return 0.0f;
+		}
+		vz = s_epdWalk.rangeNear - (s_epdWalk.rangeSecond ? ENGINE_PSX_DEPTH_MARGIN_SECOND : ENGINE_PSX_DEPTH_MARGIN_RANGE);
+	}
+	else
+	{
+		if (s_epdWalk.primVz <= 0.0f)
+		{
+			return 0.0f;
+		}
+		vz = s_epdWalk.primVz - ENGINE_PSX_DEPTH_MARGIN_PRIM;
+	}
+	if (vz <= s_epdWalk.zNear)
+	{
+		return 1.0f;
+	}
+	return s_epdWalk.zNear / vz;
+}
+
+// A PS1 split drawn with depth (native_gpu.c DrawSplit), for the exit line.
+void Engine_PsxDepthNoteSplit(void)
+{
+	s_epdSplitsWithDepth++;
+}
+
+void Engine_PsxDepthCalibWalk(float *rangeNear, int *secondary, float *primVz, float *depth)
+{
+	*rangeNear = s_epdWalk.inSubRange ? s_epdWalk.rangeNear : 0.0f;
+	*secondary = s_epdWalk.inSubRange ? s_epdWalk.rangeSecond : 0;
+	*primVz = s_epdWalk.inSubRange ? 0.0f : s_epdWalk.primVz;
+	*depth = Engine_PsxDepthNow();
 }
 
 // The calibration line of a triangle the walk built (native_gpu.c counts it here).

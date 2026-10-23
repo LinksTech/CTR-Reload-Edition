@@ -103,6 +103,10 @@ TextureID NativeRenderer_GetWhiteTexture(void);
 void NativeRenderer_SetBlendMode(BlendMode blendMode);
 void NativeRenderer_SetOffscreenState(const RECT16 *offscreenRect, int enable);
 void NativeRenderer_SetProjection(const RECT16 *drawRect, const DISPENV *displayEnv, int offscreen);
+// PSX DEPTH (include/platform/engine.h): the depth value the following PSX
+// draws are tested with against the target's depth (not written), 0 = no test.
+// Call it after NativeRenderer_SetProjection, which puts the plain matrix back.
+void NativeRenderer_SetPsxDepth(float depth);
 void NativeRenderer_SetupClipMode(const RECT16 *clipRect, const DISPENV *displayEnv, int enable);
 void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat);
 void NativeRenderer_SetOverrideTextureSize(int width, int height);

@@ -206,6 +206,12 @@ enum
 	// After the stage rows, so every row above keeps its place.
 	DBG_VIDEO_MENU_LOGO,
 
+	// The depth test of the PS1 world primitives in a frame the engine draws
+	// the track in, ON / OFF (include/platform/engine.h, PSX DEPTH): the old
+	// and the new picture side by side. After MENU LOGO, so every row above
+	// keeps its place.
+	DBG_VIDEO_PSX_DEPTH,
+
 	DBG_VIDEO_WINDOW,
 	DBG_VIDEO_FRAME,
 	DBG_VIDEO_TARGET,
@@ -1117,6 +1123,14 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 		{
 			// Not saved on purpose: every start shows the original logo.
 			MM_MenuLogo_Toggle();
+		}
+		else if (row == DBG_VIDEO_PSX_DEPTH)
+		{
+			// Not saved either: a comparison switch, every start has it on.
+			extern int g_cfg_psxDepth;
+
+			g_cfg_psxDepth = !g_cfg_psxDepth;
+			Platform_Log("[CTR Debug] PSX depth %s\n", g_cfg_psxDepth ? "on" : "off");
 		}
 		break;
 
@@ -3949,6 +3963,12 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 				else if (i == DBG_VIDEO_MENU_LOGO)
 				{
 					sprintf(line, "%-12s%s", "MENU LOGO", MM_MenuLogo_Name());
+				}
+				else if (i == DBG_VIDEO_PSX_DEPTH)
+				{
+					extern int g_cfg_psxDepth;
+
+					sprintf(line, "%-12s%s", "PSX DEPTH", g_cfg_psxDepth ? "ON" : "OFF");
 				}
 				else if (i == DBG_VIDEO_TARGET)
 				{

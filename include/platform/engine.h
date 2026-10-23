@@ -1900,7 +1900,59 @@ int Engine_SelfTestWeather(int *checks); // engine_fx_weather.c: rule, geometry,
 // triangle of a depth-writing dynamic engine draw (screen corners with their
 // view z: the track), so the order the cells give can be checked against the
 // order of the real depths offline.
+//
+// THE DEPTH (g_cfg_psxDepth, default on; debug menu VIDEO -> PSX DEPTH,
+// --no-psx-depth): a PS1 world primitive with a cell is drawn with the depth
+// test against the engine's depth (GREATER_OR_EQUAL, reverse Z zNear / vz as
+// the engine writes it) and without writing depth. Its view z:
+//   - in an instance's first sub-range: the nearest view z of that instance's
+//     depth range minus ENGINE_PSX_DEPTH_MARGIN_RANGE. The queue registers every
+//     range it links into the world table (Engine_PsxDepthNoteRange, from
+//     RenderBucket_BuildDepthRange) with its depth;
+//   - hung into the cell directly: only a primitive whose producer registered
+//     its view z (Engine_PsxDepthNotePrims: the ground shadow of a retail
+//     driver, VehGroundShadow.c), minus ENGINE_PSX_DEPTH_MARGIN_PRIM;
+//   - in an instance's SECOND sub-range (its mirror image or its part below
+//     the water line, depthBiasSecondary): that nearest view z minus
+//     ENGINE_PSX_DEPTH_MARGIN_SECOND;
+//   - everything else keeps no depth test, as before: every primitive hung
+//     into a cell that no producer registered.
+// WHY NOT THE CELL. The cell carries the producer's bias, and some producers
+// use it to push things BEHIND the water surface on purpose: on Dingo Canyon a
+// kart in the river has its part below the water line and its shadow 13 and 14
+// cells behind its own cell, so the PS1 water covers them; by that cell they
+// would vanish behind the river bed. The mirror image and the part below the
+// water line lie below the water plane even by their true depth, so the river
+// bed in front of them would hide them as well with the instance's margin:
+// measured on Dingo Canyon (vblank 2040), the river bed lies up to 76 view z
+// in front of the nearest point of a kart in the river where its image below
+// the water line is drawn. ENGINE_PSX_DEPTH_MARGIN_SECOND 256 keeps that
+// image in front of the river bed and still lets a wall hide it.
+// Measured (Dingo Canyon demo race, 14 frames): 15954 primitive pixels of
+// first sub-ranges with a known order against the track, 0 ordered wrongly by
+// the instance's range; every retail instance there had depthBiasNormal -2.
+// Shadows on open road: none hidden with the cell rule and a margin of 64 from
+// 64 cell, which is two cells (128) and up to one more in front of the shadow's
+// view z; ENGINE_PSX_DEPTH_MARGIN_PRIM 192 is that plus one cell in reserve.
 #define ENGINE_PSX_DEPTH_CELL_SKY 0x3ff
+#define ENGINE_PSX_DEPTH_MARGIN_RANGE 32.0f
+#define ENGINE_PSX_DEPTH_MARGIN_SECOND 256.0f
+#define ENGINE_PSX_DEPTH_MARGIN_PRIM 192.0f
+#define ENGINE_PSX_DEPTH_PRIMS_MAX 256
+#define ENGINE_PSX_DEPTH_RANGES_MAX 2048
+extern int g_cfg_psxDepth;
+// From RenderBucket_BuildDepthRange: a range the queue linked into the world
+// table (activeRange as RenderBucket_AllocateOTRange returned it, the depth
+// bins minDepth..maxDepth, the raw view z of the instance and its flags;
+// secondary 1 for the second range).
+void Engine_PsxDepthNoteRange(u32 activeRange, int minDepth, int maxDepth, int viewDepth, u32 instFlags, int secondary);
+// From a producer that hangs primitives into the world table directly: the
+// primitives from first up to (not including) end lie at view z vz.
+void Engine_PsxDepthNotePrims(const void *first, const void *end, float vz);
+// The depth value of the primitive being built: 0 = no depth test, otherwise
+// zNear / vz of the view (1 for anything nearer than zNear).
+float Engine_PsxDepthNow(void);
+void Engine_PsxDepthNoteSplit(void); // a PS1 split drawn with depth, counted for the exit line
 #define ENGINE_PSX_DEPTH_CALIB_MAX 16
 extern int g_cfg_psxDepthCalibCount;
 extern int g_cfg_psxDepthCalib[ENGINE_PSX_DEPTH_CALIB_MAX];
@@ -1915,6 +1967,10 @@ int Engine_PsxDepthCalibArmed(void);
 // Measuring only: a triangle line the walk wrote, a retail instance, a dynamic
 // engine draw that writes depth.
 void Engine_PsxDepthCalibNoteTriangle(void);
+// The walk's view of the primitive being built: its range's nearest view z
+// (0 = none), whether that is a second range, the view z its producer
+// registered (0 = none) and the depth value it is drawn with.
+void Engine_PsxDepthCalibWalk(float *rangeNear, int *secondary, float *primVz, float *depth);
 void Engine_PsxDepthCalibInstance(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb);
 void Engine_PsxDepthCalibDraw(int view, const EngineDraw *draw);
 
