@@ -17,19 +17,25 @@
 #                        Character > Creator Kit > Generate demo files, way
 #                        Hi-Res): <kit>\hires\creator-kit-hires.blend (required)
 #   --out <folder>       output folder (required, created if missing)
-#   --no-scene           do not write the preview scenes (.blend) and the
-#                        figure + vehicle files (*-demo-local.glb)
+#   --no-scene           do not write the preview scenes (.blend)
 #
 # Output in <folder>, per vehicle <v> = dummy-hover, dummy-plane:
 #   <v>.glb              the vehicle alone: a root node "kart" with the body,
 #                        the moving parts and the morph targets (shape keys).
 #                        No figure, no skin, no clips. This is the file to share.
-#   <v>-demo-local.glb   the kit figure (puppet, skeleton, clips) seated in the
-#                        vehicle, written by the kit's stored CreatorKit
-#                        exporter with the vehicle in the collection Kart in
-#                        place of the kit kart (the vehicle parts hang on the
-#                        joint "kart" as the kit kart's do). For checks and
-#                        tests on this PC.
+#   <v>-driver.glb       the driver to pack into a character: the kit figure
+#                        (puppet without backpack, skeleton, clips) seated in
+#                        the vehicle, written by the kit's stored CreatorKit
+#                        exporter (morph targets on) with the vehicle in the
+#                        collection Kart in place of the kit kart: the vehicle
+#                        parts are rigid nodes under the joint "kart" as the
+#                        kit kart's were (the plane's own wheel nodes wheel_fl,
+#                        wheel_fr, wheel_rl, wheel_rr among them; the hover has
+#                        none; no steering part). Pack it as a Hi-Res driver with
+#                        its own kart (rldpack hires-add --kart-part). It holds
+#                        nothing of the game: the figure is made by the kit's
+#                        code and the kit kart is removed before (self check:
+#                        no kit mark, no kit material or image in the file).
 #   <v>-szene.blend      the preview scene: the kit file with the kit kart
 #                        removed and the vehicle in its place, the figure (no
 #                        backpack) in the seat. It holds the kit's data: keep it
@@ -996,6 +1002,58 @@ def glb_problems(path, root, children, key_names):
     return out
 
 
+def driver_problems(path, parts, key_names, wheels):
+    """The figure + vehicle file: the vehicle parts in the subtree of the first node 'kart' (the joint), the wheel
+    nodes there when the vehicle has them, one skin, the seated clips, the morph target names, and nothing of the
+    kit kart: no kit mark (ctr_kit), no kit material or image (ctrkit_), none of its object names."""
+    j = read_glb_json(path)
+    if j is None:
+        return ["%s is no GLB" % os.path.basename(path)]
+    out = []
+    nodes = j.get("nodes", [])
+    names = [n.get("name") for n in nodes]
+    if ROOT_NODE not in names:
+        return ["%s has no node '%s'" % (os.path.basename(path), ROOT_NODE)]
+    sub, stack = set(), [names.index(ROOT_NODE)]
+    while stack:
+        i = stack.pop()
+        sub.add(names[i])
+        stack.extend(nodes[i].get("children", []))
+    missing = [p for p in parts if p not in sub]
+    if missing:
+        out.append("the driver file has %s outside the subtree of '%s'" % (missing, ROOT_NODE))
+    wheel_names = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
+    if wheels != all(w in sub for w in wheel_names) or (not wheels and any(w in names for w in wheel_names)):
+        out.append("the driver file's wheel nodes are not as the vehicle's")
+    if len(j.get("skins", [])) != 1:
+        out.append("the driver file has %d skins, not 1" % len(j.get("skins", [])))
+    clips = set(a.get("name") for a in j.get("animations", []))
+    if any(c not in clips for c in SEATED_CLIPS):
+        out.append("the driver file lacks clips: %s" % [c for c in SEATED_CLIPS if c not in clips])
+    for mname, keys in key_names.items():
+        found = None
+        for m in j.get("meshes", []):
+            if m.get("name") == mname:
+                found = (m.get("extras") or {}).get("targetNames")
+        if found != list(keys):
+            out.append("the morph targets of %s in the driver file are %s" % (mname, found))
+    for kind, items in (("node", nodes), ("mesh", j.get("meshes", []))):
+        for it in items:
+            if "ctr_kit" in (it.get("extras") or {}):
+                out.append("the driver file has a kit %s (%s)" % (kind, it.get("name")))
+    for kind, items in (("material", j.get("materials", [])), ("image", j.get("images", []))):
+        for it in items:
+            if "ctrkit" in str(it.get("name", "")).lower():
+                out.append("the driver file has a kit %s (%s)" % (kind, it.get("name")))
+    for n in ("kart_body", "kart_steer_wheel"):
+        if n in names:
+            out.append("the driver file has the kit kart's node %s" % n)
+    log("driver file %s: %d nodes, images %s, materials %s" %
+        (os.path.basename(path), len(nodes), [i.get("name") for i in j.get("images", [])],
+         [m.get("name") for m in j.get("materials", [])]))
+    return out
+
+
 # ------------------------------------------------------------------ export
 
 def exporter_props(exporter):
@@ -1249,7 +1307,7 @@ def main():
     names = {"hover": "dummy-hover", "plane": "dummy-plane"}
     outputs = []
     for v in names.values():
-        outputs += [os.path.join(opt["out"], v + s) for s in (".glb", "-demo-local.glb", "-szene.blend",
+        outputs += [os.path.join(opt["out"], v + s) for s in (".glb", "-driver.glb", "-szene.blend",
                                                                "-szene.blend1")]
     outputs.append(os.path.join(opt["out"], README_NAME))
     for o in outputs:
@@ -1296,13 +1354,18 @@ def main():
         rep = {"tris": {o.name: sum(len(p.vertices) - 2 for p in o.data.polygons) for o in V["parts"]}}
         reports[kind] = rep
         check_vehicle(V, rig, puppet, scene, problems, rep)
+        # 3. the driver: figure + vehicle, with the kit's CreatorKit exporter (morph targets on)
+        ck = bpy.data.collections["CreatorKit"].exporters[0]
+        s2 = exporter_props(ck)
+        s2.update(EXPORT_MORPH)
+        if not export_collection(bpy.data.collections["CreatorKit"], base + "-driver.glb", s2):
+            problems.append("%s: the exporter wrote no -driver.glb" % kind)
+        else:
+            problems.extend("%s: %s" % (kind, p) for p in
+                            driver_problems(base + "-driver.glb", [o.name for o in V["parts"]],
+                                            {V["body"].name: V["key_order"]}, len(V["wheels"]) == 4))
         if opt["scene"]:
-            ck = bpy.data.collections["CreatorKit"].exporters[0]
-            s2 = exporter_props(ck)
-            s2.update(EXPORT_MORPH)
-            if not export_collection(bpy.data.collections["CreatorKit"], base + "-demo-local.glb", s2):
-                problems.append("%s: the exporter wrote no -demo-local.glb" % kind)
-            ck.filepath = "//" + names[kind] + "-demo-local.glb"
+            ck.filepath = "//" + names[kind] + "-driver.glb"
             for k, val in EXPORT_MORPH.items():
                 setattr(ck.export_properties, k, val)
             bpy.ops.wm.save_as_mainfile(filepath=base + "-szene.blend", compress=False, copy=True)
@@ -1338,7 +1401,8 @@ def write_readme(opt, A, R, puppet_tris):
     t += ["Files",
           "  dummy-hover.glb, dummy-plane.glb    the vehicle alone (root node 'kart', no figure, no kit kart):",
           "                                      the files to share",
-          "  dummy-*-demo-local.glb              the kit figure seated in the vehicle (local tests)",
+          "  dummy-*-driver.glb                  the kit figure seated in the vehicle, one file: the driver to",
+          "                                      pack as a Hi-Res character with its own kart (--kart-part)",
           "  dummy-*-szene.blend                 the preview scene (kit figure without backpack in the seat).",
           "                                      It holds the kit's data: keep it on this computer.",
           "Pictures (preview renders of the scenes, made by a separate local render script, if present)",
