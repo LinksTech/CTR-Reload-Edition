@@ -1,5 +1,6 @@
 #include <platform/engine.h>
 #include <platform/native_glide.h>
+#include <platform/native_hover.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -296,6 +297,7 @@ typedef struct
 	double roll[4];
 	int hazard;
 	int hideKart;               // 1 = the kart part and the wheels are left out (a forced submit's hideKart)
+	double lift;                // world units added to world's y (the hover, NativeHover_SeatLift; 0 for every other draw)
 } EngHcPlace;
 
 internal struct
@@ -2460,6 +2462,11 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 				Engine_HiresWheelMiddle(w, pl->inst->scale.x, pl->inst->scale.y, pl->inst->scale.z, middle);
 				EngHires_WheelWorld(pl->inst, F, middle, pl->k, &out);
 				memcpy(wm, out.m, sizeof(wm));
+				// These wheels are placed from inst->matrix.t, not from world: the hover's lift added here.
+				if (pl->lift != 0.0)
+				{
+					wm[13] += (float)pl->lift;
+				}
 			}
 			else
 			{
@@ -2874,6 +2881,10 @@ internal void EngHc_SeatTick(const struct GameTracker *gGT, int seat)
 	{
 		NativeGlide_EngineTick(seat, d);
 	}
+	// THE HOVER (platform/native_hover.c): a seat of class hover - the bob's
+	// phase and, with keys, lean_left/right, nose_up/down after steering, gas
+	// and brake (other key names than the glide's). Nothing for any other class.
+	NativeHover_EngineTick(seat, d, (c->morph.keyCount > 0u) ? 1 : 0);
 	// THE SHAPE KEYS: the chain moves one frame per logic tick (a character with keys only).
 	if (c->morph.keyCount > 0u)
 	{
@@ -3085,6 +3096,15 @@ int Engine_HiresCharRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 	{
 		s_hc.declined++;
 		return 0;
+	}
+	// THE HOVER (platform/native_hover.c): a seat of class hover is drawn higher -
+	// body, figure and own wheels through world, the standard wheels through
+	// pl.lift. Only this draw's matrix: inst->matrix.t, posCurr and everything
+	// placed from them (shadow, skid marks, exhaust, camera) stay on the ground.
+	pl.lift = NativeHover_SeatLift(seat, (int)inst->scale.y);
+	if (pl.lift != 0.0)
+	{
+		pl.world.m[13] += (float)pl.lift;
 	}
 	{
 		int r;
@@ -3823,6 +3843,7 @@ internal void EngHc_Report(void)
 		Platform_Log("[CTR Engine] hires shape keys at exit: skins with a weight not 0 %u, vertices blended %llu\n", s_hc.morphSkins,
 		             (unsigned long long)s_hc.morphVertices);
 	}
+	NativeHover_Report(); // a line of its own, only in a run that saw a hover seat
 }
 
 // The first error of a report (rule, text), or the first message.
@@ -4150,6 +4171,7 @@ void Engine_HiresCharsLoad(void)
 		RldMorph_StateReset(&s_hc.seats[seat].morph); // the shape keys: cleared at every level load
 		s_hc.seats[seat].morphLoop = 0;
 	}
+	NativeHover_LevelReset(); // every seat a kart until the seats below say otherwise
 	if (!g_cfg_engineHiresChars || !g_cfg_engine || (gGT == NULL))
 	{
 		return;
@@ -4358,6 +4380,16 @@ void Engine_HiresCharsLoad(void)
 	}
 	s_hc.levelReady = (maxVertices > 0u);
 	EngHc_ShapeDevApply();
+	// THE HOVER: the vehicle class of every seat with a file (drawing only); a
+	// hover whose hi-res character is not drawn here stays on the ground.
+	for (seat = 0; seat < ENGINE_HIRES_SLOT_SEATS; seat++)
+	{
+		if (seatEntry[seat] >= 0)
+		{
+			NativeHover_LevelSeat(seat, NativeChar_SeatVehicleClass(seat), NativeChar_EntryFile(seatEntry[seat]),
+			                      (s_hc.levelReady && (s_hc.seatChar[seat] >= 0)) ? 1 : 0);
+		}
+	}
 	{
 		int hires = 0;
 		int loaded = 0;

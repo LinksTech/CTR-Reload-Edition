@@ -777,6 +777,13 @@ if(BUILD_TESTING)
     set_tests_properties(glide_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "glide selftest passed: [0-9]+ checks, 0 failures"
     )
+    # The hover on screen without a race (platform/native_hover.c,
+    # native_hover_selftest.c): lift and bob, the class gate (only a hover gets a
+    # lift or a key), the key targets and ramps. It only computes.
+    add_test(NAME hover_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --hover-selftest)
+    set_tests_properties(hover_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "hover selftest passed: [0-9]+ checks, 0 failures"
+    )
     # The menu mouse without a window: window to menu mapping (letterbox,
     # pillarbox, widescreen shifts), round trip, active rules. It only computes.
     # The native engine without a window (platform/engine_*.c): maths, camera,

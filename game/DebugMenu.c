@@ -1,6 +1,7 @@
 #include <common.h>
 #include <platform/native_mods.h>
 #include <platform/native_glide.h>
+#include <platform/native_hover.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
 // the [CTR Race] line names them, a measurement run must show "cheats none".
@@ -111,6 +112,7 @@ enum
 	DBG_TRACKS,
 	DBG_SHAPE_KEYS,
 	DBG_GLIDE,
+	DBG_HOVER,
 	DBG_DRIVER,
 	DBG_TRACK,
 	DBG_PAGE_COUNT,
@@ -144,7 +146,7 @@ enum
 #define DBG_FIRST_ROW_Y  28
 #define DBG_VISIBLE_ROWS 12
 
-global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS", "GLIDE"};
+global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS", "GLIDE", "HOVER"};
 
 // The VIDEO page.
 //
@@ -449,6 +451,14 @@ global_variable int s_cursor[DBG_PAGE_COUNT];
 global_variable int s_scroll[DBG_PAGE_COUNT];
 global_variable int s_driver = 0;
 
+// Whether the SHAPE KEYS page is on screen, asked by the hover
+// (platform/native_hover.c): while it is, the hover's key coupling leaves
+// seat 0's keys to the page.
+int DebugMenu_ShapePreviewOpen(void)
+{
+	return (s_debugMenuOpen && (s_page == DBG_SHAPE_KEYS)) ? 1 : 0;
+}
+
 // Which container the TRACK page is showing, and which level it would sit in.
 //
 // The donor is an index into s_levels, the same table LEVEL SELECT uses. A
@@ -679,6 +689,95 @@ internal void DebugMenu_GlideActivate(int row)
 	             t->dive, t->pullUp, t->openFrames, t->closeRelease, t->closeLand);
 }
 
+// The HOVER page (platform/native_hover.c): the hover on screen of a seat
+// whose .rldchar has the vehicle class hover - lifted and bobbing, its shape
+// keys following steering, gas and brake; engine only, drawing only. The
+// switch, the five start values, DEFAULTS. X steps a value up and from the top
+// back to the bottom, as on the GLIDE page. Nothing is saved: the values hold
+// for the session.
+enum
+{
+	DBG_HOVER_ON = 0,
+	DBG_HOVER_HEIGHT,
+	DBG_HOVER_BOB,
+	DBG_HOVER_PERIOD,
+	DBG_HOVER_LEAN,
+	DBG_HOVER_NOSE,
+	DBG_HOVER_DEFAULTS,
+	DBG_HOVER_ROW_COUNT,
+};
+
+#define DBG_HOVER_HEIGHT_STEP   25  // kit millimetres
+#define DBG_HOVER_BOB_STEP      5   // percent of the height
+#define DBG_HOVER_PERIOD_MIN    5   // ticks
+#define DBG_HOVER_PERIOD_MAX    120
+#define DBG_HOVER_PERIOD_STEP   5
+#define DBG_HOVER_STRENGTH_STEP 250 // thousandths
+
+internal void DebugMenu_HoverLine(int row, char *line)
+{
+	const NativeHoverTune *t = NativeHover_Tunables();
+
+	switch (row)
+	{
+	case DBG_HOVER_ON:
+		sprintf(line, "%-13s%s", "HOVER", t->on ? "ON" : "OFF");
+		break;
+	case DBG_HOVER_HEIGHT:
+		sprintf(line, "%-13s%d.%03d", "HEIGHT M", t->heightMm / 1000, t->heightMm % 1000);
+		break;
+	case DBG_HOVER_BOB:
+		sprintf(line, "%-13s%d", "BOB PERCENT", t->bobPct);
+		break;
+	case DBG_HOVER_PERIOD:
+		sprintf(line, "%-13s%d", "BOB FRAMES", t->bobFrames);
+		break;
+	case DBG_HOVER_LEAN:
+		sprintf(line, "%-13s%d.%02d", "LEAN", t->lean / 1000, (t->lean % 1000) / 10);
+		break;
+	case DBG_HOVER_NOSE:
+		sprintf(line, "%-13s%d.%02d", "NOSE", t->nose / 1000, (t->nose % 1000) / 10);
+		break;
+	default:
+		sprintf(line, "DEFAULTS");
+		break;
+	}
+}
+
+internal void DebugMenu_HoverActivate(int row)
+{
+	NativeHoverTune *t = NativeHover_Tunables();
+
+	switch (row)
+	{
+	case DBG_HOVER_ON:
+		t->on = !t->on;
+		break;
+	case DBG_HOVER_HEIGHT:
+		t->heightMm = DebugMenu_GlideStep(t->heightMm, 0, NATIVE_HOVER_HEIGHT_MM_MAX, DBG_HOVER_HEIGHT_STEP);
+		break;
+	case DBG_HOVER_BOB:
+		t->bobPct = DebugMenu_GlideStep(t->bobPct, 0, NATIVE_HOVER_BOB_PCT_MAX, DBG_HOVER_BOB_STEP);
+		break;
+	case DBG_HOVER_PERIOD:
+		t->bobFrames = DebugMenu_GlideStep(t->bobFrames, DBG_HOVER_PERIOD_MIN, DBG_HOVER_PERIOD_MAX, DBG_HOVER_PERIOD_STEP);
+		break;
+	case DBG_HOVER_LEAN:
+		t->lean = DebugMenu_GlideStep(t->lean, 0, NATIVE_HOVER_STRENGTH_MAX, DBG_HOVER_STRENGTH_STEP);
+		break;
+	case DBG_HOVER_NOSE:
+		t->nose = DebugMenu_GlideStep(t->nose, 0, NATIVE_HOVER_STRENGTH_MAX, DBG_HOVER_STRENGTH_STEP);
+		break;
+	case DBG_HOVER_DEFAULTS:
+		NativeHover_TuneDefaults(t);
+		break;
+	default:
+		return;
+	}
+	Platform_Log("[CTR Debug] hover: %s, height %d mm, bob %d percent over %d tick(s), lean %d, nose %d (thousandths)\n", t->on ? "on" : "off", t->heightMm,
+	             t->bobPct, t->bobFrames, t->lean, t->nose);
+}
+
 internal int DebugMenu_PanelWidth(int page)
 {
 	return ((page == DBG_TRACKS) || (page == DBG_TRACK)) ? NATIVE_DEBUG_MENU_W_TRACKS : NATIVE_DEBUG_MENU_W;
@@ -737,6 +836,8 @@ internal int DebugMenu_RowCount(int page)
 		return DebugMenu_ShapeRowCount();
 	case DBG_GLIDE:
 		return DBG_GLIDE_ROW_COUNT;
+	case DBG_HOVER:
+		return DBG_HOVER_ROW_COUNT;
 	case DBG_DRIVER:
 		return DBG_COUNT(s_drivers);
 	case DBG_TRACKS:
@@ -774,6 +875,11 @@ internal const char *DebugMenu_PageTitle(int page)
 	if (page == DBG_GLIDE)
 	{
 		return "GLIDE ABILITY (TEST)";
+	}
+
+	if (page == DBG_HOVER)
+	{
+		return "HOVER (ENGINE)";
 	}
 
 	if (page == DBG_VIEW)
@@ -818,7 +924,7 @@ internal const char *DebugMenu_ActionHint(int page)
 	{
 		return "X = USE ROW";
 	}
-	if ((page == DBG_SHAPE_KEYS) || (page == DBG_GLIDE))
+	if ((page == DBG_SHAPE_KEYS) || (page == DBG_GLIDE) || (page == DBG_HOVER))
 	{
 		return "X = STEP";
 	}
@@ -1377,6 +1483,10 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 
 	case DBG_GLIDE:
 		DebugMenu_GlideActivate(row);
+		break;
+
+	case DBG_HOVER:
+		DebugMenu_HoverActivate(row);
 		break;
 
 	case DBG_DRIVER:
@@ -4278,6 +4388,10 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 
 			case DBG_GLIDE:
 				DebugMenu_GlideLine(i, line);
+				break;
+
+			case DBG_HOVER:
+				DebugMenu_HoverLine(i, line);
 				break;
 
 			case DBG_DRIVER:

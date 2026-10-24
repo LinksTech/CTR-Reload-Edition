@@ -84,6 +84,8 @@
 #include "platform/native_mods.c"
 #include "platform/native_glide.c"
 #include "platform/native_glide_selftest.c"
+#include "platform/native_hover.c"
+#include "platform/native_hover_selftest.c"
 #include "platform/native_char_gpu.c"
 #include "platform/native_twin.c"
 #include "platform/native_wheels.c"
@@ -448,6 +450,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-drive-log-selftest", "", "the line formats of --dev-drive-log, then end; no window, no data needed (ctest drive_log_selftest)"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--glide-selftest", "", "the glide ability's state machine, its ramps and the script of --dev-glide-script without a race, then end (ctest glide_selftest)"},
+    {"--hover-selftest", "", "the hover on screen without a race: lift and bob, the class gate (kart, plane, unknown: no lift, no key), the key targets and ramps, then end (ctest hover_selftest)"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
@@ -3495,6 +3498,14 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--glide-selftest") == 0)
 		{
 			return NativeGlide_SelfTest();
+		}
+
+		// The hover on screen (platform/native_hover.c) without a race: lift,
+		// bob, class gate, key ramps. Up here for the same reason: it computes
+		// on made-up inputs only (ctest hover_selftest).
+		if (strcmp(argv[argIndex], "--hover-selftest") == 0)
+		{
+			return NativeHover_SelfTest();
 		}
 
 		// The menu mouse (platform/native_mouse.c): the window to menu mapping and
