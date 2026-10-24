@@ -82,6 +82,8 @@
 #include "platform/native_testfiles.c"
 #include "platform/native_chars.c"
 #include "platform/native_mods.c"
+#include "platform/native_glide.c"
+#include "platform/native_glide_selftest.c"
 #include "platform/native_char_gpu.c"
 #include "platform/native_twin.c"
 #include "platform/native_wheels.c"
@@ -321,6 +323,10 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-drive-log", "[n]", "log lines of the kart of seat 0: every n race frames (default 15) position, restart point, distance, lap, ground contact; every lap change; every mask grab with its reason and every landing; reads only, for measuring"},
     {"--dev-kart-steer-lead", "<1|2>", "with --dev-kart-steer: steer toward the restart point 1 or 2 (default) ahead of the kart's own; for measuring"},
     {"--dev-kart-steer", "[n]", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points; from race n of the run on (default 1) SQUARE (every other time with DOWN) after it got reserves, off the pad; for measuring"},
+    {"--dev-glide", "", "the GLIDE ABILITY (TEST) of the debug menu on from the start: seat 0 (a human driver) opens wings with R3 in the air and glides (platform/native_glide.c); for measuring"},
+    {"--dev-glide-log", "", "with --dev-glide: one line per logic tick of seat 0 while its wings are not folded or something happened ('[CTR Glide] tick ...': state, R3, stick, factor, gravity before and after, the keys, the air time)"},
+    {"--dev-glide-script", "<list>", "with --dev-glide and --dev-kart-steer: the steerer flies these manoeuvres in turn (h dl dr DL DR sl sr pu ol or, include/platform/native_glide.h THE SCRIPT) and glides every flight from its 3rd air tick, all through its pad word"},
+    {"--dev-glide-dump", "<prefix>", "with --dev-glide, not with --no-engine or --no-hires-chars: the drawn wing, kart and wheel vertices of seat 0's hi-res driver at every glide landing (<prefix>-map.bin at the load, <prefix>-<timer>.bin per tick), for the penetration count"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
     {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
@@ -441,6 +447,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--dev-drive-log-selftest", "", "the line formats of --dev-drive-log, then end; no window, no data needed (ctest drive_log_selftest)"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
+    {"--glide-selftest", "", "the glide ability's state machine, its ramps and the script of --dev-glide-script without a race, then end (ctest glide_selftest)"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
@@ -1562,6 +1569,84 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
 			}
+		}
+	}
+
+	// The glide switches (platform/native_glide.c): the script and the dump only
+	// beside --dev-glide, the script only with the kart steerer that flies it,
+	// the dump only where the engine draws the hi-res driver. Before any window.
+	{
+		int glideGiven = 0;
+		int steerGiven = 0;
+		int noEngine = 0;
+		const char *script = NULL;
+		const char *dump = NULL;
+		const char *refusal = NULL;
+		static char glideWhy[200];
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if (strcmp(argv[argIndex], "--dev-glide") == 0)
+			{
+				glideGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
+			{
+				steerGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--no-engine") == 0) || (strcmp(argv[argIndex], "--no-hires-chars") == 0))
+			{
+				noEngine = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-glide-script") == 0)
+			{
+				script = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
+			}
+			else if (strcmp(argv[argIndex], "--dev-glide-dump") == 0)
+			{
+				dump = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
+			}
+		}
+		// After the whole line: --dev-glide may stand behind it.
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if ((strcmp(argv[argIndex], "--dev-glide-log") == 0) && !glideGiven)
+			{
+				refusal = "switch --dev-glide-log requires --dev-glide";
+			}
+		}
+		if ((refusal == NULL) && (script != NULL))
+		{
+			if (!glideGiven || !steerGiven)
+			{
+				refusal = "switch --dev-glide-script requires --dev-glide and --dev-kart-steer";
+			}
+			else if (!NativeGlide_ScriptParse(script, NULL, NULL, glideWhy, (int)sizeof(glideWhy)))
+			{
+				refusal = glideWhy;
+			}
+		}
+		if ((refusal == NULL) && (dump != NULL))
+		{
+			if (!glideGiven)
+			{
+				refusal = "switch --dev-glide-dump requires --dev-glide";
+			}
+			else if (noEngine)
+			{
+				refusal = "switch --dev-glide-dump does not go with --no-engine or --no-hires-chars";
+			}
+			else if ((dump[0] == '\0') || (strlen(dump) > (NATIVE_GLIDE_ARG_MAX - 32)))
+			{
+				refusal = "switch --dev-glide-dump expects a file prefix (at most 480 characters)";
+			}
+		}
+		if (refusal != NULL)
+		{
+			fflush(stdout);
+			fprintf(stderr, "%s\n", refusal);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
 		}
 	}
 
@@ -3402,6 +3487,14 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--mods-selftest") == 0)
 		{
 			return NativeMods_SelfTest();
+		}
+
+		// The glide ability (platform/native_glide.c) without a race: its state
+		// machine and the script. Up here for the same reason: it computes on
+		// made-up inputs only (ctest glide_selftest).
+		if (strcmp(argv[argIndex], "--glide-selftest") == 0)
+		{
+			return NativeGlide_SelfTest();
 		}
 
 		// The menu mouse (platform/native_mouse.c): the window to menu mapping and
@@ -5296,6 +5389,26 @@ int main(int argc, char *argv[])
 
 				g_cfg_kartSteerLead = atoi(argv[++argIndex]);
 				printf("[CTR Native] --dev-kart-steer-lead: the kart steers toward the restart point %d ahead\n", g_cfg_kartSteerLead);
+			}
+			else if (strcmp(argv[argIndex], "--dev-glide") == 0)
+			{
+				NativeGlide_SetAbility(1);
+				printf("[CTR Native] --dev-glide: the glide ability (test) is on for seat 0\n");
+			}
+			else if (strcmp(argv[argIndex], "--dev-glide-log") == 0)
+			{
+				g_cfg_glideLog = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--dev-glide-script") == 0) && ((argIndex + 1) < argc))
+			{
+				// The list was checked before any window.
+				snprintf(g_cfg_glideScript, sizeof(g_cfg_glideScript), "%s", argv[++argIndex]);
+				printf("[CTR Native] --dev-glide-script: %s\n", g_cfg_glideScript);
+			}
+			else if ((strcmp(argv[argIndex], "--dev-glide-dump") == 0) && ((argIndex + 1) < argc))
+			{
+				snprintf(g_cfg_glideDump, sizeof(g_cfg_glideDump), "%s", argv[++argIndex]);
+				printf("[CTR Native] --dev-glide-dump: %s-map.bin and %s-<timer>.bin\n", g_cfg_glideDump, g_cfg_glideDump);
 			}
 			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
 			{

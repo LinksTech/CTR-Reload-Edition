@@ -1,4 +1,5 @@
 #include <platform/engine.h>
+#include <platform/native_glide.h>
 
 #include <math.h>
 #include <stdio.h>
@@ -1797,6 +1798,246 @@ internal void EngHc_FreeChar(EngHcChar *c)
 // The textures (PNG decoded, edges rounded up to a power of two, the whole
 // mip chain, sRGB colour or linear normal map) and the index buffer. *peak
 // grows by the largest decoded image. 1 = made.
+// ---------------------------------------------------------------------------
+// --dev-glide-dump (platform/native_glide.c; round "Dummy Glider" C-N1): the
+// vertices the engine drew for seat 0 at a glide landing, for the penetration
+// count of the wings against the kart and the wheels outside the game. Only
+// with the switch; without it nothing here runs. The map is made once per
+// character with shape keys at its upload (the triangles are freed after it):
+// the vertices of the wings (every triangle with a vertex any key moves), of
+// the kart and of the steering wheel (the game's kart: rigid entries gkFirst,
+// gkFirst + 1; a file's own kart part: kartEntry), of the four wheels. Classes
+// 1 wing, 2 kart, 3 steering wheel, 4..7 wheel 0..3. The file layout is
+// written down with the round's tools (DUMP-FORMAT.md); all little-endian.
+#define ENG_HC_GLIDE_DUMP_MAGIC_MAP 0x4d444c47u  // "GLDM"
+#define ENG_HC_GLIDE_DUMP_MAGIC_TICK 0x50444c47u // "GLDP"
+#define ENG_HC_GLIDE_DUMP_HEAD 64                 // u32 words of a tick file's head
+
+internal struct
+{
+	int ch;
+	u32 vertexCount;
+	u32 count;
+	u32 *vert;
+	u8 *cls;
+	u32 files;
+	int failLogged;
+} s_hcGlideDump = {-1, 0u, 0u, NULL, NULL, 0u, 0};
+
+internal u8 EngHc_GlideDumpClass(const EngHcChar *c, u32 v, const u8 *wing)
+{
+	const u32 e = c->src[v].j[0];
+
+	if (wing[v])
+	{
+		return 1;
+	}
+	if ((c->gkKit != NULL) && (e == c->gkFirst))
+	{
+		return 2;
+	}
+	if ((c->gkKit != NULL) && (e == c->gkFirst + 1u))
+	{
+		return 3;
+	}
+	if ((e >= c->wheelFirst) && (e < c->wheelFirst + 4u))
+	{
+		return (u8)(4u + e - c->wheelFirst);
+	}
+	if ((c->kartEntry != NULL) && (e < c->paletteCount) && c->kartEntry[e])
+	{
+		return 2;
+	}
+	return 0;
+}
+
+internal void EngHc_GlideDumpMap(int ch, const EngHcChar *c)
+{
+	char path[NATIVE_GLIDE_ARG_MAX + 32];
+	u8 *moved;
+	u8 *wing;
+	u32 *remap;
+	u32 *tris;
+	u8 *triCls;
+	u32 triCount = 0;
+	u32 head[12];
+	u32 v;
+	u32 t;
+	FILE *f;
+
+	if ((g_cfg_glideDump[0] == '\0') || (c->morph.keyCount == 0u) || (c->morph.vertCount == 0u) || (c->indices == NULL) || (c->src == NULL))
+	{
+		return;
+	}
+	free(s_hcGlideDump.vert);
+	free(s_hcGlideDump.cls);
+	memset(&s_hcGlideDump, 0, sizeof(s_hcGlideDump));
+	s_hcGlideDump.ch = -1;
+	moved = (u8 *)calloc(c->vertexCount, 1u);
+	wing = (u8 *)calloc(c->vertexCount, 1u);
+	remap = (u32 *)malloc((size_t)c->vertexCount * sizeof(u32));
+	tris = (u32 *)malloc((size_t)c->indexCount * sizeof(u32) + sizeof(u32));
+	triCls = (u8 *)malloc((size_t)(c->indexCount / 3u) + 1u);
+	s_hcGlideDump.vert = (u32 *)malloc((size_t)c->vertexCount * sizeof(u32));
+	s_hcGlideDump.cls = (u8 *)malloc((size_t)c->vertexCount);
+	if ((moved == NULL) || (wing == NULL) || (remap == NULL) || (tris == NULL) || (triCls == NULL) || (s_hcGlideDump.vert == NULL) ||
+	    (s_hcGlideDump.cls == NULL))
+	{
+		Platform_Log("[CTR Glide] dump: out of memory for the map - no dumps\n");
+		goto done;
+	}
+	for (v = 0; v < c->morph.vertCount; v++)
+	{
+		if (c->morph.vert[v] < c->vertexCount)
+		{
+			moved[c->morph.vert[v]] = 1;
+		}
+	}
+	for (t = 0; t + 2u < c->indexCount; t += 3u)
+	{
+		const u32 a = c->indices[t];
+		const u32 b = c->indices[t + 1u];
+		const u32 d = c->indices[t + 2u];
+
+		if ((a < c->vertexCount) && (b < c->vertexCount) && (d < c->vertexCount) && (moved[a] || moved[b] || moved[d]))
+		{
+			wing[a] = wing[b] = wing[d] = 1;
+		}
+	}
+	for (v = 0; v < c->vertexCount; v++)
+	{
+		const u8 k = EngHc_GlideDumpClass(c, v, wing);
+
+		remap[v] = 0xffffffffu;
+		if (k != 0u)
+		{
+			remap[v] = s_hcGlideDump.count;
+			s_hcGlideDump.vert[s_hcGlideDump.count] = v;
+			s_hcGlideDump.cls[s_hcGlideDump.count] = k;
+			s_hcGlideDump.count++;
+		}
+	}
+	for (t = 0; t + 2u < c->indexCount; t += 3u)
+	{
+		const u32 a = c->indices[t];
+		const u32 b = c->indices[t + 1u];
+		const u32 d = c->indices[t + 2u];
+
+		if ((a < c->vertexCount) && (b < c->vertexCount) && (d < c->vertexCount) && (remap[a] != 0xffffffffu) && (remap[b] != 0xffffffffu) &&
+		    (remap[d] != 0xffffffffu))
+		{
+			tris[triCount * 3u] = remap[a];
+			tris[triCount * 3u + 1u] = remap[b];
+			tris[triCount * 3u + 2u] = remap[d];
+			triCls[triCount] = s_hcGlideDump.cls[remap[a]];
+			triCount++;
+		}
+	}
+	snprintf(path, sizeof(path), "%s-map.bin", g_cfg_glideDump);
+	f = fopen(path, "wb");
+	if (f == NULL)
+	{
+		Platform_Log("[CTR Glide] dump: cannot write %s - no dumps\n", path);
+		goto done;
+	}
+	head[0] = ENG_HC_GLIDE_DUMP_MAGIC_MAP;
+	head[1] = 1u;
+	head[2] = c->vertexCount;
+	head[3] = s_hcGlideDump.count;
+	head[4] = triCount;
+	head[5] = c->joints;
+	head[6] = c->rigidCount;
+	head[7] = c->gkFirst;
+	head[8] = c->wheelFirst;
+	head[9] = (u32)c->kitWheels;
+	head[10] = (u32)ENG_HC_UNITS;
+	head[11] = c->morph.vertCount;
+	(void)fwrite(head, sizeof(head), 1u, f);
+	(void)fwrite(s_hcGlideDump.vert, sizeof(u32), s_hcGlideDump.count, f);
+	(void)fwrite(s_hcGlideDump.cls, 1u, s_hcGlideDump.count, f);
+	(void)fwrite(tris, sizeof(u32), (size_t)triCount * 3u, f);
+	(void)fwrite(triCls, 1u, triCount, f);
+	fclose(f);
+	s_hcGlideDump.ch = ch;
+	s_hcGlideDump.vertexCount = c->vertexCount;
+	Platform_Log("[CTR Glide] dump: map %s - %s, %u of %u vertices (wings, kart, steering wheel, wheels), %u triangles\n", path, c->file,
+	             s_hcGlideDump.count, c->vertexCount, triCount);
+done:
+	free(moved);
+	free(wing);
+	free(remap);
+	free(tris);
+	free(triCls);
+	if (s_hcGlideDump.ch < 0)
+	{
+		free(s_hcGlideDump.vert);
+		free(s_hcGlideDump.cls);
+		s_hcGlideDump.vert = NULL;
+		s_hcGlideDump.cls = NULL;
+		s_hcGlideDump.count = 0u;
+	}
+}
+
+internal void EngHc_GlideDumpTick(int ch, const EngHcChar *c, const EngineVertex *out, const EngHcPlace *pl, const EngHcPoseInfo *info,
+                                  const EngHcSeatState *st, const int *glide, int timer)
+{
+	char path[NATIVE_GLIDE_ARG_MAX + 32];
+	u32 head[ENG_HC_GLIDE_DUMP_HEAD];
+	float units = (float)ENG_HC_UNITS;
+	float *pos;
+	FILE *f;
+	u32 i;
+	int k;
+
+	if ((s_hcGlideDump.vert == NULL) || (s_hcGlideDump.ch != ch) || (s_hcGlideDump.vertexCount != c->vertexCount) || (out == NULL))
+	{
+		return;
+	}
+	pos = (float *)malloc((size_t)s_hcGlideDump.count * 3u * sizeof(float) + sizeof(float));
+	if (pos == NULL)
+	{
+		return;
+	}
+	for (i = 0; i < s_hcGlideDump.count; i++)
+	{
+		memcpy(&pos[i * 3u], out[s_hcGlideDump.vert[i]].position, 3u * sizeof(float));
+	}
+	memset(head, 0, sizeof(head));
+	head[0] = ENG_HC_GLIDE_DUMP_MAGIC_TICK;
+	head[1] = 1u;
+	head[2] = (u32)timer;
+	for (k = 0; k < NATIVE_GLIDE_DUMP_WORDS; k++)
+	{
+		head[3 + k] = (u32)glide[k];
+	}
+	head[15] = (u32)st->state;
+	head[16] = (u32)info->clip;
+	head[17] = (u32)info->prevClip;
+	memcpy(&head[18], &info->t, sizeof(float));
+	memcpy(&head[19], &info->blend, sizeof(float));
+	memcpy(&head[20], &info->steer, sizeof(float));
+	memcpy(&head[21], pl->world.m, 16u * sizeof(float));
+	memcpy(&head[37], &units, sizeof(float));
+	head[38] = s_hcGlideDump.count;
+	snprintf(path, sizeof(path), "%s-%08d.bin", g_cfg_glideDump, timer);
+	f = fopen(path, "wb");
+	if (f == NULL)
+	{
+		if (!s_hcGlideDump.failLogged)
+		{
+			s_hcGlideDump.failLogged = 1;
+			Platform_Log("[CTR Glide] dump: cannot write %s\n", path);
+		}
+		free(pos);
+		return;
+	}
+	(void)fwrite(head, sizeof(head), 1u, f);
+	(void)fwrite(pos, sizeof(float), (size_t)s_hcGlideDump.count * 3u, f);
+	fclose(f);
+	free(pos);
+	s_hcGlideDump.files++;
+}
+
 internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rule, char *detail, int detailSize, u32 *peak)
 {
 	size_t used = 0;
@@ -1925,6 +2166,11 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 		}
 	}
 	(void)m;
+	// --dev-glide-dump: the map, while the triangles are still here.
+	if (g_cfg_glideDump[0] != '\0')
+	{
+		EngHc_GlideDumpMap((int)(c - s_hc.chars), c);
+	}
 	c->indexBuffer = Engine_RenderStaticIndexBuffer(c->indices, c->indexCount);
 	if (c->indexBuffer == 0xffffffffu)
 	{
@@ -2583,6 +2829,13 @@ internal void EngHc_SeatTick(const struct GameTracker *gGT, int seat)
 		return;
 	}
 	run->timer = (u32)gGT->timer;
+	// THE GLIDE ABILITY (TEST) (platform/native_glide.c): seat 0's wings as the
+	// glide state says (only with the switch on; it holds the chain, so the
+	// step below leaves it where it is put).
+	if ((seat == 0) && (c->morph.keyCount > 0u))
+	{
+		NativeGlide_EngineTick(seat, d);
+	}
 	// THE SHAPE KEYS: the chain moves one frame per logic tick (a character with keys only).
 	if (c->morph.keyCount > 0u)
 	{
@@ -2829,6 +3082,17 @@ int Engine_HiresCharRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 		{
 			s_hc.declined++;
 			return 0;
+		}
+	}
+	// --dev-glide-dump: what was skinned for seat 0 at a glide landing (view 0, once per tick).
+	if ((seat == 0) && (g_cfg_glideDump[0] != '\0') && (Engine_InstanceViewOf(pb) == 0))
+	{
+		int glide[NATIVE_GLIDE_DUMP_WORDS];
+		const int bank = Engine_SceneBank();
+
+		if ((bank >= 0) && (bank < ENGINE_SCENE_BANKS) && NativeGlide_DumpWanted(d, glide))
+		{
+			EngHc_GlideDumpTick(ch, c, s_hc.slots[seat].cpu[bank], &pl, &info, &run->st, glide, gGT->timer);
 		}
 	}
 	drawn = EngHc_DrawAtInstance(seat, ch, inst, idpp, pb, &pl.world);

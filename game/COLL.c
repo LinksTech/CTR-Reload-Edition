@@ -1,6 +1,7 @@
 #include <common.h>
 #include <ctr_scratchpad.h>
 #include <platform/native_mods.h>
+#include <platform/native_glide.h>
 
 // ===========================================================================
 // THE CROSS-CHECK FOR THE ZERO RULE, only counted.
@@ -1662,7 +1663,9 @@ DriverAirborne:
 	d->currentTerrain = TERRAIN_NONE;
 	d->actionsFlagSet &= ~ACTION_TOUCH_GROUND;
 
-	d->jump_LandingBoost = (s16)CTR_MipsAddLo((u16)d->jump_LandingBoost, (u16)gGT->elapsedTimeMS);
+	// GLIDE ABILITY (TEST) (platform/native_glide.c): the air time stands still
+	// in a tick in which seat 0 glided; every other driver adds as before.
+	d->jump_LandingBoost = (s16)NativeGlide_LandingBoost(d, d->jump_LandingBoost, (s16)CTR_MipsAddLo((u16)d->jump_LandingBoost, (u16)gGT->elapsedTimeMS));
 	d->jump_CoyoteTimerMS = (s16)CTR_MipsSubLo((u16)d->jump_CoyoteTimerMS, (u16)gGT->elapsedTimeMS);
 	if (d->jump_CoyoteTimerMS < 0)
 	{

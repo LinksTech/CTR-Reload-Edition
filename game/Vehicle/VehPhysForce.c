@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_mods.h>
+#include <platform/native_glide.h>
 
 
 void VehPhysForce_ConvertSpeedToVecOut(struct Driver *driver, Vec3 *vel)
@@ -156,6 +157,11 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	{
 		gravityY = CTR_MipsDiv(CTR_MipsMulLo(gravityY, gravityPercent), VEH_PHYS_FORCE_LOW_GRAVITY_DIVISOR);
 	}
+
+	// GLIDE ABILITY (TEST) (platform/native_glide.c): seat 0's gravity while
+	// it glides; every other driver, and seat 0 when it does not glide, gets
+	// gravityY back unchanged.
+	gravityY = NativeGlide_Gravity(driver, gravityY);
 
 	NativeMods_NoteGravity(driver->driverID, gravityPercent, lowGravity ? 41 : 100, elapsedTimeMS, (driver->actionsFlagSet & ACTION_AIRBORNE) != 0);
 

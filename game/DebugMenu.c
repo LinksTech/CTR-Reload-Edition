@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_mods.h>
+#include <platform/native_glide.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
 // the [CTR Race] line names them, a measurement run must show "cheats none".
@@ -109,6 +110,7 @@ enum
 	DBG_VIEW,
 	DBG_TRACKS,
 	DBG_SHAPE_KEYS,
+	DBG_GLIDE,
 	DBG_DRIVER,
 	DBG_TRACK,
 	DBG_PAGE_COUNT,
@@ -142,7 +144,7 @@ enum
 #define DBG_FIRST_ROW_Y  28
 #define DBG_VISIBLE_ROWS 12
 
-global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS"};
+global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS", "GLIDE"};
 
 // The VIDEO page.
 //
@@ -581,6 +583,102 @@ internal void DebugMenu_ShapeKeyLabel(const char *name, char *out)
 	out[n] = '\0';
 }
 
+// The GLIDE page (platform/native_glide.c, the glide ability (test) of seat 0):
+// the switch, the six start values, DEFAULTS. The menu has no left/right, so
+// X steps a value up and from the top back to the bottom. Nothing is saved:
+// the values hold for the session.
+enum
+{
+	DBG_GLIDE_ABILITY = 0,
+	DBG_GLIDE_FACTOR,
+	DBG_GLIDE_DIVE,
+	DBG_GLIDE_PULL_UP,
+	DBG_GLIDE_OPEN,
+	DBG_GLIDE_CLOSE_RELEASE,
+	DBG_GLIDE_CLOSE_LAND,
+	DBG_GLIDE_DEFAULTS,
+	DBG_GLIDE_ROW_COUNT,
+};
+
+#define DBG_GLIDE_FACTOR_STEP 50
+
+// One step up, from hi back to lo.
+internal int DebugMenu_GlideStep(int value, int lo, int hi, int step)
+{
+	value += step;
+	return (value > hi) ? lo : ((value < lo) ? lo : value);
+}
+
+internal void DebugMenu_GlideLine(int row, char *line)
+{
+	const NativeGlideTune *t = NativeGlide_Tunables();
+
+	switch (row)
+	{
+	case DBG_GLIDE_ABILITY:
+		sprintf(line, "%-13s%s", "ABILITY", NativeGlide_Ability() ? "ON" : "OFF");
+		break;
+	case DBG_GLIDE_FACTOR:
+		sprintf(line, "%-13s%d.%02d", "GLIDE FACTOR", t->glide / 1000, (t->glide % 1000) / 10);
+		break;
+	case DBG_GLIDE_DIVE:
+		sprintf(line, "%-13s%d.%02d", "DIVE FACTOR", t->dive / 1000, (t->dive % 1000) / 10);
+		break;
+	case DBG_GLIDE_PULL_UP:
+		sprintf(line, "%-13s%d.%02d", "PULL UP", t->pullUp / 1000, (t->pullUp % 1000) / 10);
+		break;
+	case DBG_GLIDE_OPEN:
+		sprintf(line, "%-13s%d", "OPEN FRAMES", t->openFrames);
+		break;
+	case DBG_GLIDE_CLOSE_RELEASE:
+		sprintf(line, "%-13s%d", "CLOSE RELEASE", t->closeRelease);
+		break;
+	case DBG_GLIDE_CLOSE_LAND:
+		sprintf(line, "%-13s%d", "CLOSE LANDING", t->closeLand);
+		break;
+	default:
+		sprintf(line, "DEFAULTS");
+		break;
+	}
+}
+
+internal void DebugMenu_GlideActivate(int row)
+{
+	NativeGlideTune *t = NativeGlide_Tunables();
+
+	switch (row)
+	{
+	case DBG_GLIDE_ABILITY:
+		NativeGlide_SetAbility(!NativeGlide_Ability());
+		return;
+	case DBG_GLIDE_FACTOR:
+		t->glide = DebugMenu_GlideStep(t->glide, 50, 1000, DBG_GLIDE_FACTOR_STEP);
+		break;
+	case DBG_GLIDE_DIVE:
+		t->dive = DebugMenu_GlideStep(t->dive, 500, 1500, DBG_GLIDE_FACTOR_STEP);
+		break;
+	case DBG_GLIDE_PULL_UP:
+		t->pullUp = DebugMenu_GlideStep(t->pullUp, 0, 1000, DBG_GLIDE_FACTOR_STEP);
+		break;
+	case DBG_GLIDE_OPEN:
+		t->openFrames = DebugMenu_GlideStep(t->openFrames, NATIVE_GLIDE_FRAMES_MIN, NATIVE_GLIDE_FRAMES_MAX, 1);
+		break;
+	case DBG_GLIDE_CLOSE_RELEASE:
+		t->closeRelease = DebugMenu_GlideStep(t->closeRelease, NATIVE_GLIDE_FRAMES_MIN, NATIVE_GLIDE_FRAMES_MAX, 1);
+		break;
+	case DBG_GLIDE_CLOSE_LAND:
+		t->closeLand = DebugMenu_GlideStep(t->closeLand, NATIVE_GLIDE_FRAMES_MIN, NATIVE_GLIDE_FRAMES_MAX, 1);
+		break;
+	case DBG_GLIDE_DEFAULTS:
+		NativeGlide_TuneDefaults(t);
+		break;
+	default:
+		return;
+	}
+	Platform_Log("[CTR Debug] glide: factor %d dive %d pull up %d (thousandths), open %d, close on release %d, close on landing %d tick(s)\n", t->glide,
+	             t->dive, t->pullUp, t->openFrames, t->closeRelease, t->closeLand);
+}
+
 internal int DebugMenu_PanelWidth(int page)
 {
 	return ((page == DBG_TRACKS) || (page == DBG_TRACK)) ? NATIVE_DEBUG_MENU_W_TRACKS : NATIVE_DEBUG_MENU_W;
@@ -637,6 +735,8 @@ internal int DebugMenu_RowCount(int page)
 		return DBG_VIEW_ROW_COUNT;
 	case DBG_SHAPE_KEYS:
 		return DebugMenu_ShapeRowCount();
+	case DBG_GLIDE:
+		return DBG_GLIDE_ROW_COUNT;
 	case DBG_DRIVER:
 		return DBG_COUNT(s_drivers);
 	case DBG_TRACKS:
@@ -669,6 +769,11 @@ internal const char *DebugMenu_PageTitle(int page)
 	if (page == DBG_SHAPE_KEYS)
 	{
 		return "SHAPE KEY PREVIEW";
+	}
+
+	if (page == DBG_GLIDE)
+	{
+		return "GLIDE ABILITY (TEST)";
 	}
 
 	if (page == DBG_VIEW)
@@ -713,7 +818,7 @@ internal const char *DebugMenu_ActionHint(int page)
 	{
 		return "X = USE ROW";
 	}
-	if (page == DBG_SHAPE_KEYS)
+	if ((page == DBG_SHAPE_KEYS) || (page == DBG_GLIDE))
 	{
 		return "X = STEP";
 	}
@@ -1270,6 +1375,10 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 		break;
 	}
 
+	case DBG_GLIDE:
+		DebugMenu_GlideActivate(row);
+		break;
+
 	case DBG_DRIVER:
 		if ((row >= 0) && (row < DBG_COUNT(s_drivers)))
 		{
@@ -1732,6 +1841,10 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 			             squareCount, squareFrom, (int)d->reserves);
 		}
 	}
+
+	// --dev-glide-script (platform/native_glide.c): the glide manoeuvres on the
+	// same word - R1, R3 and the d-pad; without the switch the word as it is.
+	word = NativeGlide_DevPadWord(gGT, d, word);
 
 	memcpy(pads, base, sizeof(pads));
 	for (slot = 0; slot < 4; slot++)
@@ -4162,6 +4275,10 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 				}
 				break;
 			}
+
+			case DBG_GLIDE:
+				DebugMenu_GlideLine(i, line);
+				break;
 
 			case DBG_DRIVER:
 				// A marker on the driver a jump would use.
