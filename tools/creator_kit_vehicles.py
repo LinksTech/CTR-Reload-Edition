@@ -31,7 +31,10 @@
 #                        parts are rigid nodes under the joint "kart" as the
 #                        kit kart's were (the plane's own wheel nodes wheel_fl,
 #                        wheel_fr, wheel_rl, wheel_rr among them; the hover has
-#                        none; no steering part). Pack it as a Hi-Res driver with
+#                        none), the steering part on the joint "kart_steer" as
+#                        the kit's steering wheel was, so the clips steer_left,
+#                        steer_right, drift_left, drift_right turn it (the joint
+#                        stays in the skin). Pack it as a Hi-Res driver with
 #                        its own kart (rldpack hires-add --kart-part). It holds
 #                        nothing of the game: the figure is made by the kit's
 #                        code and the kit kart is removed before (self check:
@@ -48,7 +51,9 @@
 #   mesh hover_body, shape keys lean_left, lean_right (the body rolls about the
 #   kart's long axis through the seat), nose_up (pitch about the cross axis on
 #   the floor at the toes, so the floor sinks away from the feet), nose_down
-#   (pitch about the cross axis through the seat).
+#   (pitch about the cross axis through the seat). Steering: node handlebar -
+#   a straight bar through both grips with dark grip sleeves, riser, clamp and a
+#   short column; a fixed headset and down tube (part of hover_body) carry it.
 # Dummy Plane: a short fat fuselage (a nose cowl with a tunnel for the legs,
 # low cockpit walls, a tapering tail cone with a head fairing), stub wings with
 # flaps, a tail with fin, rudder, tailplane and elevators, four small wheels on
@@ -61,6 +66,20 @@
 #   -90 degrees about the up axis); nodes wheel_fl, wheel_fr, wheel_rl,
 #   wheel_rr (origin in the wheel middle, the axle along the node's local X, as
 #   the game's wheel rule says). Blender X stays glTF X in the +Y-up export.
+#   Steering: node steer_wheel - a round rim through the grips' radius, three
+#   spokes and a yellow hub; a fixed column housing out of the cowl (part of
+#   plane_body) carries it.
+# THE STEERING PART. The kit's steering wheel hangs on the joint kart_steer and
+# the clips turn that joint about its Y axis (the column). The steering parts
+# are laid out in that joint's frame as measured from the kit file at run time:
+# the pivot (the joint's head), the column, and the grips - the centre of the
+# part of the kit's wheel each hand closes around (the kit's rim passes through
+# the puppet's solid fists). A part inside a fist would touch it, so the grips
+# lie on the line (hover) or circle (plane) through the measured grips, but
+# STEER_CLEAR in front of the hands' front (measured over every seated frame,
+# in the turned joint's frame). The steering node's origin is the pivot, its
+# axes are the world's; the column is the node's local -Y (Blender), the
+# kart's forward axis. No shape keys: the joint turns it.
 # Every shape key holds an absolute shape (Blender's glTF exporter writes each
 # key minus the Basis); the keys are independent, the Basis is the neutral pose.
 #
@@ -71,6 +90,11 @@
 # propeller as placed, and the volume a spinning wheel or propeller sweeps)
 # have no crossing triangle pair and no vertex inside each other (the minimum
 # clearance is reported; the shape keys at 1.0 are reported as information);
+# the steering part is taken where each frame's joint kart_steer puts it, and
+# neither touches the figure (hands included) nor the body in any frame, nor
+# when turned STEER_TURN degrees either way; the driver file keeps the joint
+# kart_steer in its skin with the steering part on it and steer_left /
+# steer_right turning it;
 # the plane's wheels and propeller turned in 15 degree steps do not touch the
 # body (wings included); the propeller and wheel pivots lie on their axes
 # (radial distance of the mesh centre from the axis) and the propeller is
@@ -103,6 +127,11 @@ BLENDER_VERSION = (5, 2)
 README_NAME = "LIESMICH.txt"
 ROOT_NODE = "kart"            # the root node of a vehicle file (the game's name for the kart part)
 KART_BONE = "kart"            # the kit joint the kit kart hangs on
+STEER_BONE = "kart_steer"     # the kit joint the kit's steering wheel hangs on; the clips turn it
+HAND_GROUPS = ("hand.", "fingers.", "thumb.")   # vertex groups of the puppet's hands (name prefixes)
+STEER_CLEAR = 0.012           # m: the steering part's grips stay this far in front of the hands' front
+STEER_TURN = 60               # degrees: the steering part turned this far both ways must not touch the body
+PLANE_COWL_BACK = 0.645       # the plane's cowl ends this far in front of the seat (shared by both designs)
 SEATED_CLIPS = ("idle", "steer_left", "steer_right", "jump", "drift_left", "drift_right", "hit",
                 "finish_win", "finish_lose")
 RAY_DIRS = ((1.0, 0.013, 0.007), (0.011, 1.0, 0.017), (0.019, 0.009, 1.0))
@@ -232,6 +261,56 @@ def measure_kit(rig, kart):
     bpy.context.view_layer.update()
     return {"fx0": lo[0], "fx1": hi[0], "fy0": lo[1], "fy1": hi[1], "g": lo[2], "top": hi[2],
             "sx": seat.x, "sy": seat.y, "sz": seat.z, "parts": parts}
+
+
+def measure_steer(rig, puppet, kart, scene):
+    """The kit's steering: the joint it hangs on (its rest frame: origin = the pivot, Y = the column the clips turn
+    it about), the two grips - the centre of the part of the kit's steering wheel each hand closes around (wheel
+    vertices inside the puppet, rest pose), per side - and the front of the hands: the largest distance along the
+    column of any hand vertex in front of the pivot, in the rest pose and every frame of every seated clip, in the
+    turned joint's frame. Measured from the kit file at every run; nothing of it is stored in this script."""
+    wheel = [o for o in kart if o.parent_type == "BONE" and o.parent_bone == STEER_BONE]
+    if not wheel:
+        fail(4, "the kit has no steering wheel on the joint '%s'." % STEER_BONE)
+    if STEER_BONE not in rig.data.bones:
+        fail(4, "the skeleton has no bone '%s'." % STEER_BONE)
+    stored = rig.data.pose_position
+    rig.data.pose_position = "REST"
+    bpy.context.view_layer.update()
+    M = rig.matrix_world @ rig.data.bones[STEER_BONE].matrix_local
+    H = M.translation.copy()
+    c = M.col[1].xyz.normalized()
+    up = (M.col[2].xyz - c * M.col[2].xyz.dot(c)).normalized()
+    side = c.cross(up).normalized()
+    dg = bpy.context.evaluated_depsgraph_get()
+    fco, fpo = world_coords(puppet, dg)
+    fig = Solid("figure", fco, fpo)
+    grips = {}
+    for w in wheel:
+        co, _p = world_coords(w, dg)
+        for v in co:
+            if fig.inside(v):
+                d = v - H
+                sgn = 1 if d.dot(side) >= 0.0 else -1
+                grips.setdefault(sgn, []).append(Vector((d.dot(side), d.dot(c), d.dot(up))))
+    if set(grips) != {1, -1}:
+        fail(4, "the kit's steering wheel is not held by both hands in the rest pose.")
+    grips = {k: sum(v, Vector()) / len(v) for k, v in grips.items()}
+    groups = {g.index for g in puppet.vertex_groups if g.name.startswith(HAND_GROUPS)}
+    hand = [v.index for v in puppet.data.vertices
+            if v.groups and max(v.groups, key=lambda g: g.weight).group in groups]
+    front = -1e9
+    for clip, frame in figure_frames(rig, scene):
+        set_clip(rig, scene, clip, frame)
+        Mp = rig.matrix_world @ rig.pose.bones[STEER_BONE].matrix
+        cp, hp = Mp.col[1].xyz.normalized(), Mp.translation
+        dg = bpy.context.evaluated_depsgraph_get()
+        co, _p = world_coords(puppet, dg)
+        front = max(front, max((co[i] - hp).dot(cp) for i in hand))
+    set_clip(rig, scene, "idle", 0)
+    rig.data.pose_position = stored
+    bpy.context.view_layer.update()
+    return {"H": H, "c": c, "up": up, "side": side, "grips": grips, "front": front}
 
 
 # ------------------------------------------------------------------ geometry helpers
@@ -376,6 +455,47 @@ def rotate_about(verts, origin, axis, deg):
     return [tuple(m @ (Vector(v) - o) + o) for v in verts]
 
 
+def perp_frame(d):
+    """Two unit vectors perpendicular to d and to each other (a fixed choice, the same every run)."""
+    d = Vector(d).normalized()
+    ref = Vector((0.0, 0.0, 1.0)) if abs(d.z) < 0.9 else Vector((1.0, 0.0, 0.0))
+    e1 = d.cross(ref).normalized()
+    return e1, d.cross(e1).normalized()
+
+
+def tube(name, field, p0, p1, sections, n=10):
+    """A tube along the straight line p0 -> p1: sections = [(t 0..1, radius), ...], capped at both ends."""
+    p0, p1 = Vector(p0), Vector(p1)
+    e1, e2 = perp_frame(p1 - p0)
+    rings = []
+    for t, r in sections:
+        c = p0.lerp(p1, t)
+        rings.append([tuple(c + e1 * u + e2 * v) for u, v in circle(n, r, math.pi / n)])
+    return piece(name, field, loft(rings))
+
+
+def torus(name, field, centre, axis, big, small, n_big=24, n_small=8):
+    """A closed ring of radius big about axis through centre, tube radius small."""
+    centre, axis = Vector(centre), Vector(axis).normalized()
+    e1, e2 = perp_frame(axis)
+    verts = []
+    for i in range(n_big):
+        a = 2.0 * math.pi * i / n_big
+        radial = e1 * math.cos(a) + e2 * math.sin(a)
+        mid = centre + radial * big
+        for j in range(n_small):
+            b = 2.0 * math.pi * j / n_small
+            verts.append(tuple(mid + radial * (small * math.cos(b)) + axis * (small * math.sin(b))))
+    tris = []
+    for i in range(n_big):
+        for j in range(n_small):
+            a0, a1 = i * n_small + j, i * n_small + (j + 1) % n_small
+            b0, b1 = ((i + 1) % n_big) * n_small + j, ((i + 1) % n_big) * n_small + (j + 1) % n_small
+            tris.append((a0, b0, b1))
+            tris.append((a0, b1, a1))
+    return piece(name, field, (verts, tris))
+
+
 # ------------------------------------------------------------------ the two designs
 # All numbers below are made up for these vehicles. They are offsets from the seat (sx, sy, sz) and from the
 # measured footprint (front fy0, rear fy1, half width W, ground g); none is a number of the kit kart.
@@ -449,7 +569,7 @@ def design_plane(A):
     body.append(box_y("floor", "seat", sx - 0.33, sx + 0.33, fy0 + 0.08, sy + 0.30, floor_bot, floor_top, 0.012))
     body.append(box_y("seat", "seat", sx - 0.20, sx + 0.20, sy - 0.17, sy + 0.23, sz - 0.085, sz - 0.035, 0.018))
     # nose cowl: a hollow cup over the legs, open towards the seat
-    cy_back, cy_front = sy - 0.645, fy0 + 0.06
+    cy_back, cy_front = sy - PLANE_COWL_BACK, fy0 + 0.06
     ox, oz0, oz1 = 0.40, g + 0.02, sz + 0.42
     ix, iz0, iz1 = 0.255, floor_top, sz + 0.34
     outer = [ring_y(cy_back, octagon(sx - ox, sx + ox, oz0, oz1, 0.07)),
@@ -560,6 +680,65 @@ def design_plane(A):
     return body, prop, hub, wheels, hinges
 
 
+def design_steer(kind, A, S):
+    """The steering part (in its node's space: origin on the kit's steering pivot, axes as the world's) and the
+    fixed pieces that carry it (world space, part of the body). Laid out in the kit joint's frame from the
+    measured pivot S["H"], column S["c"] (forward), S["up"], S["side"]: a point (s, f, u) is
+    H + s side + f c + u up. The grips sit exactly on the line through the two measured grips, STEER_CLEAR in
+    front of the hands' front (the hands close around the kit's wheel rim; a solid fist leaves no room for a part
+    inside it)."""
+    H, c, up, side = S["H"], S["c"], S["up"], S["side"]
+
+    def at(s, f, u):            # node space (relative to H)
+        return tuple(side * s + c * f + up * u)
+
+    def world(s, f, u):
+        return tuple(H + side * s + c * f + up * u)
+    gl, gr = S["grips"][1], S["grips"][-1]
+    steer, fixed = [], []
+    if kind == "hover":
+        bar_r = 0.016
+        fb = S["front"] + STEER_CLEAR + bar_r
+        # the bar: a straight line through both grips (at the bar's depth fb), 6 cm beyond each grip
+        a, b = Vector((gl.x, fb, gl.z)), Vector((gr.x, fb, gr.z))
+        d = (b - a).normalized()
+        a2, b2 = a - d * 0.06, b + d * 0.06
+        steer.append(tube("bar", "metal", at(*a2), at(*b2), [(0.0, bar_r), (1.0, bar_r)]))
+        for tag, g, out in (("l", a, -d), ("r", b, d)):
+            g0, g1 = g - out * 0.035, g + out * 0.06
+            steer.append(tube("grip_" + tag, "dark", at(*g0), at(*g1),
+                              [(0.0, 0.021), (0.1, 0.023), (0.85, 0.023), (1.0, 0.019)]))
+        mid = a.lerp(b, (0.0 - a.x) / (b.x - a.x))       # the bar where it crosses the column's plane s = 0
+        steer.append(tube("riser", "trim", at(0.0, fb, 0.0), at(0.0, fb, mid.z), [(0.0, 0.02), (1.0, 0.02)]))
+        steer.append(tube("clamp", "trim", at(0.0, fb - 0.025, mid.z), at(0.0, fb + 0.025, mid.z),
+                          [(0.0, 0.028), (1.0, 0.028)]))
+        steer.append(tube("column", "trim", at(0.0, fb - 0.02, 0.0), at(0.0, fb + 0.10, 0.0),
+                          [(0.0, 0.026), (1.0, 0.026)]))
+        # fixed: a headset around the column's end and a down tube to the floor between the feet
+        fixed.append(tube("headset", "metal", world(0.0, fb + 0.105, 0.0), world(0.0, fb + 0.15, 0.0),
+                          [(0.0, 0.036), (1.0, 0.036)]))
+        floor = (A["sx"], A["sy"] - 0.70, A["sz"] - 0.07)
+        fixed.append(tube("down_tube", "metal", world(0.0, fb + 0.13, 0.0), floor, [(0.0, 0.024), (1.0, 0.024)]))
+        return steer, fixed
+    # plane: a round steering wheel (yoke) in front of the hands, rim through the grips' mean radius
+    rim_r = 0.014
+    fb = S["front"] + STEER_CLEAR + rim_r
+    big = 0.5 * (math.hypot(gl.x, gl.z) + math.hypot(gr.x, gr.z))
+    steer.append(torus("rim", "seat", at(0.0, fb, 0.0), c, big, rim_r))
+    for tag, ang in (("l", math.atan2(gl.z, gl.x)), ("r", math.atan2(gr.z, gr.x)), ("d", -0.5 * math.pi)):
+        cs, sn = math.cos(ang), math.sin(ang)
+        steer.append(tube("spoke_" + tag, "strut", at(0.03 * cs, fb, 0.03 * sn),
+                          at((big - 0.006) * cs, fb, (big - 0.006) * sn), [(0.0, 0.009), (1.0, 0.009)], 8))
+    steer.append(tube("hub", "spinner", at(0.0, fb - 0.025, 0.0), at(0.0, fb + 0.09, 0.0),
+                      [(0.0, 0.03), (0.2, 0.036), (1.0, 0.036)]))
+    # fixed: the column housing out of the cowl's back face
+    cowl = Vector((A["sx"], A["sy"] - PLANE_COWL_BACK, H.z)) - H
+    f_cowl = cowl.dot(c)
+    fixed.append(tube("column_housing", "body", world(0.0, fb + 0.095, 0.0), world(0.0, f_cowl + 0.03, 0.0),
+                      [(0.0, 0.04), (1.0, 0.045)]))
+    return steer, fixed
+
+
 def wheel_piece(r, hw, n=12):
     """A wheel in its own space: chamfered tyre along x, a hub cap through it."""
     ch = 0.25 * hw
@@ -603,6 +782,7 @@ def plane_keys(P, hinges):
 
 
 HOVER_KEYS = ("lean_left", "lean_right", "nose_up", "nose_down")
+STEER_NAME = {"hover": "handlebar", "plane": "steer_wheel"}   # the steering part's node
 PLANE_KEYS = ("elevator_up", "elevator_down", "rudder_left", "rudder_right", "flaps_down")
 
 
@@ -823,26 +1003,39 @@ def figure_frames(rig, scene):
 
 
 def set_clip(rig, scene, clip, frame):
-    if clip is None:
-        rig.data.pose_position = "REST"
-    else:
-        rig.data.pose_position = "POSE"
+    """The rest pose (clip None) or a frame of a clip. Every pose bone is reset to its rest values first, so a bone
+    the clip has no channel for stands in its rest pose - as in the exported clips (the kit's exporter resets the
+    pose bones between actions, export_reset_pose_bones). Without the reset such a bone keeps the value the clip
+    before left (measured: idle after finish_lose had the hands 22 mm further forward)."""
+    rig.data.pose_position = "REST" if clip is None else "POSE"
+    for pb in rig.pose.bones:
+        pb.location = (0.0, 0.0, 0.0)
+        pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+        pb.rotation_euler = (0.0, 0.0, 0.0)
+        pb.scale = (1.0, 1.0, 1.0)
+    if clip is not None:
         act = bpy.data.actions[clip]
         if rig.animation_data is None:
             rig.animation_data_create()
-        rig.animation_data.action = act
+        if rig.animation_data.action is not act:
+            rig.animation_data.action = act
         if getattr(rig.animation_data, "action_slot", 1) is None and len(act.slots):
             rig.animation_data.action_slot = act.slots[0]
+    scene.frame_set(frame + 1)
     scene.frame_set(frame)
     bpy.context.view_layer.update()
 
 
-def figure_sweep(rig, puppet, scene, states):
+def figure_sweep(rig, puppet, scene, states, mover=None, mover_skip=("wings",)):
     """states: {state name: (solids, spinners)}. For each state and every figure frame: crossing triangle pairs,
     figure vertices inside a solid or a swept cylinder, vehicle vertices inside the figure, and the clearance
     (smallest distance figure vertex -> vehicle surface or swept cylinder, vehicle vertex -> figure surface).
-    Returns {state: {"pairs", "inside", "clear", "where"}}, per clip too."""
-    res = {s: {"pairs": 0, "inside": 0, "clear": NEAR, "where": "-", "clips": {}} for s in states}
+    mover = (object, pieces): a part on a joint the clips move (the steering part), taken where the frame puts it,
+    in every state but those of mover_skip; its own clearance to the figure ("mover_clear") and its pairs with the state's solids
+    ("mover_body") are kept too.
+    Returns {state: {"pairs", "inside", "clear", "where", "mover_clear", "mover_body"}}, per clip too."""
+    res = {s: {"pairs": 0, "inside": 0, "clear": NEAR, "where": "-", "clips": {}, "mover_clear": NEAR,
+               "mover_where": "-", "mover_body": 0} for s in states}
     prepared = {}
     for s, (solids, spinners) in states.items():
         allco, alltris, base = [], [], 0
@@ -860,13 +1053,45 @@ def figure_sweep(rig, puppet, scene, states):
         fco, fpolys = world_coords(puppet, dg)
         fsolid = Solid("figure", fco, fpolys)
         name = clip or "rest pose"
+        msolids, mbvh, mco = [], None, []
+        if mover is not None:
+            msolids = world_solids(mover[0], mover[1])
+            mtris, base = [], 0
+            for so in msolids:
+                mco.extend(so.co)
+                mtris.extend(tuple(base + i for i in t) for t in so.tris)
+                base += len(so.co)
+            mbvh = BVHTree.FromPolygons(mco, mtris)
+            mlo = Vector((min(v.x for v in mco), min(v.y for v in mco), min(v.z for v in mco))) - Vector((NEAR,) * 3)
+            mhi = Vector((max(v.x for v in mco), max(v.y for v in mco), max(v.z for v in mco))) + Vector((NEAR,) * 3)
+            mnear = [p for p in fco if mlo.x <= p.x <= mhi.x and mlo.y <= p.y <= mhi.y and mlo.z <= p.z <= mhi.z]
+            mpairs = len(mbvh.overlap(fsolid.bvh))
+            minside = sum(1 for so in msolids for p in mnear if so.inside(p))
+            minside += sum(1 for so in msolids if fsolid.inside(so.co[0]))
+            mclear, mwhere = NEAR, None
+            for p in mnear:
+                h = mbvh.find_nearest(p, NEAR)
+                if h[0] is not None and h[3] < mclear:
+                    mclear, mwhere = h[3], "figure vertex %s" % _fmt(p)
+            for p in mco:
+                h = fsolid.bvh.find_nearest(p, NEAR)
+                if h[0] is not None and h[3] < mclear:
+                    mclear, mwhere = h[3], "steering vertex %s" % _fmt(p)
         for s, (solids, spinners) in states.items():
             vbvh, vco, lo, hi, probe = prepared[s]
             r = res[s]
-            c = r["clips"].setdefault(name, {"pairs": 0, "inside": 0, "clear": NEAR})
+            c = r["clips"].setdefault(name, {"pairs": 0, "inside": 0, "clear": NEAR, "mover_clear": NEAR})
             pairs = len(vbvh.overlap(fsolid.bvh))
             near = [p for p in fco if lo.x <= p.x <= hi.x and lo.y <= p.y <= hi.y and lo.z <= p.z <= hi.z]
             inside = 0
+            use_mover = mbvh is not None and s not in mover_skip
+            if use_mover:
+                pairs += mpairs
+                inside += minside
+                r["mover_body"] += len(mbvh.overlap(vbvh))
+                c["mover_clear"] = min(c["mover_clear"], mclear)
+                if mclear < r["mover_clear"]:
+                    r["mover_clear"], r["mover_where"] = mclear, "%s frame %d, %s" % (name, frame, mwhere)
             for so in solids:
                 inside += sum(1 for p in near if so.inside(p))
             for sp in spinners:
@@ -886,6 +1111,8 @@ def figure_sweep(rig, puppet, scene, states):
                 h = fsolid.bvh.find_nearest(p, NEAR)
                 if h[0] is not None and h[3] < clear:
                     clear, where = h[3], "vehicle vertex %s" % _fmt(p)
+            if use_mover and mclear < clear:
+                clear, where = mclear, mwhere
             c["pairs"] += pairs
             c["inside"] += inside
             c["clear"] = min(c["clear"], clear)
@@ -902,12 +1129,12 @@ def _fmt(p):
     return "(%.3f, %.3f, %.3f)" % (p[0], p[1], p[2])
 
 
-def spin_contacts(part_pieces, mw, others, steps):
-    """A spinning part (pieces in its node's space, turning about the node's local X) turned in steps against
-    solids: pairs and clearance."""
+def spin_contacts(part_pieces, mw, others, steps, axis="X", angles=None):
+    """A spinning part (pieces in its node's space, turning about the node's local X, or the axis given) turned in
+    steps (or to the angles given) against solids: pairs and clearance."""
     pairs, clear = 0, NEAR
-    for k in range(0, 360, steps):
-        m = mw @ Matrix.Rotation(math.radians(k), 4, "X")
+    for k in (angles if angles is not None else range(0, 360, steps)):
+        m = mw @ Matrix.Rotation(math.radians(k), 4, axis)
         for p in part_pieces:
             co = [m @ Vector(v) for v in p["verts"]]
             so = Solid(p["name"], co, p["tris"])
@@ -1002,7 +1229,7 @@ def glb_problems(path, root, children, key_names):
     return out
 
 
-def driver_problems(path, parts, key_names, wheels):
+def driver_problems(path, parts, key_names, wheels, steer):
     """The figure + vehicle file: the vehicle parts in the subtree of the first node 'kart' (the joint), the wheel
     nodes there when the vehicle has them, one skin, the seated clips, the morph target names, and nothing of the
     kit kart: no kit mark (ctr_kit), no kit material or image (ctrkit_), none of its object names."""
@@ -1022,6 +1249,26 @@ def driver_problems(path, parts, key_names, wheels):
     missing = [p for p in parts if p not in sub]
     if missing:
         out.append("the driver file has %s outside the subtree of '%s'" % (missing, ROOT_NODE))
+    if STEER_BONE not in names:
+        out.append("the driver file has no joint '%s'" % STEER_BONE)
+    else:
+        si = names.index(STEER_BONE)
+        kids = [names[k] for k in nodes[si].get("children", [])]
+        if steer not in kids:
+            out.append("the steering part '%s' is not on the joint '%s' (children %s)" % (steer, STEER_BONE, kids))
+        skins = j.get("skins", [])
+        if skins and si not in skins[0].get("joints", []):
+            out.append("the joint '%s' is not a joint of the skin" % STEER_BONE)
+        turned = set()
+        for an in j.get("animations", []):
+            for ch in an.get("channels", []):
+                if ch.get("target", {}).get("node") == si and ch.get("target", {}).get("path") == "rotation":
+                    turned.add(an.get("name"))
+        for clip in ("steer_left", "steer_right"):
+            if clip not in turned:
+                out.append("the clip %s does not turn the joint '%s'" % (clip, STEER_BONE))
+    log("driver file %s: skin joints %d" % (os.path.basename(path),
+                                            len(j["skins"][0]["joints"]) if j.get("skins") else 0))
     wheel_names = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
     if wheels != all(w in sub for w in wheel_names) or (not wheels and any(w in names for w in wheel_names)):
         out.append("the driver file's wheel nodes are not as the vehicle's")
@@ -1081,17 +1328,24 @@ def export_collection(coll, path, settings):
 
 def build_vehicle(kind, A, vcol):
     """Objects of the vehicle (not linked yet) and what the checks need."""
+    S = A["steer"]
+    steer_p, fixed = design_steer(kind, A, S)
+    loc = tuple(S["H"])
     if kind == "hover":
-        P = design_hover(A)
+        P = design_hover(A) + fixed
         keys = hover_keys(P, A)
         mat, fields = make_material("dummy_hover", HOVER_RGB, vcol)
         body = make_object("hover_body", P, mat, fields, vcol, (0.0, 0.0, 0.0), keys, HOVER_KEYS)
+        sobj = make_object(STEER_NAME[kind], steer_p, mat, fields, vcol, loc)
         return {"kind": kind, "body": body, "body_pieces": P, "keys": keys, "key_order": HOVER_KEYS,
-                "parts": [body], "prop": None, "wheels": []}
+                "parts": [body, sobj], "prop": None, "wheels": [],
+                "steer": {"obj": sobj, "pieces": steer_p, "column": S["c"].copy()}}
     P, prop, hub, wheels, hinges = design_plane(A)
+    P = P + fixed
     keys = plane_keys(P, hinges)
     mat, fields = make_material("dummy_plane", PLANE_RGB, vcol)
     body = make_object("plane_body", P, mat, fields, vcol, (0.0, 0.0, 0.0), keys, PLANE_KEYS)
+    sobj = make_object(STEER_NAME[kind], steer_p, mat, fields, vcol, loc)
     pobj = make_object("spin_prop", prop, mat, fields, vcol, hub, rotation=PROP_ROT)
     wl = []
     for w in wheels:
@@ -1099,8 +1353,8 @@ def build_vehicle(kind, A, vcol):
         wobj = make_object(w["name"], wp, mat, fields, vcol, w["centre"])
         wl.append({"obj": wobj, "pieces": wp, "centre": w["centre"], "r": w["r"], "hw": w["hw"]})
     return {"kind": kind, "body": body, "body_pieces": P, "keys": keys, "key_order": PLANE_KEYS,
-            "parts": [body, pobj] + [w["obj"] for w in wl], "prop": {"obj": pobj, "pieces": prop, "hub": hub},
-            "wheels": wl}
+            "parts": [body, sobj, pobj] + [w["obj"] for w in wl], "prop": {"obj": pobj, "pieces": prop, "hub": hub},
+            "wheels": wl, "steer": {"obj": sobj, "pieces": steer_p, "column": S["c"].copy()}}
 
 
 def check_vehicle(V, rig, puppet, scene, problems, report):
@@ -1111,6 +1365,7 @@ def check_vehicle(V, rig, puppet, scene, problems, report):
         allp += V["prop"]["pieces"]
     for w in V["wheels"]:
         allp += w["pieces"]
+    allp += V["steer"]["pieces"]
     bad = sorted(set(p["name"] for p in allp if not closed_and_wound(p)))
     if bad:
         problems.append("%s: pieces not closed or not wound outward: %s" % (kind, ", ".join(bad)))
@@ -1139,16 +1394,44 @@ def check_vehicle(V, rig, puppet, scene, problems, report):
         states["wings"] = (wing_solids, [])          # the wings with their flaps alone, for their own clearance
     for k in V["key_order"]:
         states[k] = (world_solids(V["body"], V["body_pieces"], V["keys"][k]) + extra, spinners)
-    res = figure_sweep(rig, puppet, scene, states)
+    so = V["steer"]["obj"]
+    res = figure_sweep(rig, puppet, scene, states, (so, V["steer"]["pieces"]))
     report["sweep"] = res
     b = res["basis"]
     if b["pairs"] or b["inside"]:
         problems.append("%s: the figure touches the vehicle (%d triangle pairs, %d vertices inside over all frames)"
                         % (kind, b["pairs"], b["inside"]))
-    log("%s: figure vs vehicle, rest pose + %d seated clips: pairs %d, inside %d, min clearance %.1f mm (%s)" %
+    log("%s: figure vs vehicle (steering part where each frame turns it), rest pose + %d seated clips: pairs %d, "
+        "inside %d, min clearance %.1f mm (%s)" %
         (kind, len(SEATED_CLIPS), b["pairs"], b["inside"], 1000 * b["clear"], b["where"]))
     for clip, c in b["clips"].items():
-        log("  %-12s pairs %d inside %d clearance %.1f mm" % (clip, c["pairs"], c["inside"], 1000 * c["clear"]))
+        log("  %-12s pairs %d inside %d clearance %.1f mm, steering part to the figure %.1f mm" %
+            (clip, c["pairs"], c["inside"], 1000 * c["clear"], 1000 * c["mover_clear"]))
+    log("%s: %s to the figure (hands to grip), all frames: min clearance %.1f mm (%s); rest pose %.1f mm" %
+        (kind, so.name, 1000 * b["mover_clear"], b["mover_where"], 1000 * b["clips"]["rest pose"]["mover_clear"]))
+    # the steering part against the body: in every frame (as the clips turn it) and turned to +-STEER_TURN
+    log("%s: %s vs the body in every frame of the clips: pairs %d" % (kind, so.name, b["mover_body"]))
+    if b["mover_body"]:
+        problems.append("%s: the steering part touches the body as the clips turn it" % kind)
+    others = body_solids + extra
+    axis_local = (so.matrix_world.to_3x3().inverted() @ V["steer"]["column"]).normalized()
+    turn = list(range(-STEER_TURN, STEER_TURN + 1, 15))
+    pairs, clear = 0, NEAR
+    for k in turn:
+        m = so.matrix_world @ Matrix.Rotation(math.radians(k), 4, axis_local)
+        for pc in V["steer"]["pieces"]:
+            sol = Solid(pc["name"], [m @ Vector(v) for v in pc["verts"]], pc["tris"])
+            for o in others:
+                pairs += len(sol.bvh.overlap(o.bvh))
+                for v in sol.co:
+                    h = o.bvh.find_nearest(v, NEAR)
+                    if h[0] is not None:
+                        clear = min(clear, h[3])
+    report["steer_turn"] = (pairs, clear)
+    log("%s: %s turned %d..%d degrees about the column vs the body and the other parts: pairs %d, min clearance "
+        "%.1f mm" % (kind, so.name, -STEER_TURN, STEER_TURN, pairs, 1000 * clear))
+    if pairs:
+        problems.append("%s: the steering part touches the body when turned" % kind)
     if wing_solids:
         r = res["wings"]
         log("%s: wings + flaps alone vs figure: pairs %d, inside %d, min clearance %.1f mm (%s)" %
@@ -1221,7 +1504,7 @@ def check_vehicle(V, rig, puppet, scene, problems, report):
             (kind, max(max(v) for v in wp.values())))
 
     # size against the footprint, ground
-    co = [v for so in body_solids + extra for v in so.co]
+    co = [v for sol in body_solids + extra for v in sol.co]
     lo = [min(v[a] for v in co) for a in range(3)]
     hi = [max(v[a] for v in co) for a in range(3)]
     report["bbox"] = (lo, hi)
@@ -1284,14 +1567,15 @@ def remove_kit_kart():
 
 
 def seat_in_kit(V, rig):
-    """The parts into the collection Kart, hung on the joint 'kart' as the kit kart was (world place kept)."""
+    """The parts into the collection Kart, hung on the joint 'kart' as the kit kart was, the steering part on the
+    joint 'kart_steer' as the kit's steering wheel was (world place kept): the clips turn it."""
     kart = bpy.data.collections["Kart"]
     for o in V["parts"]:
         kart.objects.link(o)
         mw = o.matrix_world.copy()
         o.parent = rig
         o.parent_type = "BONE"
-        o.parent_bone = KART_BONE
+        o.parent_bone = STEER_BONE if o is V["steer"]["obj"] else KART_BONE
         bpy.context.view_layer.update()
         o.matrix_world = mw
     bpy.context.view_layer.update()
@@ -1331,6 +1615,12 @@ def main():
             for n, (lo, hi) in sorted(A["parts"].items()):
                 log("  %-18s x %.4f .. %.4f  y %.4f .. %.4f  z %.4f .. %.4f" % (n, lo[0], hi[0], lo[1], hi[1],
                                                                               lo[2], hi[2]))
+            A["steer"] = measure_steer(rig, puppet, kart, scene)
+            S = A["steer"]
+            log("kit steering measured: pivot %s, column %s; grips (s, f, u) from the pivot in the joint's frame "
+                "(side, along the column, up): %s and %s; front of the hands %.4f m along the column (all seated "
+                "frames)" %
+                (_fmt(S["H"]), _fmt(S["c"]), _fmt(S["grips"][1]), _fmt(S["grips"][-1]), S["front"]))
         puppet_tris = sum(len(p.vertices) - 2 for p in puppet.data.polygons)
         vcol = "psx"
         for m in puppet.data.materials:
@@ -1363,7 +1653,8 @@ def main():
         else:
             problems.extend("%s: %s" % (kind, p) for p in
                             driver_problems(base + "-driver.glb", [o.name for o in V["parts"]],
-                                            {V["body"].name: V["key_order"]}, len(V["wheels"]) == 4))
+                                            {V["body"].name: V["key_order"]}, len(V["wheels"]) == 4,
+                                            V["steer"]["obj"].name))
         if opt["scene"]:
             ck.filepath = "//" + names[kind] + "-driver.glb"
             for k, val in EXPORT_MORPH.items():
@@ -1424,7 +1715,9 @@ def write_readme(opt, A, R, puppet_tris):
           "              flaps_down                   flaps %g deg" % PLANE_FLAPS,
           "  Moving parts of the plane: spin_prop (propeller; the shaft is the node's local X axis, local +X = the",
           "  kart's front; origin on the shaft),",
-          "  wheel_fl, wheel_fr, wheel_rl, wheel_rr (axle = the node's X axis).", ""]
+          "  wheel_fl, wheel_fr, wheel_rl, wheel_rr (axle = the node's X axis).",
+          "  Steering: handlebar (hover), steer_wheel (plane) - on the joint kart_steer in the driver file, turned by",
+          "  the clips like the kit's steering wheel (no shape keys); origin on the kit's steering pivot.", ""]
     t += ["Triangles"]
     for kind in ("hover", "plane"):
         r = R[kind]
@@ -1452,6 +1745,12 @@ def write_readme(opt, A, R, puppet_tris):
                      (name, SPIN_STEP, pairs, mm(clear)))
         for k, (pairs, clear) in r.get("key_wheels", {}).items():
             t.append("    key %-13s at 1.0 vs wheels (info): %d pairs, min clearance %s" % (k, pairs, mm(clear)))
+        if "steer_turn" in r:
+            b2 = r["sweep"]["basis"]
+            t.append("    steering part to the figure (hands to grip): min %s over all frames, %s in the rest pose" %
+                     (mm(b2["mover_clear"]), mm(b2["clips"]["rest pose"]["mover_clear"])))
+            t.append("    steering part vs body: %d pairs in the clips' frames, %d pairs turned %d..%d deg (min %s)" %
+                     (b2["mover_body"], r["steer_turn"][0], -STEER_TURN, STEER_TURN, mm(r["steer_turn"][1])))
         if "prop_pivot" in r:
             rc, rb, rh, sym = r["prop_pivot"]
             t.append("    spin_prop pivot off the axis: mesh centre %.2g m, hub ring centre %.2g m; "
