@@ -130,6 +130,11 @@ const char *NativeMods_StatusText(void);
 //                                cross they do not drive the kart then (a U-turn)
 //               The pads count for the CPU drivers too (their nav turbos);
 //               KEEP RESERVES is a kart's only, a CPU driver never brakes.
+//   FREE FLY    OFF, ON, normal OFF: player 1 (seat 0, a human driver) whose
+//               .rldchar has the vehicle class hover or plane flies with R1
+//               instead of hopping and drifting (platform/native_fly.c,
+//               include/platform/native_fly.h); every other driver, and a
+//               kart-class player, drives as without it.
 //   BOSS        OFF, RANDOM, ROO, PAPU, JOE, PINSTRIPE, OXIDE. One against one
 //               with the boss: his model, his strength (BossDifficulty), his
 //               weapon pattern (data.BossWeapon*, its sections spread over this
@@ -144,6 +149,7 @@ enum
 	NATIVE_MODS_DIFFICULTY,
 	NATIVE_MODS_BOSS,
 	NATIVE_MODS_RETRO,
+	NATIVE_MODS_FREEFLY,
 	NATIVE_MODS_VALUES
 };
 
@@ -312,7 +318,7 @@ void NativeMods_LogRace(void);
 // of gravity=<n>, grip=<n>, night=<n>, items=default|chaos|custom,
 // w<item id>=<0..3> (ITEM WEIGHTS), difficulty=easy|normal|hard|extreme,
 // boss=off|random|roo|papu|joe|pinstripe|oxide, retro=off|on, rpads=, rlong=,
-// rstack=, rkeep=<0|1> (RETRO PARTS) and the measuring keys
+// rstack=, rkeep=<0|1> (RETRO PARTS), freefly=off|on and the measuring keys
 // base=<n> (the bots' difficulty before DIFFICULTY, as the cup menu's
 // 80 / 160 / 240) and shot=<race frame> (a snapshot of that frame); round 1's
 // words moon, icy and chaos are gravity=41, grip=0 and items=chaos. Each race

@@ -1,6 +1,7 @@
 #include <common.h>
 #include <platform/native_mods.h>
 #include <platform/native_glide.h>
+#include <platform/native_fly.h>
 #include <platform/native_hover.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
@@ -113,6 +114,7 @@ enum
 	DBG_SHAPE_KEYS,
 	DBG_GLIDE,
 	DBG_HOVER,
+	DBG_FREE_FLY,
 	DBG_DRIVER,
 	DBG_TRACK,
 	DBG_PAGE_COUNT,
@@ -146,7 +148,7 @@ enum
 #define DBG_FIRST_ROW_Y  28
 #define DBG_VISIBLE_ROWS 12
 
-global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS", "GLIDE", "HOVER"};
+global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS", "GLIDE", "HOVER", "FREE FLY"};
 
 // The VIDEO page.
 //
@@ -778,6 +780,76 @@ internal void DebugMenu_HoverActivate(int row)
 	             t->bobPct, t->bobFrames, t->lean, t->nose);
 }
 
+// The FREE FLY page (platform/native_fly.c, the FREE FLY mod of the MODS page):
+// the four start values of the flight of seat 0 (hover or plane). Nothing is
+// saved: the values hold for the session. The mod itself is switched on the
+// MODS page.
+enum
+{
+	DBG_FREE_FLY_CLIMB = 0,
+	DBG_FREE_FLY_TAP,
+	DBG_FREE_FLY_BAND,
+	DBG_FREE_FLY_MARGIN,
+	DBG_FREE_FLY_DEFAULTS,
+	DBG_FREE_FLY_ROW_COUNT,
+};
+
+#define DBG_FREE_FLY_CLIMB_STEP  5
+#define DBG_FREE_FLY_TAP_STEP    1
+#define DBG_FREE_FLY_BAND_STEP   50
+#define DBG_FREE_FLY_MARGIN_STEP 100
+
+internal void DebugMenu_FreeFlyLine(int row, char *line)
+{
+	const NativeFlyTune *t = NativeFly_Tunables();
+
+	switch (row)
+	{
+	case DBG_FREE_FLY_CLIMB:
+		sprintf(line, "%-13s%d WE", "CLIMB RATE", t->climbRate);
+		break;
+	case DBG_FREE_FLY_TAP:
+		sprintf(line, "%-13s%d TICKS", "DOUBLE TAP", t->doubleTap);
+		break;
+	case DBG_FREE_FLY_BAND:
+		sprintf(line, "%-13s%d WE", "BAND", t->band);
+		break;
+	case DBG_FREE_FLY_MARGIN:
+		sprintf(line, "%-13s%d WE", "MARGIN", t->margin);
+		break;
+	default:
+		sprintf(line, "DEFAULTS");
+		break;
+	}
+}
+
+internal void DebugMenu_FreeFlyActivate(int row)
+{
+	NativeFlyTune *t = NativeFly_Tunables();
+
+	switch (row)
+	{
+	case DBG_FREE_FLY_CLIMB:
+		t->climbRate = DebugMenu_GlideStep(t->climbRate, NATIVE_FLY_CLIMB_MIN, NATIVE_FLY_CLIMB_MAX, DBG_FREE_FLY_CLIMB_STEP);
+		break;
+	case DBG_FREE_FLY_TAP:
+		t->doubleTap = DebugMenu_GlideStep(t->doubleTap, NATIVE_FLY_TAP_MIN, NATIVE_FLY_TAP_MAX, DBG_FREE_FLY_TAP_STEP);
+		break;
+	case DBG_FREE_FLY_BAND:
+		t->band = DebugMenu_GlideStep(t->band, NATIVE_FLY_BAND_MIN, NATIVE_FLY_BAND_MAX, DBG_FREE_FLY_BAND_STEP);
+		break;
+	case DBG_FREE_FLY_MARGIN:
+		t->margin = DebugMenu_GlideStep(t->margin, NATIVE_FLY_MARGIN_MIN, NATIVE_FLY_MARGIN_MAX, DBG_FREE_FLY_MARGIN_STEP);
+		break;
+	case DBG_FREE_FLY_DEFAULTS:
+		NativeFly_TuneDefaults(t);
+		break;
+	default:
+		return;
+	}
+	Platform_Log("[CTR Debug] free fly: climb rate %d WE, double tap %d tick(s), band %d WE, margin %d WE\n", t->climbRate, t->doubleTap, t->band, t->margin);
+}
+
 internal int DebugMenu_PanelWidth(int page)
 {
 	return ((page == DBG_TRACKS) || (page == DBG_TRACK)) ? NATIVE_DEBUG_MENU_W_TRACKS : NATIVE_DEBUG_MENU_W;
@@ -838,6 +910,8 @@ internal int DebugMenu_RowCount(int page)
 		return DBG_GLIDE_ROW_COUNT;
 	case DBG_HOVER:
 		return DBG_HOVER_ROW_COUNT;
+	case DBG_FREE_FLY:
+		return DBG_FREE_FLY_ROW_COUNT;
 	case DBG_DRIVER:
 		return DBG_COUNT(s_drivers);
 	case DBG_TRACKS:
@@ -882,6 +956,11 @@ internal const char *DebugMenu_PageTitle(int page)
 		return "HOVER (ENGINE)";
 	}
 
+	if (page == DBG_FREE_FLY)
+	{
+		return "FREE FLY";
+	}
+
 	if (page == DBG_VIEW)
 	{
 		// Which set is in force, in the one place that is on screen whatever row
@@ -924,7 +1003,7 @@ internal const char *DebugMenu_ActionHint(int page)
 	{
 		return "X = USE ROW";
 	}
-	if ((page == DBG_SHAPE_KEYS) || (page == DBG_GLIDE) || (page == DBG_HOVER))
+	if ((page == DBG_SHAPE_KEYS) || (page == DBG_GLIDE) || (page == DBG_HOVER) || (page == DBG_FREE_FLY))
 	{
 		return "X = STEP";
 	}
@@ -1489,6 +1568,10 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 		DebugMenu_HoverActivate(row);
 		break;
 
+	case DBG_FREE_FLY:
+		DebugMenu_FreeFlyActivate(row);
+		break;
+
 	case DBG_DRIVER:
 		if ((row >= 0) && (row < DBG_COUNT(s_drivers)))
 		{
@@ -1955,6 +2038,10 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 	// --dev-glide-script (platform/native_glide.c): the glide manoeuvres on the
 	// same word - R1, R3 and the d-pad; without the switch the word as it is.
 	word = NativeGlide_DevPadWord(gGT, d, word);
+
+	// --dev-fly-script (platform/native_fly.c): the fly manoeuvres on the same
+	// word - R1 only; without the switch the word as it is.
+	word = NativeFly_DevPadWord(gGT, d, word);
 
 	memcpy(pads, base, sizeof(pads));
 	for (slot = 0; slot < 4; slot++)
@@ -4392,6 +4479,10 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 
 			case DBG_HOVER:
 				DebugMenu_HoverLine(i, line);
+				break;
+
+			case DBG_FREE_FLY:
+				DebugMenu_FreeFlyLine(i, line);
 				break;
 
 			case DBG_DRIVER:

@@ -86,6 +86,8 @@
 #include "platform/native_glide_selftest.c"
 #include "platform/native_hover.c"
 #include "platform/native_hover_selftest.c"
+#include "platform/native_fly.c"
+#include "platform/native_fly_selftest.c"
 #include "platform/native_char_gpu.c"
 #include "platform/native_twin.c"
 #include "platform/native_wheels.c"
@@ -328,6 +330,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-glide", "", "the GLIDE ABILITY (TEST) of the debug menu on from the start: seat 0 (a human driver) opens wings with R3 in the air and glides (platform/native_glide.c); for measuring"},
     {"--dev-glide-log", "", "with --dev-glide: one line per logic tick of seat 0 while its wings are not folded or something happened ('[CTR Glide] tick ...': state, R3, stick, factor, gravity before and after, the keys, the air time)"},
     {"--dev-glide-script", "<list>", "with --dev-glide and --dev-kart-steer: the steerer flies these manoeuvres in turn (h dl dr DL DR sl sr pu ol or, include/platform/native_glide.h THE SCRIPT) and glides every flight from its 3rd air tick, all through its pad word"},
+    {"--dev-fly-log", "", "with the FREE FLY mod (MODS page, or --dev-mods-play freefly=on): one line per flight event of seat 0 ('[CTR Fly] tick ...': take-off, double tap, landing, end, abort) and of --dev-fly-script"},
+    {"--dev-fly-script", "<list>", "with --dev-kart-steer: the steerer presses R1 for these fly manoeuvres in turn (c<n> h<n> d l, include/platform/native_fly.h THE SCRIPT), all through its pad word"},
     {"--dev-glide-dump", "<prefix>", "with --dev-glide, not with --no-engine or --no-hires-chars: the drawn wing, kart and wheel vertices of seat 0's hi-res driver at every glide landing (<prefix>-map.bin at the load, <prefix>-<timer>.bin per tick), for the penetration count"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
@@ -437,7 +441,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
     {"--dev-mods", "<value[,driver...]>", "the MODS page for this run, never saved: value = default|random|selected (CPU DRIVERS: DEFAULT, ALL RANDOM, ONLY SELECTED), the drivers after it the ticked ones - a number 0..14 a retail driver, anything else a file name of the folder; without any, the ticks of the file"},
     {"--dev-mods-seed", "<n>", "the draw of the MODS page starts from this number (1 to 4294967295) instead of the clock: the same seats again in the same run order"},
-    {"--dev-mods-play", "<set>[/<set>...]", "the play mods of the MODS page for this run, never saved; each race load takes the next set, the last one stays. A set is none or a comma list of gravity=<20..200>, grip=<0..100>, night=<0..90>, items=default|chaos|custom, w<item id>=<0..3> (ITEM WEIGHTS: off, low, normal, high), difficulty=easy|normal|hard|extreme, boss=off|random|roo|papu|joe|pinstripe|oxide, and for measuring base=<n> (the bots' difficulty before DIFFICULTY) and shot=<race frame> (a snapshot <--shot-name>-raceNN.bmp); moon, icy and chaos are gravity=41, grip=0 and items=chaos"},
+    {"--dev-mods-play", "<set>[/<set>...]", "the play mods of the MODS page for this run, never saved; each race load takes the next set, the last one stays. A set is none or a comma list of gravity=<20..200>, grip=<0..100>, night=<0..90>, items=default|chaos|custom, w<item id>=<0..3> (ITEM WEIGHTS: off, low, normal, high), difficulty=easy|normal|hard|extreme, boss=off|random|roo|papu|joe|pinstripe|oxide, freefly=off|on (FREE FLY), and for measuring base=<n> (the bots' difficulty before DIFFICULTY) and shot=<race frame> (a snapshot <--shot-name>-raceNN.bmp); moon, icy and chaos are gravity=41, grip=0 and items=chaos"},
     {"--dev-vk-pending-cap", "<n>", "the Vulkan retire lists of textures and framebuffers hold only n entries (1 to 1024) instead of 1024: a measuring run in which a full list is drained at once"},
     {"--dev-mouse-at", "<x>,<y>", "from the first menu frame the mouse counts as moved to this window pixel position and active, also with --deterministic (a hover screenshot); not saved"},
     {"--ui-safe-area-off", "", "UI safe area off"},
@@ -449,6 +453,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--dev-drive-log-selftest", "", "the line formats of --dev-drive-log, then end; no window, no data needed (ctest drive_log_selftest)"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
+    {"--fly-selftest", "", "the FREE FLY mod's state machine, ceiling and the script of --dev-fly-script without a race, then end (ctest fly_selftest)"},
     {"--glide-selftest", "", "the glide ability's state machine, its ramps and the script of --dev-glide-script without a race, then end (ctest glide_selftest)"},
     {"--hover-selftest", "", "the hover on screen without a race: lift and bob, the class gate (kart, plane, unknown: no lift, no key), the key targets and ramps, then end (ctest hover_selftest)"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
@@ -1650,6 +1655,46 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fprintf(stderr, "%s\n", refusal);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --dev-fly-script (platform/native_fly.c): only with the kart steerer that
+	// presses it, and a list that parses. Before any window.
+	{
+		int steerGiven = 0;
+		const char *script = NULL;
+		static char flyWhy[200];
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
+			{
+				steerGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-fly-script") == 0)
+			{
+				script = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
+			}
+		}
+		if (script != NULL)
+		{
+			const char *refusal = NULL;
+
+			if (!steerGiven)
+			{
+				refusal = "switch --dev-fly-script requires --dev-kart-steer";
+			}
+			else if (!NativeFly_ScriptParse(script, NULL, NULL, NULL, flyWhy, (int)sizeof(flyWhy)))
+			{
+				refusal = flyWhy;
+			}
+			if (refusal != NULL)
+			{
+				fflush(stdout);
+				fprintf(stderr, "%s\n", refusal);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
 		}
 	}
 
@@ -3498,6 +3543,13 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--glide-selftest") == 0)
 		{
 			return NativeGlide_SelfTest();
+		}
+
+		// FREE FLY (platform/native_fly.c) without a race: its state machine,
+		// the ceiling and the script, on made-up inputs only (ctest fly_selftest).
+		if (strcmp(argv[argIndex], "--fly-selftest") == 0)
+		{
+			return NativeFly_SelfTest();
 		}
 
 		// The hover on screen (platform/native_hover.c) without a race: lift,
@@ -5409,6 +5461,16 @@ int main(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--dev-glide-log") == 0)
 			{
 				g_cfg_glideLog = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-fly-log") == 0)
+			{
+				g_cfg_flyLog = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--dev-fly-script") == 0) && ((argIndex + 1) < argc))
+			{
+				// The list was checked before any window.
+				snprintf(g_cfg_flyScript, sizeof(g_cfg_flyScript), "%s", argv[++argIndex]);
+				printf("[CTR Native] --dev-fly-script: %s\n", g_cfg_flyScript);
 			}
 			else if ((strcmp(argv[argIndex], "--dev-glide-script") == 0) && ((argIndex + 1) < argc))
 			{

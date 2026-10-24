@@ -17,6 +17,7 @@
 // ===========================================================================
 
 #include <platform/native_glide.h>
+#include <platform/native_fly.h>
 #include <platform/engine.h>
 
 int g_cfg_glideLog = 0;
@@ -721,6 +722,12 @@ int NativeGlide_Gravity(const struct Driver *d, int gravityY)
 
 int NativeGlide_LandingBoost(const struct Driver *d, int before, int added)
 {
+	// FREE FLY (platform/native_fly.c): the air time stands still in every
+	// flying tick of seat 0 (no hang-time turbo from a flight).
+	if (NativeFly_AirTimeStill(d))
+	{
+		return before;
+	}
 	if (!s_glide.ability || !s_glide.glided || (d == NULL) || (d != s_glide.glidedDriver) || (sdata == NULL) || (sdata->gGT == NULL) ||
 	    (sdata->gGT->timer != s_glide.glidedTimer))
 	{

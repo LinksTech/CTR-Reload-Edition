@@ -19,10 +19,11 @@
 //            ITEM WEIGHTS    <k> OF <n> ON  (grey unless ITEMS is CUSTOM)
 //            RETRO FUELED    OFF / ON
 //            RETRO PARTS     <k> OF 4 ON  (grey unless RETRO FUELED is ON)
+//            FREE FLY        OFF / ON  (R1 flies a hover or plane player)
 //   WORLD    GRAVITY         20 % .. 200 %, steps of 10
 //            GRIP            0 % .. 100 %
 //            NIGHT           0 % .. 90 %
-// (the play mods, platform/native_mods.h). Fourteen lines do not fit the page:
+// (the play mods, platform/native_mods.h). Fifteen lines do not fit the page:
 // it shows NATIVE_MODS_PAGE_MAIN_VISIBLE of them and scrolls so that the
 // cursor stays in view, with the heading of its group when it is the group's
 // first row; a bar right of the rows shows where the view is.
@@ -94,6 +95,7 @@ enum
 	NATIVE_MODS_PAGE_ROW_WEIGHTS,
 	NATIVE_MODS_PAGE_ROW_RETRO,
 	NATIVE_MODS_PAGE_ROW_PARTS,
+	NATIVE_MODS_PAGE_ROW_FREEFLY,
 	NATIVE_MODS_PAGE_ROW_GRAVITY,
 	NATIVE_MODS_PAGE_ROW_GRIP,
 	NATIVE_MODS_PAGE_ROW_NIGHT,
@@ -106,7 +108,7 @@ enum
 #define NATIVE_MODS_PAGE_SUB_WEIGHTS 2
 #define NATIVE_MODS_PAGE_SUB_RETRO   3
 
-#define NATIVE_MODS_PAGE_LINES        14
+#define NATIVE_MODS_PAGE_LINES        15
 #define NATIVE_MODS_PAGE_MAIN_VISIBLE 7
 #define NATIVE_MODS_PAGE_MAIN_ROW_Y   62
 #define NATIVE_MODS_PAGE_MAIN_PITCH   15
@@ -146,6 +148,7 @@ global_variable const struct
     {"ITEM WEIGHTS", NATIVE_MODS_PAGE_ROW_WEIGHTS},
     {"RETRO FUELED", NATIVE_MODS_PAGE_ROW_RETRO},
     {"RETRO PARTS", NATIVE_MODS_PAGE_ROW_PARTS},
+    {"FREE FLY", NATIVE_MODS_PAGE_ROW_FREEFLY},
     {"WORLD", -1},
     {"GRAVITY", NATIVE_MODS_PAGE_ROW_GRAVITY},
     {"GRIP", NATIVE_MODS_PAGE_ROW_GRIP},
@@ -169,6 +172,8 @@ internal int NativeModsPage_Mod(int row)
 		return NATIVE_MODS_ITEMS;
 	case NATIVE_MODS_PAGE_ROW_RETRO:
 		return NATIVE_MODS_RETRO;
+	case NATIVE_MODS_PAGE_ROW_FREEFLY:
+		return NATIVE_MODS_FREEFLY;
 	case NATIVE_MODS_PAGE_ROW_GRAVITY:
 		return NATIVE_MODS_GRAVITY;
 	case NATIVE_MODS_PAGE_ROW_GRIP:

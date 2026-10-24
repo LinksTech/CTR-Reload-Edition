@@ -777,6 +777,13 @@ if(BUILD_TESTING)
     set_tests_properties(glide_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "glide selftest passed: [0-9]+ checks, 0 failures"
     )
+    # FREE FLY without a race (platform/native_fly.c, native_fly_selftest.c):
+    # the state machine, the ceiling, the last valid ground, the highest track
+    # point rule and the script of --dev-fly-script. It only computes.
+    add_test(NAME fly_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --fly-selftest)
+    set_tests_properties(fly_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "fly selftest passed: [0-9]+ checks, 0 failures"
+    )
     # The hover on screen without a race (platform/native_hover.c,
     # native_hover_selftest.c): lift and bob, the class gate (only a hover gets a
     # lift or a key), the key targets and ramps. It only computes.
@@ -856,6 +863,8 @@ if(BUILD_TESTING)
     set_tests_properties(dev_glide_log_needs_glide PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-glide-log requires --dev-glide")
     add_test(NAME dev_glide_dump_needs_engine COMMAND $<TARGET_FILE:ctr_native> --dev --dev-glide --no-engine --dev-glide-dump d --dev-race-mode stop)
     set_tests_properties(dev_glide_dump_needs_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-glide-dump does not go with --no-engine or --no-hires-chars")
+    add_test(NAME dev_fly_script_needs_steer COMMAND $<TARGET_FILE:ctr_native> --dev --dev-fly-script c5 --dev-race-mode stop)
+    set_tests_properties(dev_fly_script_needs_steer PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-fly-script requires --dev-kart-steer")
     add_test(NAME dev_glide_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-glide --dev-race-mode stop)
     set_tests_properties(dev_glide_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-glide requires --dev")
     add_test(NAME dev_cup_value COMMAND $<TARGET_FILE:ctr_native> --dev --dev-cup 4 --dev-race-mode stop)

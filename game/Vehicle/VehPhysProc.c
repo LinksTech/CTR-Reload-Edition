@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_mods.h>
+#include <platform/native_fly.h>
 
 // budget: 4624
 // curr: 4380
@@ -536,6 +537,12 @@ void VehPhysProc_Driving_PhysLinear(struct Thread *thread, struct Driver *driver
 		buttonsHeld = ptrgamepad->buttonsHeldCurrFrame;
 		buttonsTapped = ptrgamepad->buttonsTapped;
 	}
+
+	// FREE FLY (MODS page, platform/native_fly.c): R1 flies for seat 0 (hover
+	// or plane), so R1 and L1 leave this local copy - no hop, no drift. Every
+	// other driver keeps its buttons; the pad itself is not changed.
+	buttonsHeld = NativeFly_KartButtons(driver, buttonsHeld, 0);
+	buttonsTapped = NativeFly_KartButtons(driver, buttonsTapped, 1);
 
 	cross = buttonsHeld & BTN_CROSS;
 	square = buttonsHeld & BTN_SQUARE;
@@ -1226,7 +1233,8 @@ void VehPhysProc_Driving_Update(struct Thread *t, struct Driver *d)
 		                  VEH_PHYS_PROC_HALF_SPEED_SHIFT) < simpTurnState) &&
 
 		     // player has jump buttons held
-		     ((sdata->gGamepads->gamepad[d->driverID].buttonsHeldCurrFrame) & d->buttonUsedToStartDrift) != 0) &&
+		     // (FREE FLY: without R1 and L1 for seat 0 in flight scope, platform/native_fly.c)
+		     (NativeFly_KartButtons(d, sdata->gGamepads->gamepad[d->driverID].buttonsHeldCurrFrame, 0) & d->buttonUsedToStartDrift) != 0) &&
 
 		    // player is not in accel prevention or braking and
 		    ((d->actionsFlagSet & ACTION_ACCEL_PREVENTION) == 0) && (CTR_MipsSra(d->const_Speed_ClassStat, 1) <= d->speedApprox))

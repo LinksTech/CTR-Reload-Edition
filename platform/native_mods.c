@@ -700,7 +700,7 @@ internal const struct
 } s_modsRange[NATIVE_MODS_VALUES] = {
     {"gravity", 20, 200, 100, 1}, {"grip", 0, 100, 100, 1},      {"night", 0, 90, 0, 1},
     {"items", 0, 2, 0, 0},        {"difficulty", 0, 3, 1, 0},    {"boss", 0, 6, 0, 0},
-    {"retro", 0, 1, 0, 0},
+    {"retro", 0, 1, 0, 0},        {"freefly", 0, 1, 0, 0},
 };
 
 internal const char *const s_modsItemsText[3] = {"DEFAULT", "CHAOS", "CUSTOM"};
@@ -826,6 +826,7 @@ const char *NativeMods_ValueText(int which)
 	case NATIVE_MODS_BOSS:
 		return s_modsBossText[value];
 	case NATIVE_MODS_RETRO:
+	case NATIVE_MODS_FREEFLY:
 		return s_modsRetroText[value];
 	default:
 		snprintf(text, sizeof(text), "%d %%", value);
@@ -2123,6 +2124,7 @@ internal int NativeMods_DevSet(char *text, struct NativeModsPlay *play)
 				value = NativeMods_Word(equals, s_modsDiffText, 4);
 				break;
 			case NATIVE_MODS_RETRO:
+			case NATIVE_MODS_FREEFLY:
 				value = NativeMods_Word(equals, s_modsRetroText, 2);
 				break;
 			default:
@@ -2241,6 +2243,7 @@ int NativeMods_SelfTest(void)
 	    {NATIVE_MODS_CPU_DEFAULT, 0u, "retro=off,rpads=1", "OFF"},
 	    {NATIVE_MODS_CPU_ALL, 0u, "retro=on,rkeep=0,gravity=50,items=chaos", "RANDOM +3"},
 	    {NATIVE_MODS_CPU_DEFAULT, 0u, "boss=joe,retro=on", "BOSS +1"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, "freefly=on", "1 MOD"},
 	};
 	static const struct
 	{
@@ -2274,6 +2277,8 @@ int NativeMods_SelfTest(void)
 	    {"retro=on,rpads=0,gravity=50", 1, 1, 50, 100, 0, 0},
 	    {"", 0, 0, 0, 0, 0, 0},
 	    {"retro=yes", 0, 0, 0, 0, 0, 0},
+	    {"freefly=on", 1, 1, 100, 100, 0, 0},
+	    {"freefly=x", 0, 0, 0, 0, 0, 0},
 	    {"rpads=2", 0, 0, 0, 0, 0, 0},
 	    {"moon,", 0, 0, 0, 0, 0, 0},
 	    {"gravity", 0, 0, 0, 0, 0, 0},
@@ -2296,6 +2301,7 @@ int NativeMods_SelfTest(void)
 	    {NATIVE_MODS_GRIP, 100, 1, 100},    {NATIVE_MODS_NIGHT, 90, 1, 90},     {NATIVE_MODS_NIGHT, 0, 1, 10},    {NATIVE_MODS_BOSS, 6, 1, 6},
 	    {NATIVE_MODS_BOSS, 0, 1, 1},        {NATIVE_MODS_DIFFICULTY, 0, -1, 0}, {NATIVE_MODS_ITEMS, 2, 1, 2},
 	    {NATIVE_MODS_RETRO, 0, 1, 1},       {NATIVE_MODS_RETRO, 1, 1, 1},       {NATIVE_MODS_RETRO, 1, -1, 0},
+	    {NATIVE_MODS_FREEFLY, 0, 1, 1},     {NATIVE_MODS_FREEFLY, 1, 1, 1},     {NATIVE_MODS_FREEFLY, 1, -1, 0},
 	};
 	static const struct
 	{
@@ -2352,6 +2358,8 @@ int NativeMods_SelfTest(void)
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("boss 7") && (s_modsPlayFile.value[NATIVE_MODS_BOSS] == 0), "line \"boss 7\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retro 1") && (s_modsPlayFile.value[NATIVE_MODS_RETRO] == 1), "line \"retro 1\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retro 2") && (s_modsPlayFile.value[NATIVE_MODS_RETRO] == 0), "line \"retro 2\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("freefly 1") && (s_modsPlayFile.value[NATIVE_MODS_FREEFLY] == 1), "line \"freefly 1\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("freefly 2") && (s_modsPlayFile.value[NATIVE_MODS_FREEFLY] == 0), "line \"freefly 2\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retropart 2 0") && (s_modsPlayFile.retro[2] == 0) && (s_modsPlayFile.retro[1] == 1), "line \"retropart 2 0\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retropart 2 1") && (s_modsPlayFile.retro[2] == 1), "line \"retropart 2 1\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retropart 9 0") && (s_modsPlayFile.retro[3] == 1), "line \"retropart 9 0\"");
@@ -2389,11 +2397,15 @@ int NativeMods_SelfTest(void)
 	                       (NativeMods_RetroPart(NATIVE_MODS_RETRO_LONG) == 0) && (NativeMods_RetroPart(NATIVE_MODS_RETRO_STACK) == 1) &&
 	                       (NativeMods_RetroPart(NATIVE_MODS_RETRO_KEEP) == 0),
 	                   "the retro parts of a dev set");
+	NativeMods_SetDevPlay("freefly=on");
+	NATIVE_MODS_EXPECT((NativeMods_Value(NATIVE_MODS_FREEFLY) == 1) && (strcmp(NativeMods_ValueText(NATIVE_MODS_FREEFLY), "ON") == 0),
+	                   "freefly=on gives ON");
 	NativeMods_SetDevPlay("none");
 	for (t = 0; t < NATIVE_MODS_RETRO_PARTS; t++)
 	{
 		NATIVE_MODS_EXPECT(NativeMods_RetroPart(t) == 1, "retro part %d is ON at first", t);
 	}
+	NATIVE_MODS_EXPECT((NativeMods_Value(NATIVE_MODS_FREEFLY) == 0) && (strcmp(NativeMods_ValueText(NATIVE_MODS_FREEFLY), "OFF") == 0), "freefly is OFF at first");
 
 	// THE STEPS of the page.
 	NativeMods_SetDevPlay("none");

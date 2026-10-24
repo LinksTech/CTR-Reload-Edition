@@ -1,6 +1,7 @@
 #include <common.h>
 #include <platform/native_mods.h>
 #include <platform/native_glide.h>
+#include <platform/native_fly.h>
 
 
 void VehPhysForce_ConvertSpeedToVecOut(struct Driver *driver, Vec3 *vel)
@@ -162,6 +163,10 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	// it glides; every other driver, and seat 0 when it does not glide, gets
 	// gravityY back unchanged.
 	gravityY = NativeGlide_Gravity(driver, gravityY);
+
+	// FREE FLY (MODS page, platform/native_fly.c): 0 while seat 0 flies (hover
+	// or plane); every other driver gets gravityY back unchanged.
+	gravityY = NativeFly_Gravity(driver, gravityY);
 
 	NativeMods_NoteGravity(driver->driverID, gravityPercent, lowGravity ? 41 : 100, elapsedTimeMS, (driver->actionsFlagSet & ACTION_AIRBORNE) != 0);
 
@@ -462,6 +467,10 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	}
 
 	*velocity = VehPhysForce_OnGravity_RotateVector(&driver->matrixMovingDir, (s16)localX, (s16)localY, (s16)localZ);
+
+	// FREE FLY: the world Y velocity of a flying tick of seat 0 (climb, hold,
+	// the ceiling); untouched for every other driver and tick.
+	NativeFly_Velocity(driver, &velocity->y);
 	driver->actionsFlagSet = actionsFlagSet;
 
 	if ((actionsFlagSet & ACTION_AIRBORNE) == 0)
