@@ -112,6 +112,8 @@ struct RsHiresCheck {
     int clipSeated[RS_HIRES_CLIPS];  // RS_HIRES_CLIP_FINISH: 1 = the seated race clips (kart part or game kart)
     float clipSeconds[RS_HIRES_CLIPS];
     int wheels;                      // usable wheel nodes found (0..4); 4 = the model's own wheels are drawn
+    int ownVehicle;                  // 1 = its own vehicle (include/rldhires.inc, RldHires_OwnVehicle): exactly its
+                                     // wheel nodes are drawn, 0..4, never standard wheels
     unsigned joints;                 // 0 = no skin
     unsigned long long triangles;
     unsigned long long vertices;

@@ -374,7 +374,9 @@ static void RldHiresPack_PartsLine(u32 parts, const RldHiresModel *m)
 	}
 	else if ((parts & RLDHIRES_PART_KART) != 0u)
 	{
-		printf("  parts: 0x%08x, kart part %s (%u nodes)\n", (unsigned)parts, m->kartPart ? "on" : "off", (unsigned)m->kartNodes);
+		// THE OWN VEHICLE (include/rldhires.inc, RldHires_OwnVehicle): its wheels are exactly its wheel nodes.
+		printf("  parts: 0x%08x, kart part %s (%u nodes)%s\n", (unsigned)parts, m->kartPart ? "on" : "off", (unsigned)m->kartNodes,
+		       m->ownVehicle ? ", own vehicle: exactly its wheel nodes are drawn, no standard wheels" : "");
 	}
 	else if (((parts & RLDHIRES_PART_GAME_KART) != 0u) && (m->kartDonor == (int)RLDHIRES_PART_DONOR_TEMPLATE))
 	{

@@ -489,9 +489,17 @@ the model's animations. CUBICSPLINE is read linear between the key values
 **The wheels** are four nodes by name: `wheel_fl`, `wheel_fr`, `wheel_rl`,
 `wheel_rr` (front/rear, left/right of the kart). Each has a mesh and no skin;
 its origin is the wheel middle, its local X axis the axle; its subtree is never
-part of the body. All four or none: with one missing, the ones found are not
-drawn either and the game draws standard 3D wheels at the retail wheel points
-(HRG-20, a warning).
+part of the body. A driver on the original kart: all four or none - with one
+missing, the ones found are not drawn either and the game draws standard 3D
+wheels at the retail wheel points (HRG-20, a warning); the game's kart (parts
+bit 1) brings the kit's wheels (HRG-42, a note). A driver with its own vehicle
+(parts bit 0, the node `kart` with a body in its subtree - a mesh node without
+a skin below it, or a skinned vertex weighted only to joints below it - and
+no vertex weighted inside and outside it): exactly the usable wheel nodes it
+has, 0 to 4, and never standard wheels; none is valid (a hover: HRG-42, a
+note), 1 to 3 is HRG-20 (a warning). No format change: what decides is the
+parts field and the node tree, both there since 4.3 (round H1, 2026-10-24;
+include/rldhires.inc RldHires_OwnVehicle).
 
 **The budget** of one hi-res driver (measured with 8 hi-res drivers at
 3440x1440, MSAA 4): 64000 triangles (the wheels included), a texture edge of

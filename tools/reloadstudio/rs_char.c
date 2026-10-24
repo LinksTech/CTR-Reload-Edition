@@ -337,7 +337,7 @@
 // THE BUILD OF A CHRG ROUTE (Char_ChainStart): every step through
 // Rs_RunRldpack, so the bytes are rldpack's - make-char with the page's
 // switches, RsCharHires_FallbackArgs and --wheels off when the .glb has its
-// own four wheels -> <out name>.classic.part in Rs_TempDir (make-char reads
+// own four wheels or its own vehicle -> <out name>.classic.part in Rs_TempDir (make-char reads
 // a JPEG texture itself, so it takes the model as it is); with "Convert JPEG
 // textures to PNG" hires-png -> <model>-png.glb in Rs_TempDir; with "Upscale
 // small textures" hires-upscale of that (or of the model) ->
@@ -1255,7 +1255,7 @@ static void Char_PreviewTip(void)
 
 // Show kart wheels: on the step Model itself for Vanilla. A CHRG route has no
 // such choice - the classic fallback gets --wheels off by itself when the
-// hi-res model brings its own four wheels (Char_MakeArgs), so the control is
+// hi-res model brings its own four wheels or its own vehicle (Char_MakeArgs), so the control is
 // hidden there (Char_RouteHides).
 static int Char_WheelsCard(void)
 {
@@ -6046,7 +6046,11 @@ static void Char_ChrgInfo(void)
              tris[0], tris[1], p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge,
              c->textures, c->textures == 1 ? L"" : L"s", (double)c->textureBytes / 1048576.0, (double)c->budgetTextureBytes / 1048576.0,
              c->clips, RS_HIRES_CLIPS_BASE, finish,
-             c->wheels == 4 ? L"its own wheels" : c->parts == RS_HIRES_PARTS_GAME_KART ? L"the game's kart and wheels" : L"standard wheels",
+             c->wheels == 4                    ? L"its own wheels"
+             : c->ownVehicle && c->wheels == 0 ? L"its own vehicle without wheels"
+             : c->ownVehicle                   ? L"its own vehicle with its own wheels"
+             : c->parts == RS_HIRES_PARTS_GAME_KART ? L"the game's kart and wheels"
+                                               : L"standard wheels",
              skin);
     Char_SetInfo(t, c->usable ? RS_COL_TEXT : RS_COL_ERROR);
 }
@@ -7093,7 +7097,7 @@ static void Char_ClassicShow(void)
     RsView_SetModelLabel(g_char.view, L"Classic fallback");
     if (g_char.classicPv && RsView_LoadPreviewData(g_char.view, g_char.classicPv, g_char.classicPvBytes)) {
         RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
-        RsView_SetWheels(g_char.view, !(g_char.hiresChecked && g_char.hires.read && g_char.hires.wheels == 4));
+        RsView_SetWheels(g_char.view, !(g_char.hiresChecked && g_char.hires.read && (g_char.hires.wheels == 4 || g_char.hires.ownVehicle)));
     } else {
         RsView_Clear(g_char.view, Char_NoMake() ? L"The classic model of the character file is not shown here."
                                                 : L"No classic fallback yet - see the messages of the step Model.");
@@ -7601,14 +7605,16 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     // fallback (RsCharHires_FallbackArgs, e.g. --reduce auto, so that the
     // fallback always fits), then --wheels off when the hi-res check found the
     // model's own four wheels - else the fallback would have them twice (its
-    // own wheel geometry and the game's kart wheels). The same for --check,
-    // --preview and the build.
+    // own wheel geometry and the game's kart wheels) - or its own vehicle
+    // (include/rldhires.inc THE OWN VEHICLE: exactly its wheel nodes, none for
+    // a hover; the game adds no wheels to it). The same for --check, --preview
+    // and the build.
     if (chrg) {
         const wchar_t *fallback[RS_CHARHIRES_FALLBACK_ARGS];
         int i, n = RsCharHires_FallbackArgs(g_char.route, fallback);
         for (i = 0; i < n && i < RS_CHARHIRES_FALLBACK_ARGS; i++)
             Char_ArgsAdd(a, fallback[i]);
-        if (g_char.hiresChecked && g_char.hires.read && g_char.hires.wheels == 4) {
+        if (g_char.hiresChecked && g_char.hires.read && (g_char.hires.wheels == 4 || g_char.hires.ownVehicle)) {
             Char_ArgsAdd(a, L"--wheels");
             Char_ArgsAdd(a, L"off");
         }
@@ -8296,7 +8302,7 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
         // Straight on to the steps after make-char, as if it had written the
         // classic model: their findings are the build's (no make-char lines).
         Char_Copy(g_char.buildOut, CHAR_VAL, path);
-        g_char.buildWheelsOff = g_char.hires.read && g_char.hires.wheels == 4;
+        g_char.buildWheelsOff = g_char.hires.read && (g_char.hires.wheels == 4 || g_char.hires.ownVehicle);
         Char_JobReset();
         g_char.chainStep = CHAR_CHAIN_CLASSIC;
         Char_ChainDone(page, 0);
@@ -8307,7 +8313,7 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
         return -1;
     }
     Char_Copy(g_char.buildOut, CHAR_VAL, a.out);
-    g_char.buildWheelsOff = g_char.hires.read && g_char.hires.wheels == 4;
+    g_char.buildWheelsOff = g_char.hires.read && (g_char.hires.wheels == 4 || g_char.hires.ownVehicle);
     g_char.buildMask = Char_MaskIndex();
     g_char.buildMapSet = g_char.mapColorSet;
     g_char.buildMapColor = g_char.mapColor;

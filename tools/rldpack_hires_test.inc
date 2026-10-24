@@ -1705,6 +1705,168 @@ static void HrTest_NewerChunk(void)
 	free(glb);
 }
 
+// THE OWN VEHICLE (include/rldhires.inc RldHires_OwnVehicle, round H1): which
+// files get standard wheels, which exactly their own wheel nodes, which none.
+// Only a driver on the original kart gets wheels the file lacks; a file with
+// its own vehicle body (parts bit 0, a mesh in the subtree of "kart") gets
+// exactly its usable wheel nodes, 0..4, and never standard wheels.
+static void HrTest_OwnVehicle(void)
+{
+	static RldHiresReport rep;
+	static const struct
+	{
+		const char *what;
+		u32 parts;
+		int kartRigid;    // part_0 (the wheel's mesh) is the node "kart": a body in the kart
+		int kartJoint;    // joint_1 is "kart": a joint, nothing weighted to it (no body)
+		int wheelsMissing;
+		int own;          // m.ownVehicle
+		int wheelMask;    // bit k = m.wheelNode[k] >= 0
+		int standard;     // the four standard wheels counted in engineVertices
+		const char *rule; // the wheel finding, NULL = none
+		int warnings;
+	} t[] = {
+	    {"original kart: no parts field, 4 wheel nodes - its own four", 0u, 0, 0, 0x0, 0, 0xF, 0, NULL, 0},
+	    {"original kart: no parts field, no wheel node - standard wheels", 0u, 0, 0, 0xF, 0, 0x0, 1, "HRG-20", 1},
+	    {"original kart: no parts field, 3 wheel nodes - standard wheels, the 3 not drawn", 0u, 0, 0, 0x8, 0, 0x0, 1, "HRG-20", 1},
+	    {"original kart: a node 'kart' without bit 0 (HRG-39), no wheel node - standard wheels", 0u, 1, 0, 0xF, 0, 0x0, 1, "HRG-20", 1},
+	    {"original kart: bit 0, the kart only a joint (no body), no wheel node - standard wheels", RLDHIRES_PART_KART, 0, 1, 0xF, 0, 0x0, 1, "HRG-20", 1},
+	    {"original kart: bit 0 without a node 'kart' (HRG-37), no wheel node - standard wheels", RLDHIRES_PART_KART, 0, 0, 0xF, 0, 0x0, 1, "HRG-20", 2},
+	    {"game's kart: bit 1, no wheel node - HRG-42, the checker counts the standard wheels as before", RLDHIRES_PART_GAME_KART, 0, 1, 0xF, 0, 0x0, 1,
+	     "HRG-42", 0},
+	    {"own vehicle: bit 0, a body in 'kart', 4 wheel nodes - its own four", RLDHIRES_PART_KART, 1, 0, 0x0, 1, 0xF, 0, NULL, 0},
+	    {"own vehicle: bit 0, a body in 'kart', no wheel node - none (a hover, HRG-42 note)", RLDHIRES_PART_KART, 1, 0, 0xF, 1, 0x0, 0, "HRG-42", 0},
+	    {"own vehicle: bit 0, a body in 'kart', 3 wheel nodes - exactly these 3 (HRG-20)", RLDHIRES_PART_KART, 1, 0, 0x8, 1, 0x7, 0, "HRG-20", 1},
+	    {"own vehicle: bit 0, a body in 'kart', 1 wheel node - exactly wheel_rl (HRG-20)", RLDHIRES_PART_KART, 1, 0, 0xB, 1, 0x4, 0, "HRG-20", 1},
+	    {"own vehicle: bits 0 and 1 (bit 0 wins, HRG-40), no wheel node - none", RLDHIRES_PART_KART | RLDHIRES_PART_GAME_KART, 1, 0, 0xF, 1, 0x0, 0,
+	     "HRG-42", 0},
+	};
+	struct HrTestSpec sp;
+	RldHiresModel m;
+	u8 *glb = NULL;
+	u64 bodyTriangles = 0;
+	u64 wheelTriangles = 0;
+	float lo[3];
+	float hi[3];
+	float lo2[3];
+	float hi2[3];
+	int worst = -2;
+	size_t i;
+
+	// The triangles of the body and of one wheel (the own vehicle without wheels, with four).
+	for (i = 0; i < 2; i++)
+	{
+		memset(&sp, 0, sizeof(sp));
+		sp.extraRigid = 2;
+		sp.kartRigid = 1;
+		sp.parts = RLDHIRES_PART_KART;
+		sp.wheelsMissing = (i == 0) ? 0xF : 0x0;
+		HrTest_Open(&sp, &rep, &m, &glb);
+		if (i == 0)
+		{
+			bodyTriangles = m.triangles;
+		}
+		else
+		{
+			wheelTriangles = (m.triangles - bodyTriangles) / 4u;
+		}
+		RldHires_Close(&m);
+		free(glb);
+		glb = NULL;
+	}
+	HrTest_Check(wheelTriangles > 0u, "own vehicle: a wheel has triangles");
+
+	for (i = 0; i < sizeof(t) / sizeof(t[0]); i++)
+	{
+		char what[200];
+		u64 body = 0;
+		u64 wheelVertices = 0;
+		int mask = 0;
+		int wheels = 0;
+		int k;
+		int ok;
+
+		memset(&sp, 0, sizeof(sp));
+		sp.parts = t[i].parts;
+		sp.kartJoint = t[i].kartJoint;
+		sp.wheelsMissing = t[i].wheelsMissing;
+		if (t[i].kartRigid)
+		{
+			sp.extraRigid = 2;
+			sp.kartRigid = 1;
+		}
+		ok = HrTest_Open(&sp, &rep, &m, &glb);
+		for (k = 0; k < RLDHIRES_WHEEL_COUNT; k++)
+		{
+			mask |= (m.wheelNode[k] >= 0) ? (1 << k) : 0;
+			wheels += (t[i].wheelMask >> k) & 1;
+		}
+		snprintf(what, sizeof(what), "own vehicle rule: %s", t[i].what);
+		HrTest_Check(ok == 1 && rep.errors == 0, what);
+		HrTest_Check(m.ownVehicle == t[i].own && (!m.ownVehicle || m.kartPart), what);
+		HrTest_Check(mask == t[i].wheelMask, what);
+		HrTest_Check((t[i].rule == NULL) ? (!RldHires_ReportHas(&rep, "HRG-20") && !RldHires_ReportHas(&rep, "HRG-42")) : RldHires_ReportHas(&rep, t[i].rule),
+		             what);
+		HrTest_Check(rep.warnings == t[i].warnings, what);
+		// The engine's vertices: the four standard wheels only on the original kart.
+		for (k = 0; (m.data != NULL) && (k < m.drawNodeCount); k++)
+		{
+			body += RldHires_EngineVertices(m.data->nodes[m.drawNodes[k]].mesh);
+		}
+		for (k = 0; (m.data != NULL) && (k < RLDHIRES_WHEEL_COUNT); k++)
+		{
+			wheelVertices += (m.wheelNode[k] >= 0) ? RldHires_EngineVertices(m.data->nodes[m.wheelNode[k]].mesh) : 0u;
+		}
+		wheelVertices += t[i].standard ? 4u * (u64)RLDHIRES_STD_WHEEL_VERTICES : 0u;
+		HrTest_Check(m.engineVertices == body + wheelVertices, what);
+		// The drawn triangles: the body and each own wheel.
+		HrTest_Check(!t[i].kartRigid || (m.triangles == bodyTriangles + (u64)wheels * wheelTriangles), what);
+		RldHires_Close(&m);
+		free(glb);
+		glb = NULL;
+	}
+
+	// The messages say what happens.
+	memset(&sp, 0, sizeof(sp));
+	sp.extraRigid = 2;
+	sp.kartRigid = 1;
+	sp.parts = RLDHIRES_PART_KART;
+	sp.wheelsMissing = 0xF;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(rep.count == 1 && strcmp(rep.msg[0].rule, "HRG-42") == 0 && rep.msg[0].level == RLDHIRES_NOTE &&
+	                 strstr(rep.msg[0].text, "own vehicle") != NULL && strstr(rep.msg[0].text, "without wheels") != NULL,
+	             "own vehicle: no wheel node - one note HRG-42, 'drawn without wheels'");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	sp.wheelsMissing = 1 << RLDHIRES_WHEEL_RR;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(rep.count == 1 && strcmp(rep.msg[0].rule, "HRG-20") == 0 && strstr(rep.msg[0].text, "only 3 of 4") != NULL &&
+	                 strstr(rep.msg[0].text, "wheel_rr missing") != NULL && strstr(rep.msg[0].text, "no standard wheels") != NULL,
+	             "own vehicle: 3 wheel nodes - HRG-20 names wheel_rr and 'no standard wheels'");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// The clip hull (include/rldhires_hull.inc): an own vehicle without wheels
+	// has no standard wheels in it - smaller than the same file on the original kart.
+	sp.wheelsMissing = 0xF;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	RldHires_ReportClear(&rep);
+	HrTest_Check(RldHires_CheckClipHull(&m, &rep, lo, hi, &worst) == 1, "own vehicle: the clip hull without wheels is made");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	sp.parts = 0u;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	RldHires_ReportClear(&rep);
+	HrTest_Check(RldHires_CheckClipHull(&m, &rep, lo2, hi2, &worst) == 1, "original kart: the clip hull with the standard wheels is made");
+	HrTest_Check((lo[0] >= lo2[0]) && (lo[2] >= lo2[2]) && (hi[2] <= hi2[2]) && ((lo[0] > lo2[0]) || (lo[2] > lo2[2]) || (hi[2] < hi2[2])),
+	             "own vehicle without wheels: no standard wheel in the clip hull");
+	RldHires_Close(&m);
+	free(glb);
+}
+
 // THE PARTS (field 0x10 of the CHRG header, HRG-37..41): the kart part found
 // and refused, the game's kart and its donor, the kit mark, and the bytes
 // RldHires_BuildChunkParts writes (an older reader reads past the field).
@@ -2777,6 +2939,7 @@ static int RldHires_SelfTest(void)
 	// A CHRG OF A NEWER WRITER (CHRG version 1 frozen, container 4.2).
 	HrTest_NewerChunk();
 	HrTest_Parts();
+	HrTest_OwnVehicle();
 
 	if (s_hrFailures == 0)
 	{

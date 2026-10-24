@@ -28,6 +28,12 @@
 //                      adds standard wheels. Optional." (place WHEELS)
 //   1..3 wheel nodes   one warning (that looks like a naming slip), with the
 //                      check's list of what is missing
+// A model with its own vehicle (THE OWN VEHICLE, include/rldhires.inc: the
+// kart part with a body) gets exactly its wheel nodes, 0..4, never standard
+// wheels: no wheel node is one note "Your vehicle has no wheels of its own -
+// it is drawn without wheels (a hover, say). Optional." (HRG-42; its row is
+// said here, not by the table), 1..3 the warning above ending "- your vehicle
+// is drawn with exactly these, the game adds no standard wheels".
 //
 // THE ROUTE'S TARGETS (decision E7). Low-Poly advises 8000 triangles and a
 // texture edge of 512: above, one warning each with the fix "Use Hi-Res
@@ -166,6 +172,7 @@ static const struct RsHrgSay s_say[] = {
 #define RS_FIX_CLIPS L"To animate it, add actions named idle, steer_left, steer_right, jump, drift_left, drift_right, hit, podium_1..3, lose and menu in Blender."
 #define RS_FIX_SOME_CLIPS L"Add the missing actions in Blender if you like; Show details lists them."
 #define RS_FIX_WHEELS L"To use its own wheels, name four objects wheel_fl, wheel_fr, wheel_rl and wheel_rr in Blender."
+#define RS_FIX_VEHICLE_WHEELS L"To give your vehicle wheels, name its wheel objects wheel_fl, wheel_fr, wheel_rl and wheel_rr in Blender; each one found is drawn."
 #define RS_FIX_TARGET L"Use Hi-Res instead, or reduce the model in Blender"
 
 // A row of HRG-16 about a JPEG (the check's text "texture N ('x') is JPEG - ...").
@@ -279,6 +286,9 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
                 wheelRow = i;
             continue;
         }
+        // An own vehicle without wheel nodes: said with the wheels below.
+        if (wcscmp(r->rule, L"HRG-42") == 0 && c->ownVehicle)
+            continue;
         // PS1-like vertex colours: a warning while they are blended as glTF,
         // nothing in PSX blend (they are read right) or off (ignored).
         if (wcscmp(r->rule, L"HRG-36") == 0 && c->vcolMode != RS_HIRES_VCOL_GLTF)
@@ -321,8 +331,21 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
         }
     }
 
-    // The wheels: one line.
-    if (c->read && c->wheels < 4 && (wheelRow >= 0 || (c->rowsDropped > 0 && c->triangles > 0))) {
+    // The wheels: one line. An own vehicle: exactly its wheel nodes, never
+    // standard wheels (none is fine: a hover).
+    if (c->read && c->ownVehicle && c->wheels < 4) {
+        if (c->wheels == 0) {
+            RsCharHires_Put(&list[count++], RS_SEV_NOTE, RS_WIZ_PLACE_WHEELS, L"HRG-42",
+                            L"Your vehicle has no wheels of its own - it is drawn without wheels (a hover, say). Optional.", RS_FIX_VEHICLE_WHEELS);
+        } else {
+            if (wheelRow >= 0)
+                RsCharHires_Head(c->rows[wheelRow].text, head, RS_WIZ_TEXT_MAX);
+            else
+                swprintf(head, RS_WIZ_TEXT_MAX, L"Only %d of 4 wheel nodes usable", c->wheels);
+            RsCharHires_Sentence(line, head, L" - your vehicle is drawn with exactly these, the game adds no standard wheels");
+            RsCharHires_Put(&list[count++], RS_SEV_WARNING, RS_WIZ_PLACE_WHEELS, L"HRG-20", line, RS_FIX_VEHICLE_WHEELS);
+        }
+    } else if (c->read && c->wheels < 4 && (wheelRow >= 0 || (c->rowsDropped > 0 && c->triangles > 0))) {
         if (c->wheels == 0) {
             RsCharHires_Put(&list[count++], RS_SEV_NOTE, RS_WIZ_PLACE_WHEELS, L"HRG-20",
                             L"Your model has no wheels of its own - the game adds standard wheels. Optional.", RS_FIX_WHEELS);

@@ -1132,6 +1132,50 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
                       RsHires_PackArgsParts(L"in.rldchar", L"m.glb", L"out.rldchar", -1, 0u, a) == 6,
                   "hires-add with --kart-part or --game-kart template before --machine; parts 0: the arguments of before");
         }
+        // THE OWN VEHICLE (include/rldhires.inc RldHires_OwnVehicle): a kart part
+        // with a body draws exactly its wheel nodes - 2 of 4 a warning that says
+        // so, none a note (HRG-42, a hover); the game adds no standard wheels.
+        {
+            struct KtSpec part2 = { 2, 1, 12, 2, 16, 0, 0, 0, 0, 1 }, plain2 = { 1, 0, 12, 2, 0, 0 };
+            int i;
+            Kt_Check(&part2, &c);
+            n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+            Check(c.read && c.kartCase == RS_KART_PART && c.ownVehicle == 1 && c.wheels == 2 &&
+                      Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_WHEELS, L"HRG-20", NULL, NULL) && !Kt_HasRule(m, n, L"HRG-42"),
+                  "own vehicle with 2 wheel nodes: the own vehicle told, one warning at the wheels");
+            for (i = 0; i < n; i++)
+                if (wcscmp(m[i].rule, L"HRG-20") == 0)
+                    Check(wcsncmp(m[i].text, L"Only 2 of 4 wheel nodes usable", 30) == 0 && wcsstr(m[i].text, L"your vehicle is drawn with exactly these") &&
+                              !wcsstr(m[i].text, L"adds standard wheels instead") && m[i].fix[0],
+                          "own vehicle with 2 wheel nodes: 'drawn with exactly these', no standard wheels");
+            RsHires_CheckFree(&c);
+            Kt_Check(&plain2, &c);
+            n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+            Check(c.read && c.ownVehicle == 0 && Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_WHEELS, L"HRG-20", NULL, NULL), "no kart part, 2 wheel nodes: not an own vehicle");
+            for (i = 0; i < n; i++)
+                if (wcscmp(m[i].rule, L"HRG-20") == 0)
+                    Check(wcsstr(m[i].text, L"the game adds standard wheels instead") != NULL, "no kart part, 2 wheel nodes: standard wheels, as before");
+            RsHires_CheckFree(&c);
+            // No wheel node (the hover): what the check of such a model gives.
+            memset(&c, 0, sizeof(c));
+            c.read = 1;
+            c.clips = RS_HIRES_CLIPS_BASE;
+            c.wheels = 0;
+            c.ownVehicle = 1;
+            c.kartCase = RS_KART_PART;
+            c.parts = RS_HIRES_PARTS_KART;
+            c.budgetTriangles = 64000u;
+            c.budgetEdge = 2048u;
+            c.rows[0].severity = RS_SEV_NOTE;
+            wcscpy(c.rows[0].rule, L"HRG-42");
+            wcscpy(c.rows[0].text, L"no wheel nodes - the file's own vehicle (the kart part) is drawn without wheels; no standard wheels are added");
+            c.rowCount = 1;
+            n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+            Check(Kt_Has(m, n, RS_SEV_NOTE, RS_WIZ_PLACE_WHEELS, L"HRG-42",
+                         L"Your vehicle has no wheels of its own - it is drawn without wheels (a hover, say). Optional.", NULL) &&
+                      !Kt_Has(m, n, RS_SEV_NOTE, RS_WIZ_PLACE_MODEL, L"HRG-42", NULL, NULL) && !Kt_HasRule(m, n, L"HRG-20"),
+                  "own vehicle without wheel nodes: one note at the wheels (not the game's kart sentence)");
+        }
         // The same from a real check: a model whose material is ctrkit_paint.
         {
             struct KtSpec kit = { 2, 1, 12, 4, 16, 0, 0, 0, 1 };

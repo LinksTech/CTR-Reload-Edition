@@ -111,7 +111,9 @@ static int RldHires_CheckClipHull(const RldHiresModel *m, RldHiresReport *rep, f
 	u32 rigid = 0;
 	u32 entries;
 	float wheelRadius[RLDHIRES_WHEEL_COUNT];
-	const int ownWheels = (m->wheelNode[0] >= 0);
+	// Own wheels: all four, or an own vehicle's (THE OWN VEHICLE, include/rldhires.inc) - only
+	// the ones it has; else the four standard wheels.
+	const int ownWheels = (m->wheelNode[0] >= 0) || m->ownVehicle;
 	const char *why = "";
 	int ok = 1;
 	int over = 0;
@@ -204,7 +206,7 @@ static int RldHires_CheckClipHull(const RldHiresModel *m, RldHiresReport *rep, f
 	for (k = 0; k < RLDHIRES_WHEEL_COUNT; k++)
 	{
 		wheelRadius[k] = 16.0f;
-		if (ownWheels)
+		if (ownWheels && (m->wheelNode[k] >= 0))
 		{
 			const float *w = &worlds[(size_t)m->wheelNode[k] * 16u];
 
@@ -268,6 +270,10 @@ static int RldHires_CheckClipHull(const RldHiresModel *m, RldHiresReport *rep, f
 			float mid[3];
 			int a;
 
+			if (ownWheels && (m->wheelNode[k] < 0))
+			{
+				continue; // an own vehicle's missing wheel: nothing there
+			}
 			if (ownWheels)
 			{
 				const float *w = &worlds[(size_t)m->wheelNode[k] * 16u];

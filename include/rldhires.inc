@@ -74,6 +74,12 @@
 //                              (HRG-39). No node "kart" (HRG-37) or a vertex
 //                              weighted to joints inside and outside it (HRG-38):
 //                              the kart is drawn everywhere, as without the bit.
+//                              THE OWN VEHICLE (round H1, 2026-10-24): with a
+//                              body in that kart (RldHires_OwnVehicle) the file
+//                              brings its own vehicle and gets exactly its own
+//                              wheel nodes, 0 to 4 - none is valid (a hover) -
+//                              and never the standard wheels (HRG-42 / HRG-20
+//                              say so when fewer than four).
 //   1 RLDHIRES_PART_GAME_KART  the file has no kart; the game puts in the
 //                              original kart from the player's own game data
 //                              (the engine makes it at the load with
@@ -330,9 +336,14 @@ static int RldHires_ClipByName(const char *name)
 //
 // f/r = front/rear, l/r = left/right of the kart. The node's origin is the
 // wheel middle, its local X axis the axle. Each must be a node WITH a mesh and
-// WITHOUT a skin. Only all four or none: when one is missing, the ones found are
-// not drawn either and the engine puts its standard 3D wheels at the retail
-// wheel points (HRG-20). The subtree of a wheel node is never part of the body.
+// WITHOUT a skin. A file that uses the original kart (every file without its
+// own vehicle, RldHires_OwnVehicle): all four or none - when one is missing,
+// the ones found are not drawn either and the engine puts its standard 3D
+// wheels at the retail wheel points (HRG-20); the game's kart (parts bit 1)
+// brings the kit's wheels instead (HRG-42). A file with its own vehicle (the
+// kart part with a body, round H1): exactly the usable wheel nodes it has, 0
+// to 4, and never standard wheels. The subtree of a wheel node is never part
+// of the body.
 
 enum
 {
@@ -470,7 +481,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-17", RLDHIRES_ERROR, "a texture edge above 2048"},
     {"HRG-18", RLDHIRES_ERROR, "bind pose, or the pose of a clip (include/rldhires_hull.inc), larger than 4 m on an axis, or not finite"},
     {"HRG-19", RLDHIRES_WARNING, "a clip is missing: its fallback is used (the optional finish_win and finish_lose say nothing)"},
-    {"HRG-20", RLDHIRES_WARNING, "wheels: not all four wheel nodes usable, standard wheels"},
+    {"HRG-20", RLDHIRES_WARNING, "wheels: not all four wheel nodes usable - standard wheels (the original kart), or only the usable ones (the file's own vehicle)"},
     {"HRG-21", RLDHIRES_NOTE, "an animation name is not a clip name, or a clip name twice: ignored"},
     {"HRG-22", RLDHIRES_NOTE, "CUBICSPLINE is read linear between the key values"},
     {"HRG-23", RLDHIRES_NOTE, "morph targets (shape keys): played by name (at most 32 keys, 4 MB of deltas; more is left out); clip weights and default weights are not played"},
@@ -492,7 +503,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-39", RLDHIRES_NOTE, "kart part: a node 'kart' without the kart part in the header - drawn as before (hires-add --kart-part)"},
     {"HRG-40", RLDHIRES_NOTE, "parts field: an unknown bit, a second node 'kart', or both kart bits - ignored"},
     {"HRG-41", RLDHIRES_WARNING, "This file contains the kart from your game files."},
-    {"HRG-42", RLDHIRES_NOTE, "the game's kart (parts bit 1): no wheel nodes - the game brings the kart and its wheels"},
+    {"HRG-42", RLDHIRES_NOTE, "no wheel nodes and none added: the game's kart (parts bit 1) brings its wheels; the file's own vehicle (parts bit 0) is drawn without wheels"},
 };
 
 // The level of a rule id, -1 for an unknown id.
@@ -901,7 +912,7 @@ typedef struct RldHiresModel
 	int clipAnim[RLDHIRES_CLIP_COUNT];      // animation index of each clip, -1 = not in the file
 	float clipSeconds[RLDHIRES_CLIP_COUNT]; // its duration (the largest input time), 0 without
 
-	int wheelNode[RLDHIRES_WHEEL_COUNT];    // node index of each wheel; all -1 unless all four are usable
+	int wheelNode[RLDHIRES_WHEEL_COUNT];    // node index of each wheel; all -1 unless all four are usable - with ownVehicle each usable one (-1 the others)
 	float wheelRadius[RLDHIRES_WHEEL_COUNT];// max distance of its mesh's positions from the node's X axis, in the node's own space (its scale not applied)
 
 	int skin;                               // -1 = none, else 0
@@ -925,7 +936,8 @@ typedef struct RldHiresModel
 	float boundsMax[3];                     // meshes as they stand in mesh space (glTF ignores their node matrix)
 
 	int usable;                             // 1 = RldHires_Open found no error
-	int wheelsFound;                        // wheel nodes found and usable (0..4) - for the reports; wheelNode needs all four
+	int wheelsFound;                        // wheel nodes found and usable (0..4) - for the reports; wheelNode needs all four (or ownVehicle)
+	int ownVehicle;                         // 1 = the file's own vehicle (RldHires_OwnVehicle): exactly its wheel nodes are drawn, 0..4, never standard wheels
 
 	// The engine's counts (THE ENGINE'S HARD LIMITS): HRG-32..35.
 	u32 materials;                          // the file's materials
@@ -1826,6 +1838,146 @@ static void RldHires_CheckParts(RldHiresModel *m, RldHiresReport *rep, u32 parts
 	}
 }
 
+// THE OWN VEHICLE (round H1, 2026-10-24): which wheels a file gets. Only a
+// driver on the ORIGINAL kart gets wheels the file does not have - the game's
+// kart (parts bit 1) the kit's, every other file without its four wheel nodes
+// the engine's standard wheels, as before. A file with its own vehicle body
+// gets exactly the wheel nodes it has, 0 to 4; none is valid (a hover). 1 =
+// its own vehicle, which is all of:
+//   - parts bit 0 (RLDHIRES_PART_KART) in the header (with bit 1 too, bit 0
+//     wins, HRG-40) - opt-in by the header, never by a node name alone;
+//   - the first node named "kart" of the drawn scene (the node
+//     RldHires_CheckParts takes; none: HRG-37, drawn as without the bit);
+//   - a body in it: a mesh node without a skin in the subtree of "kart", or a
+//     skinned body vertex weighted only to joints in that subtree (as the
+//     engine tells the kart's palette entries apart); a wheel node and its
+//     subtree are no body (they are the wheels);
+//   - no skinned body vertex weighted to joints inside and outside it (HRG-38:
+//     the kart part is refused, drawn as without the bit).
+// So ownVehicle implies kartPart. found: the wheel nodes of the scene (-1 = no
+// such node), used or not. 0 also when out of memory (the original kart's
+// wheels, the rule of before).
+static int RldHires_OwnVehicle(const cgltf_data *gd, u32 parts, const int *order, int orderCount, const int *found)
+{
+	u8 *inKart;  // 1 = the node is "kart" or in its subtree
+	u8 *inWheel; // 1 = the node is a wheel node or in its subtree
+	int kartNode = -1;
+	int body = 0;
+	int mixed = 0;
+	int k;
+	cgltf_size i;
+
+	if ((gd == NULL) || (order == NULL) || ((parts & RLDHIRES_PART_KART) == 0u))
+	{
+		return 0;
+	}
+	for (k = 0; (k < orderCount) && (kartNode < 0); k++)
+	{
+		const char *name = gd->nodes[order[k]].name;
+
+		if ((name != NULL) && (strcmp(name, RLDHIRES_KART_NODE) == 0))
+		{
+			kartNode = order[k];
+		}
+	}
+	if (kartNode < 0)
+	{
+		return 0;
+	}
+	inKart = (u8 *)calloc(gd->nodes_count, 1);
+	inWheel = (u8 *)calloc(gd->nodes_count, 1);
+	if ((inKart == NULL) || (inWheel == NULL))
+	{
+		free(inKart);
+		free(inWheel);
+		return 0;
+	}
+	// Up the parents of every node (at most nodes_count steps: no loop is followed).
+	for (i = 0; i < gd->nodes_count; i++)
+	{
+		const cgltf_node *a = &gd->nodes[i];
+		cgltf_size steps;
+
+		for (steps = 0; (a != NULL) && (steps <= gd->nodes_count); steps++, a = a->parent)
+		{
+			const int ai = (int)cgltf_node_index(gd, a);
+			int w;
+
+			if (ai == kartNode)
+			{
+				inKart[i] = 1;
+			}
+			for (w = 0; w < RLDHIRES_WHEEL_COUNT; w++)
+			{
+				if ((found[w] >= 0) && (found[w] == ai))
+				{
+					inWheel[i] = 1;
+				}
+			}
+		}
+	}
+	// The body nodes of the drawn scene (the nodes RldHires_OpenParts draws).
+	for (k = 0; (k < orderCount) && !mixed; k++)
+	{
+		const int ni = order[k];
+		const cgltf_node *node = &gd->nodes[ni];
+		cgltf_size p;
+
+		if ((node->mesh == NULL) || inWheel[ni])
+		{
+			continue;
+		}
+		if (node->skin == NULL)
+		{
+			body |= inKart[ni];
+			continue;
+		}
+		// Skinned: the HRG-38 reading of RldHires_CheckParts, vertex by vertex.
+		for (p = 0; (p < node->mesh->primitives_count) && !mixed; p++)
+		{
+			const cgltf_accessor *jo = cgltf_find_accessor(&node->mesh->primitives[p], cgltf_attribute_type_joints, 0);
+			const cgltf_accessor *we = cgltf_find_accessor(&node->mesh->primitives[p], cgltf_attribute_type_weights, 0);
+			cgltf_size v;
+
+			if ((jo == NULL) || (we == NULL) || jo->is_sparse || we->is_sparse || (jo->count != we->count))
+			{
+				continue;
+			}
+			for (v = 0; (v < jo->count) && !mixed; v++)
+			{
+				cgltf_uint j[4] = {0, 0, 0, 0};
+				float w[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+				int inside = 0;
+				int outside = 0;
+				int c;
+
+				cgltf_accessor_read_uint(jo, v, j, 4);
+				cgltf_accessor_read_float(we, v, w, 4);
+				for (c = 0; c < 4; c++)
+				{
+					if (!(w[c] > 0.0f) || (j[c] >= node->skin->joints_count))
+					{
+						continue;
+					}
+					if (inKart[cgltf_node_index(gd, node->skin->joints[j[c]])])
+					{
+						inside = 1;
+					}
+					else
+					{
+						outside = 1;
+					}
+				}
+				mixed = inside && outside;
+				body |= inside && !outside;
+			}
+		}
+	}
+	free(inKart);
+	free(inWheel);
+	return body && !mixed;
+}
+
 // Opens a GLB from memory and runs every rule of the model (HRG-6..26, 28..31).
 // 1 = usable as hi-res (no error), 0 = refused. out is always written; after a
 // 1 it owns cgltf data, close it with RldHires_Close (after a 0 too - it is
@@ -1853,7 +2005,8 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 	u8 *inWheel = NULL;  // 1 = in the subtree of a wheel node
 	int *nodeStack = NULL;
 	int found[RLDHIRES_WHEEL_COUNT];
-	int wheelOk = 1;
+	int wheelUse[RLDHIRES_WHEEL_COUNT]; // 1 = drawn as the file's own wheel (all four, or each usable one of an own vehicle)
+	int wheelOk = 1;                    // 1 = at least one of them
 	int seenNormal = 0;
 	int seenMorph = 0;
 	int seenSparse = 0;
@@ -1885,6 +2038,7 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 	{
 		m->wheelNode[i] = -1;
 		found[i] = -1;
+		wheelUse[i] = 0;
 	}
 	m->glb = glb;
 	m->glbSize = size;
@@ -2101,17 +2255,31 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 			if (why == NULL)
 			{
 				have++;
+				wheelUse[i] = 1;
 				continue;
 			}
 			snprintf(missing + strlen(missing), sizeof(missing) - strlen(missing), "%s%s %s", (missing[0] != '\0') ? ", " : "",
 			         s_rldHiresWheelName[i], why);
 		}
 		m->wheelsFound = have;
+		m->ownVehicle = RldHires_OwnVehicle(gd, parts, order, orderCount, found);
 		if ((have == 0) && ((parts & RLDHIRES_PART_GAME_KART) != 0u) && ((parts & RLDHIRES_PART_KART) == 0u))
 		{
 			// THE PARTS: the game's kart brings its wheels.
 			RldHires_Say(rep, "HRG-42", "no wheel nodes - the game puts in the original kart from the player's game data with its wheels");
 			wheelOk = 0;
+		}
+		else if ((have == 0) && m->ownVehicle)
+		{
+			// THE OWN VEHICLE: none of its own, none added (a hover).
+			RldHires_Say(rep, "HRG-42", "no wheel nodes - the file's own vehicle (the kart part) is drawn without wheels; no standard wheels are added");
+			wheelOk = 0;
+		}
+		else if ((have < RLDHIRES_WHEEL_COUNT) && m->ownVehicle)
+		{
+			// THE OWN VEHICLE: exactly the usable ones.
+			RldHires_Say(rep, "HRG-20", "only %d of 4 wheel nodes usable (%s) - the file's own vehicle (the kart part) is drawn with these %d, no standard wheels are added",
+			             have, missing, have);
 		}
 		else if (have == 0)
 		{
@@ -2122,6 +2290,13 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 		{
 			RldHires_Say(rep, "HRG-20", "only %d of 4 wheel nodes usable (%s) - standard wheels are used, the found ones are not drawn", have, missing);
 			wheelOk = 0;
+		}
+		if (!wheelOk)
+		{
+			for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
+			{
+				wheelUse[i] = 0;
+			}
 		}
 	}
 
@@ -2224,13 +2399,17 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 	{
 		for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
 		{
-			const cgltf_node *node = &gd->nodes[found[i]];
+			const cgltf_node *node = &gd->nodes[(found[i] >= 0) ? found[i] : 0];
 			const cgltf_mesh *mesh = node->mesh;
 			float world[16];
 			float radius = 0.0f;
 			cgltf_size p;
 			cgltf_size v;
 
+			if (!wheelUse[i])
+			{
+				continue; // an own vehicle's missing or unusable wheel: not drawn
+			}
 			m->wheelNode[i] = found[i];
 			cgltf_node_transform_world(node, world);
 			RldHires_CheckMeshNode(m, rep, node, world, &seenNormal, &seenMorph, &seenSparse, &seenNonFinite);
@@ -2280,7 +2459,15 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 	}
 	for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
 	{
-		m->engineVertices += (m->wheelNode[0] >= 0) ? RldHires_EngineVertices(gd->nodes[m->wheelNode[i]].mesh) : (u64)RLDHIRES_STD_WHEEL_VERTICES;
+		// Own wheels (all four, or an own vehicle's each), else the four standard ones.
+		if (m->wheelNode[i] >= 0)
+		{
+			m->engineVertices += RldHires_EngineVertices(gd->nodes[m->wheelNode[i]].mesh);
+		}
+		else if (!m->ownVehicle)
+		{
+			m->engineVertices += (u64)RLDHIRES_STD_WHEEL_VERTICES;
+		}
 	}
 	if (m->engineVertices > (u64)RLDHIRES_VERTICES_MAX)
 	{

@@ -881,6 +881,10 @@ internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds, int with
 			float r;
 			int a;
 
+			if (c->ownWheels && (c->wheelNode[k] < 0))
+			{
+				continue; // an own vehicle's missing wheel: nothing there
+			}
 			if (c->ownWheels)
 			{
 				const float *w = &worlds[(size_t)c->wheelNode[k] * 16u];
@@ -960,10 +964,24 @@ internal int EngHc_NodeNamed(const cgltf_data *gltf, const char *name)
 	return -1;
 }
 
-// "own", "kit" or "standard" (the ready and tick lines).
+// The wheels in one word (the ready and tick lines): "own" (all four of the
+// file), "kit" (the game's kart), "standard"; an own vehicle with fewer than
+// four (THE OWN VEHICLE) "none" or "own-N-of-4".
 internal const char *EngHc_WheelsName(const EngHcChar *c)
 {
-	return c->ownWheels ? "own" : (c->kitWheels ? "kit" : "standard");
+	static const char *const part[3] = {"own-1-of-4", "own-2-of-4", "own-3-of-4"};
+	int have = 0;
+	int k;
+
+	if (!c->ownWheels)
+	{
+		return c->kitWheels ? "kit" : "standard";
+	}
+	for (k = 0; k < 4; k++)
+	{
+		have += (c->wheelNode[k] >= 0) ? 1 : 0;
+	}
+	return (have >= 4) ? "own" : ((have == 0) ? "none" : part[have - 1]);
 }
 
 // The engine's colour byte of a kit vertex colour: COLOR_0 as the kit's GLB of
@@ -1411,7 +1429,11 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	}
 	c->wheelFirst = c->joints + c->rigidCount;
 	c->paletteCount = c->wheelFirst + 4u;
-	c->ownWheels = (m->wheelNode[0] >= 0) && (m->wheelNode[1] >= 0) && (m->wheelNode[2] >= 0) && (m->wheelNode[3] >= 0);
+	// THE OWN VEHICLE (include/rldhires.inc, RldHires_OwnVehicle; round H1): a
+	// file with its own vehicle body draws exactly its wheel nodes, 0..4 (a
+	// wheel without a node: nothing, wheelNode -1); only a file on the original
+	// kart gets the kit's or the standard wheels in place of missing ones.
+	c->ownWheels = ((m->wheelNode[0] >= 0) && (m->wheelNode[1] >= 0) && (m->wheelNode[2] >= 0) && (m->wheelNode[3] >= 0)) || m->ownVehicle;
 	c->kitWheels = (c->gkKit != NULL) && !c->ownWheels;
 	// THE KART PART: which palette entries are the kart (the joints and rigid
 	// nodes in the subtree of "kart", and always the four wheels). The game's
@@ -1455,6 +1477,10 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	}
 	for (k = 0; k < 4; k++)
 	{
+		if (c->ownWheels && (m->wheelNode[k] < 0))
+		{
+			continue; // an own vehicle's missing wheel: no vertices
+		}
 		if (c->ownWheels)
 		{
 			const cgltf_mesh *mesh = gltf->nodes[m->wheelNode[k]].mesh;
@@ -1575,6 +1601,10 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			vfirst += (u32)ENG_HC_STD_VERTICES;
 			continue;
 		}
+		if ((wheel >= 0) && (m->wheelNode[wheel] < 0))
+		{
+			continue; // THE OWN VEHICLE: a wheel it does not have is not drawn
+		}
 		node = (wheel >= 0) ? &gltf->nodes[m->wheelNode[wheel]] : &gltf->nodes[m->drawNodes[n]];
 		skinned = (wheel < 0) && (node->skin != NULL);
 		entry = 0;
@@ -1657,7 +1687,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		c->wheelSign[k] = 1.0f;
 		c->wheelRestYaw[k] = 0.0f;
 		c->wheelRadius[k] = c->kitWheels ? (float)(c->gkKit->wheelRadius * ENG_HC_UNITS) : ENG_HC_STD_RADIUS;
-		if (c->ownWheels)
+		if (c->ownWheels && (c->wheelNode[k] >= 0))
 		{
 			const float *w = &worlds[(size_t)c->wheelNode[k] * 16u];
 			const double yLen = sqrt((double)w[4] * w[4] + (double)w[5] * w[5] + (double)w[6] * w[6]);
@@ -2407,6 +2437,14 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 		double unrolled[3][3];
 		float wm[16];
 
+		if (c->ownWheels && (c->wheelNode[w] < 0))
+		{
+			// THE OWN VEHICLE: no such wheel - no vertex is on this entry; it
+			// is kept defined, and the read-back (wheel 0) stays 0.
+			EngHc_Identity16(wm);
+			RldAnim_PaletteEntry(NULL, wm, &s_hc.palette[(c->wheelFirst + (u32)w) * 12u]);
+			continue;
+		}
 		Engine_HiresWheelFrame(w, pl->steer, 0.0, pl->hazard, F0);
 		if (!c->ownWheels)
 		{
@@ -4576,6 +4614,119 @@ internal int EngHc_SelfTestLoader(int *checks)
 	}
 	RldHires_Close(&model);
 	free(chunk);
+
+	// THE OWN VEHICLE (include/rldhires.inc RldHires_OwnVehicle, round H1): the
+	// test driver's root is "kart" with the body below it, so with parts bit 0 it
+	// is its own vehicle and draws exactly its wheel nodes (4, 3 or none), never
+	// standard wheels; without the bit it is on the original kart: its four own
+	// wheels, else four standard ones. Bits 0 and 1 together: bit 0 wins.
+	{
+		static const u32 vehParts[3] = {0u, RLDHIRES_PART_KART, RLDHIRES_PART_KART | RLDHIRES_PART_GAME_KART};
+		static const int vehWheels[3] = {4, 3, 0};
+		int pi;
+		int wi;
+		int sk;
+
+		for (sk = 0; sk < 2; sk++)
+		{
+			for (pi = 0; pi < 3; pi++)
+			{
+				for (wi = 0; wi < 3; wi++)
+				{
+					EngHiresTestGlbDesc dv;
+					size_t vSize = 0;
+					size_t vChunkSize = 0;
+					u8 *vGlb;
+					u8 *vChunk;
+					const int own = (vehParts[pi] & RLDHIRES_PART_KART) != 0u;
+					const int wheels = vehWheels[wi];
+					const char *name = (own || (wheels == 4)) ? ((wheels == 4) ? "own" : ((wheels == 3) ? "own-3-of-4" : "none")) : "standard";
+					const u32 wantVertices = 4u + ((own || (wheels == 4)) ? (u32)wheels * 12u : 4u * (u32)ENG_HC_STD_VERTICES);
+					int vok;
+
+					memset(&dv, 0, sizeof(dv));
+					dv.skinned = sk;
+					dv.wheels = wheels;
+					dv.clipMask = 1u << ENGINE_HIRES_CLIP_IDLE;
+					vGlb = EngHiresTest_Glb(&dv, &vSize);
+					vChunk = (vGlb != NULL) ? RldHires_BuildChunkParts(vGlb, (u32)vSize, 0u, vehParts[pi], &vChunkSize) : NULL;
+					vok = (vChunk != NULL) && EngHc_CheckChunk(vChunk, vChunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+					HL_CHECK(vok && (model.ownVehicle == own), "own vehicle: the check opens it and tells the own vehicle");
+					memset(&c, 0, sizeof(c));
+					c.indexBuffer = 0xffffffffu;
+					vok = vok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+					HL_CHECK(vok, "own vehicle: the CPU side is made");
+					if (vok)
+					{
+						int k;
+						int nodes = 0;
+						int stdRange = 0;
+						u32 r;
+
+						for (k = 0; k < 4; k++)
+						{
+							nodes += (c.wheelNode[k] >= 0) ? 1 : 0;
+						}
+						for (r = 0; r < c.rangeCount; r++)
+						{
+							stdRange |= (c.ranges[r].material == (u16)(model.data->materials_count + 1u));
+						}
+						HL_CHECK((c.ownWheels == (own || (wheels == 4))) && !c.kitWheels && (c.paletteCount == c.wheelFirst + 4u),
+						         "own vehicle: own wheels exactly for the own vehicle or four nodes, the four wheel slots kept");
+						HL_CHECK(nodes == ((own || (wheels == 4)) ? wheels : 0), "own vehicle: the wheel nodes used");
+						HL_CHECK((own && (wheels == 3)) ? ((c.wheelNode[3] < 0) && (c.wheelNode[0] >= 0) && (c.wheelNode[2] >= 0)) : 1,
+						         "own vehicle: 3 nodes - wheel_rr is the one missing");
+						HL_CHECK(c.vertexCount == wantVertices, "own vehicle: the vertices - the body and exactly its wheels (or four standard wheels)");
+						HL_CHECK(stdRange == !(own || (wheels == 4)), "own vehicle: the standard wheels' material only on the original kart");
+						HL_CHECK(strcmp(EngHc_WheelsName(&c), name) == 0, "own vehicle: the word of the ready line (own / own-3-of-4 / none / standard)");
+						// The hull: no standard wheel in it (they reach x 36 + 16 at the retail points).
+						HL_CHECK(!(own && (wheels == 0)) || ((c.hullMax[0] < 36.0f) && (c.hullMin[0] > -20.0f)),
+						         "own vehicle without wheels: the hull is the body's (no standard wheel)");
+						HL_CHECK((own || (wheels == 4)) || (c.hullMax[0] > 50.0f), "original kart: the standard wheels in the hull");
+						// The palette: a missing wheel's entry is the identity, the read-back of
+						// a missing wheel 0 is 0; nothing reads past the nodes.
+						s_hc.chars[0] = c;
+						s_hc.chars[0].used = 1;
+						if (own && EngHc_Scratch())
+						{
+							EngHcPlace pl;
+							float yaw = 9.0f;
+							float roll = 9.0f;
+							int idOk = 1;
+
+							memset(&pl, 0, sizeof(pl));
+							Engine_Mat4Identity(&pl.world);
+							pl.rot[0][0] = pl.rot[1][1] = pl.rot[2][2] = 1.0;
+							pl.roll[0] = 1.0;
+							RldAnim_PoseRest(&c.skel, s_hc.poseA);
+							EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+							for (k = 0; k < 4; k++)
+							{
+								const float *e = &s_hc.palette[(c.wheelFirst + (u32)k) * 12u];
+								int a;
+
+								if (c.wheelNode[k] >= 0)
+								{
+									continue;
+								}
+								for (a = 0; a < 12; a++)
+								{
+									idOk = idOk && (fabsf(e[a] - (((a == 0) || (a == 5) || (a == 10)) ? 1.0f : 0.0f)) < 1e-6f);
+								}
+							}
+							HL_CHECK(idOk, "own vehicle: a missing wheel's palette entry is the identity");
+							HL_CHECK((wheels > 0) || ((yaw == 0.0f) && (roll == 0.0f)), "own vehicle without wheels: read-back yaw and roll 0");
+						}
+						memset(&s_hc.chars[0], 0, sizeof(s_hc.chars[0]));
+						EngHc_FreeCpu(&c);
+					}
+					RldHires_Close(&model);
+					free(vChunk);
+					free(vGlb);
+				}
+			}
+		}
+	}
 
 	// THE GAME'S KART (CHRG parts bit 1): A without wheel nodes, donor 3, and a
 	// kit made here (no game data): kart and steering wheel one triangle each,

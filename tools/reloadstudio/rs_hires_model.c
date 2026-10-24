@@ -869,10 +869,13 @@ static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
     }
     for (i = 0; i < m->drawNodeCount; i++)
         RsHires_CollectNode(m, img, m->drawNodes[i], -1, &list);
-    if (m->wheelNode[0] >= 0)
+    // The model's own wheels (all four, or an own vehicle's: only the ones it
+    // has, none for a hover), else the engine's standard wheels.
+    if (m->wheelNode[0] >= 0 || m->ownVehicle) {
         for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
-            RsHires_CollectNode(m, img, m->wheelNode[i], i, &list);
-    else
+            if (m->wheelNode[i] >= 0)
+                RsHires_CollectNode(m, img, m->wheelNode[i], i, &list);
+    } else
         RsHires_StdWheels(m, &list);
     a->matRgba = (u8(*)[4])calloc(RS_TEX_MATERIALS_MAX, 4);
     if (a->matRgba && list.count / 3 <= RS_TEX_TRIANGLES_MAX)
@@ -1216,6 +1219,7 @@ static void RsHires_Fill(const RldHiresReport *rep, const RldHiresModel *m, stru
             out->clips += m->clipAnim[i] >= 0;
     }
     out->wheels = m->wheelsFound;
+    out->ownVehicle = m->ownVehicle;
     out->joints = m->joints;
     out->triangles = m->triangles;
     out->vertices = m->vertices;
