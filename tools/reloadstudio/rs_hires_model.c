@@ -1631,6 +1631,23 @@ int RsHires_PackArgsParts(const wchar_t *character, const wchar_t *model, const 
     return n;
 }
 
+const wchar_t *RsHires_VehicleArg(int index)
+{
+    return index == 1 ? L"hover" : NULL;
+}
+
+int RsHires_PackArgsVehicle(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors,
+                            unsigned parts, const wchar_t *vehicle, const wchar_t **args)
+{
+    int n = RsHires_PackArgsParts(character, model, out, vertexColors, parts, args);
+    if (vehicle) {
+        args[n - 1] = L"--vehicle";             // in place of --machine, which goes last again
+        args[n++] = vehicle;
+        args[n++] = L"--machine";
+    }
+    return n;
+}
+
 // ---------------------------------------------------------------------------
 // The vertex colour mode
 

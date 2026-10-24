@@ -313,13 +313,22 @@ void RsHires_SetPointSampling(int on);
 // byte of the file). vertexColors: a mode (RS_HIRES_VCOL_*) for the switch,
 // -1 = no switch (rldpack then writes mode glTF, the bytes of before). args
 // needs room for RS_HIRES_PACK_ARGS; returns the count.
-#define RS_HIRES_PACK_ARGS 10
+#define RS_HIRES_PACK_ARGS 12
 int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors, const wchar_t **args);
 // The same with the parts field: RS_HIRES_PARTS_KART adds --kart-part,
 // RS_HIRES_PARTS_GAME_KART --game-kart template (before --machine), 0 nothing -
 // the arguments of RsHires_PackArgs.
 int RsHires_PackArgsParts(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors,
                           unsigned parts, const wchar_t **args);
+// The vehicle class choice of the step Model as the word for rldpack's
+// --vehicle: 0 Kart = NULL (nothing passed), 1 Hover = L"hover"; 2 Plane (not
+// selectable yet) and any other value = NULL.
+const wchar_t *RsHires_VehicleArg(int index);
+// RsHires_PackArgsParts, and with a vehicle word (not NULL) "--vehicle <word>"
+// right before the final --machine; vehicle NULL: the same array and count as
+// RsHires_PackArgsParts. args needs room for RS_HIRES_PACK_ARGS.
+int RsHires_PackArgsVehicle(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors,
+                            unsigned parts, const wchar_t *vehicle, const wchar_t **args);
 // The parts field a check's kart case packs with (RS_KART_PART: the kart part,
 // RS_KART_GAME: the game's kart, else 0), or the game's kart when gameKart is
 // 1 (the switch "Kart: from the player's game data") and the model has no kart part.

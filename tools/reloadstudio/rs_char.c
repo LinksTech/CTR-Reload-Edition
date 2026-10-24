@@ -308,7 +308,13 @@
 // below both, so that every step is seen whole without scrolling:
 //   1 Model         the model (a CHRG route: a .glb, or a finished .rldchar to look at), the line of what
 //                   its check found; Vanilla: what an OBJ brought along, its
-//                   size and Show kart wheels; Advanced
+//                   size, Vehicle class and Show kart wheels; Advanced
+//                   (Vehicle class, every route, a row of its own: Kart (the
+//                   start, nothing passed) | Hover (make-char --vehicle hover;
+//                   hires-add --vehicle hover for a classic model from a
+//                   finished character) | Plane (listed, coming soon, not
+//                   selectable); it changes the drawing only; hidden with a
+//                   finished character as the model)
 //   2 Driver        name, driving style, mask
 //   3 In-game look  two cards, switched in the title line: Portrait (icon,
 //                   framing, transparency, frame, the game's view of it) and
@@ -567,6 +573,8 @@
 #define CHAR_ID_KIT_OPEN       252   // "Creator Kit" at the top right of step 0
 #define CHAR_ID_KIT_STEP       253   // "No model yet? Start with the Creator Kit." (CHRG routes, no model)
 #define CHAR_ID_KIT_LINK       254   // "Open Creator Kit" at its end
+#define CHAR_ID_VEHICLE_LABEL  255   // "Vehicle class" on the step Model (every route)
+#define CHAR_ID_VEHICLE        256   // Kart | Hover | Plane (coming soon)
 #define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode, upscale or PNG conversion the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
@@ -919,6 +927,8 @@ static struct {
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
     HWND maskLabel, mask, maskHelp;
+    HWND vehicleLabel, vehicle;     // "Vehicle class" on the step Model: Kart | Hover | Plane (coming soon)
+    int vehicleSel;                 // the choice kept (0 Kart, 1 Hover): Plane is not selectable
     HWND mapLabel, mapSwatch, mapPick, mapLike, mapHelp;
     int mapColorSet;                // 0 = like the template
     COLORREF mapColor;              // the chosen colour when mapColorSet
@@ -1012,6 +1022,7 @@ static struct {
     struct { wchar_t path[CHAR_VAL]; int value[CHAR_CHOICE_KINDS]; } choice[CHAR_VCOL_CHOICES];
     int choiceNext;
     int chainVcol;                  // the mode the running build passes to hires-add, -1 = none
+    const wchar_t *chainVehicle;    // the --vehicle word the running build passes to hires-add, NULL = none
     HWND test, rebuild, testNote, outNote;
     int builtFresh;                 // the last build is of the fields as they are: Test in game is offered
     // A step shows its problems in its head (red, amber) only once it was
@@ -2823,7 +2834,7 @@ static int Char_TabOfId(int id, int *card)
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
     }
-    if (id == CHAR_ID_KIT_STEP || id == CHAR_ID_KIT_LINK) {
+    if (id == CHAR_ID_KIT_STEP || id == CHAR_ID_KIT_LINK || id == CHAR_ID_VEHICLE_LABEL || id == CHAR_ID_VEHICLE) {
         *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
@@ -7281,6 +7292,14 @@ static int Char_MaskIndex(void)
     return (int)sel;
 }
 
+// The vehicle class chosen: 0 Kart (the start), 1 Hover. Plane (2) is not
+// selectable, so it never shows here.
+static int Char_VehicleIndex(void)
+{
+    LRESULT sel = g_char.vehicle ? SendMessageW(g_char.vehicle, CB_GETCURSEL, 0, 0) : 0;
+    return sel == 1 ? 1 : 0;
+}
+
 // The folder the game loads its characters from: "characters" next to the game
 // program (the one entered on the page Test in game, else Rs_FindGameExe).
 // 0 = no game program is known; out is "".
@@ -7527,6 +7546,12 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     // The mask always, also the template's: the file carries the choice.
     Char_ArgsAdd(a, L"--mask");
     Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
+    // The vehicle class only for Hover (Kart is rldpack's default: nothing
+    // passed). Also on a CHRG route: the classic fallback carries it in its CHRI.
+    if (RsHires_VehicleArg(Char_VehicleIndex())) {
+        Char_ArgsAdd(a, L"--vehicle");
+        Char_ArgsAdd(a, RsHires_VehicleArg(Char_VehicleIndex()));
+    }
     // The minimap colour only when one is chosen (rldpack: like the template).
     if (g_char.mapColorSet) {
         swprintf(a->mapColor, 8, L"%02X%02X%02X", GetRValue(g_char.mapColor), GetGValue(g_char.mapColor),
@@ -7736,7 +7761,7 @@ static int Char_IsMetaSwitch(const wchar_t *arg)
 {
     return wcscmp(arg, L"--name") == 0 || wcscmp(arg, L"--class") == 0 || wcscmp(arg, L"--mask") == 0 ||
            wcscmp(arg, L"--map-color") == 0 || wcscmp(arg, L"--out") == 0 || wcscmp(arg, L"--shadow") == 0 ||
-           wcscmp(arg, L"--exhaust") == 0;
+           wcscmp(arg, L"--exhaust") == 0 || wcscmp(arg, L"--vehicle") == 0;
 }
 
 // The command of a check without its temp files (the values of --preview,
@@ -8282,6 +8307,9 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
                                          Char_KartBoxWanted() && Char_IsChecked(g_char.gameKart) ? 1 : 0);
     g_char.chainPng = Char_IsChecked(g_char.png);
     g_char.chainVcol = g_char.vcolMode;       // -1: the model has no COLOR_0, no switch
+    // The vehicle class goes to hires-add only when the classic model is the author's
+    // finished character (no make-char ran); else make-char already wrote it.
+    g_char.chainVehicle = g_char.chainOwnClassic ? RsHires_VehicleArg(Char_VehicleIndex()) : NULL;
     g_char.chainDerived[0] = 0;
     g_char.chainPngPath[0] = 0;
     // The converted and the upscaled model beside a temp "output" of the same
@@ -8406,8 +8434,8 @@ static void Char_ChainDone(HWND page, int exitCode)
             Char_ChainFailed(page, L"Upscaling", exitCode);
             return;
         }
-        n = RsHires_PackArgsParts(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : model, g_char.chainOut,
-                                  g_char.chainVcol, g_char.chainParts, args);
+        n = RsHires_PackArgsVehicle(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : model, g_char.chainOut,
+                                    g_char.chainVcol, g_char.chainParts, g_char.chainVehicle, args);
         swprintf(what, 64, L"Packing the %ls model...", Char_ChrgTitle());
         if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, what))
             return;
@@ -9718,6 +9746,8 @@ static int Char_WriteReport(const wchar_t *path)
         Char_Put(f, L"reduced: (not reported)");
     Char_Put(f, L"option Show kart wheels: %ls (%ls)", Char_IsChecked(g_char.wheels) ? L"on" : L"off",
              Char_IsChecked(g_char.wheels) ? L"rldpack's default" : L"passed as --wheels off");
+    if (Char_VehicleIndex() == 1)
+        Char_Put(f, L"option Vehicle class: hover (passed as --vehicle hover)");
     Char_Put(f, L"wheels (last run): %ls", g_charJob.wheels[0] ? g_charJob.wheels : L"(not reported)");
     Char_Put(f, L"option Repair the model: %ls (%ls)", Char_IsChecked(g_char.repair) ? L"on" : L"off",
              Char_IsChecked(g_char.repair) ? L"rldpack's default" : L"passed as --repair off");
@@ -10059,6 +10089,25 @@ static int Char_AutoMask(HWND page, const wchar_t *arg)
         }
     }
     Rs_AutoLog(L"  mask: '%ls' is not a mask - use aku or uka", arg);
+    return RS_AUTO_FAIL;
+}
+
+// "vehicle kart|hover|plane": the vehicle class like a click on the list;
+// plane is refused (coming soon).
+static int Char_AutoVehicle(HWND page, const wchar_t *arg)
+{
+    if (_wcsicmp(arg, L"plane") == 0) {
+        Rs_AutoLog(L"  vehicle: plane is not selectable (coming soon)");
+        return RS_AUTO_FAIL;
+    }
+    if (_wcsicmp(arg, L"kart") == 0 || _wcsicmp(arg, L"hover") == 0) {
+        const int index = _wcsicmp(arg, L"hover") == 0 ? 1 : 0;
+        SendMessageW(g_char.vehicle, CB_SETCURSEL, (WPARAM)index, 0);
+        SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_VEHICLE, CBN_SELCHANGE), (LPARAM)g_char.vehicle);
+        Rs_AutoLog(L"  vehicle: %ls (the author's choice)", index ? L"hover" : L"kart");
+        return RS_AUTO_WAIT;
+    }
+    Rs_AutoLog(L"  vehicle: '%ls' is not a vehicle class - use kart or hover (plane: coming soon)", arg);
     return RS_AUTO_FAIL;
 }
 
@@ -10726,6 +10775,17 @@ static void Char_Create(HWND page)
                                RS_FONT_SMALL);
     Rs_SetTextColor(g_char.maskHelp, RS_COL_MUTED);
 
+    // The vehicle class (step Model, every route): Kart at the start; Plane is listed but not selectable yet.
+    g_char.vehicleLabel = Rs_Label(page, CHAR_ID_VEHICLE_LABEL, L"Vehicle class", RS_FONT_BOLD);
+    g_char.vehicle = Rs_Combo(page, CHAR_ID_VEHICLE);
+    SendMessageW(g_char.vehicle, CB_ADDSTRING, 0, (LPARAM)L"Kart");
+    SendMessageW(g_char.vehicle, CB_ADDSTRING, 0, (LPARAM)L"Hover");
+    SendMessageW(g_char.vehicle, CB_ADDSTRING, 0, (LPARAM)L"Plane (coming soon)");
+    SendMessageW(g_char.vehicle, CB_SETCURSEL, 0, 0);
+    g_char.vehicleSel = 0;
+    Rs_SetTip(g_char.vehicle, L"What the driver sits in, stored in the file. It changes the drawing only; the driving style "
+                              L"(step Driver) stays the physics. Plane: coming soon.");
+
     g_char.mapLabel = Rs_Label(page, CHAR_ID_MAPCOLOR_LABEL, L"Minimap colour", RS_FONT_BOLD);
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -11152,6 +11212,7 @@ static void Char_Create(HWND page)
     g_char.vcolMode = g_char.vcolSuggested = -1;
     g_char.chainVcol = -1;
     g_char.chainParts = 0;
+    g_char.chainVehicle = NULL;
     for (i = 0; i < 2; i++)
         g_char.previewSwitch[i] = Char_TabButton(page, CHAR_ID_PREVIEW_SWITCH + i, Char_PreviewText(i), RS_FONT_SECTION);
     Char_PreviewTip();
@@ -11376,6 +11437,25 @@ static int Char_LayStepLine(HWND label, HWND change, int x, int y, int fieldW)
     return y + rowH + Rs_Px(g_char.compact ? 2 : 6);
 }
 
+// The row "Vehicle class" of the step Model (every route): label and list, a
+// row of its own. A finished character as the model: no row (Char_Wanted
+// hides it). Returns the y below it.
+static int Char_LayVehicle(const struct CharLay *k, const RECT *in, int y)
+{
+    const int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x;
+    int bw;
+
+    if (Char_ModelIsCharacter())
+        return y;
+    bw = Char_ComboTextWidth(g_char.vehicle) + Rs_Px(28);
+    if (bw > fieldW)
+        bw = fieldW;
+    SendMessageW(g_char.vehicle, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.vehicle) + Rs_Px(16)), 0);
+    MoveWindow(g_char.vehicleLabel, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.vehicle, x, y, bw, Rs_Px(300), TRUE);
+    return y + Rs_Px(g_char.compact ? 30 : 34);
+}
+
 static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
 {
     HWND options[2];
@@ -11424,6 +11504,9 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         MoveWindow(g_char.pngFix, x, y + Rs_Px(2), bw < fieldW ? bw : fieldW, Rs_Px(30), TRUE);
         y += Rs_Px(g_char.compact ? 34 : 38);
     }
+    // THE VEHICLE CLASS on a CHRG route: below the lines of the model.
+    if (chrg)
+        y = Char_LayVehicle(k, in, y);
     if (!chrg) {
         // An OBJ (or a model not named .ply): the line of what was read right
         // below, then the list of its MTL, textures and groups over the width
@@ -11468,6 +11551,8 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
             MoveWindow(g_char.sizeHint, x, y, fieldW, noteH, TRUE);
             y += Rs_Px(8) + noteH;
         }
+        // THE VEHICLE CLASS on Vanilla: below the size group (also in the user mode).
+        y = Char_LayVehicle(k, in, y);
         // Show kart wheels, and in the user mode the classic fallback (ticked,
         // greyed out, "Coming soon" right of it); the choices of rldpack's work
         // on the model are the card Options of Advanced.
@@ -12271,6 +12356,9 @@ static int Char_Wanted(HWND c)
             return Char_ModelIsCharacter();
         if (c == g_char.kitStep || c == g_char.kitLink)
             return Char_KitHint();
+        // The vehicle class: nothing is built from a finished character.
+        if (c == g_char.vehicleLabel || c == g_char.vehicle)
+            return !Char_ModelIsCharacter();
         if (Char_ModelIsCharacter() &&
             (c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
              c == g_char.upscaleChange || (id >= CHAR_ID_GAMEKART && id <= CHAR_ID_GAMEKART_CHANGE) || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) ||
@@ -12352,7 +12440,7 @@ static void Char_Layout(HWND page, int w, int h)
     int vgap = Rs_Px(compact ? 6 : 12), avail, leftW, least, comboW, contentTop, advTop, extrasBottom[CHAR_EXTRAS_COUNT];
     int barH, barTop, upperBottom, need, t, i, stepEnd, viewMinW = Rs_Px(compact ? CHAR_COMPACT_VIEW_MIN_W : CHAR_VIEW_MIN_W);
     RECT card, in, adv, advIn, inStep;
-    HWND column[20];
+    HWND column[21];
 
     g_char.compact = compact;
     Rs_PageSetCompactHead(page, compact);
@@ -12394,7 +12482,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[17] = g_char.texturesLabel;
     column[18] = g_char.nativeLabel;
     column[19] = g_char.outLabel;
-    for (i = 0; i < 20; i++) {
+    column[20] = g_char.vehicleLabel;
+    for (i = 0; i < 21; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -12877,6 +12966,17 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_VOICE_NORMALIZE:
         if (code == BN_CLICKED)
             Char_ChangedSoon(page);
+        break;
+    case CHAR_ID_VEHICLE:
+        if (code == CBN_SELCHANGE) {
+            if (SendMessageW(g_char.vehicle, CB_GETCURSEL, 0, 0) == 2) {
+                // Plane: coming soon - back to the choice before, nothing else.
+                SendMessageW(g_char.vehicle, CB_SETCURSEL, (WPARAM)g_char.vehicleSel, 0);
+                break;
+            }
+            g_char.vehicleSel = Char_VehicleIndex();
+            Char_ChangedSoon(page);
+        }
         break;
     case CHAR_ID_CLASS:
     case CHAR_ID_MASK:
@@ -13664,6 +13764,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoClass(page, arg);
     if (wcscmp(verb, L"mask") == 0)
         return Char_AutoMask(page, arg);
+    if (wcscmp(verb, L"vehicle") == 0)
+        return Char_AutoVehicle(page, arg);
     if (wcscmp(verb, L"mapcolor") == 0)
         return Char_AutoMapColor(page, arg);
     if (wcscmp(verb, L"size") == 0)

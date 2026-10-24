@@ -20,6 +20,11 @@
 #    directory entry stayed as it was); hires-add on a file with CHRG replaces
 #    it (stripped again: the character); verify passes; hires-check reads the
 #    chunk back; hires-add of the bad model fails and writes nothing.
+# 5. THE VEHICLE CLASS (CHRI 0x27, vehicle_class extension of 4.3): set-vehicle kart on a kart is the
+#    file byte for byte; hover writes the look block (info says hover, verify
+#    passes), kart back keeps the size; on a file that has the look block only
+#    the class byte and the CHRI hash change and kart restores the file;
+#    hires-add --vehicle; a bad word exits 2 and writes nothing; plane.
 # Prints "rldhires files passed: <n> checks" at the end, FATAL_ERROR on the
 # first failure.
 
@@ -297,5 +302,150 @@ foreach(base old_plain good_probe-poses)
     endif()
     math(EXPR checks "${checks} + 1")
 endforeach()
+
+# THE VEHICLE CLASS (CHRI 0x27, vehicle_class extension of 4.3). old_plain is a kart without the look block.
+# set-vehicle kart on a kart: the same bytes.
+pack(vk set-vehicle "${DIR}/old_plain.rldchar" kart -o "${DIR}/veh-kart.rldchar")
+set(LAST_OUT "${vk_OUT}")
+file(SHA256 "${DIR}/old_plain.rldchar" vehOld)
+if(NOT (vk_RESULT EQUAL 0 AND EXISTS "${DIR}/veh-kart.rldchar"))
+    fail("set-vehicle kart on a kart exits 0")
+endif()
+file(SHA256 "${DIR}/veh-kart.rldchar" vehHash)
+if(NOT (vehHash STREQUAL vehOld))
+    fail("set-vehicle kart on a kart is the file byte for byte")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# hover: the look block is written, info says hover, verify passes; kart back
+# keeps the look block (the same size) and says kart.
+pack(vh set-vehicle "${DIR}/old_plain.rldchar" hover -o "${DIR}/veh-hover.rldchar")
+set(LAST_OUT "${vh_OUT}")
+if(NOT (vh_RESULT EQUAL 0 AND EXISTS "${DIR}/veh-hover.rldchar"))
+    fail("set-vehicle hover exits 0")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(vi info "${DIR}/veh-hover.rldchar")
+set(LAST_OUT "${vi_OUT}")
+string(FIND "${vi_OUT}" "  vehicle       hover" at)
+if(NOT (vi_RESULT EQUAL 0 AND at GREATER -1))
+    fail("info of the hover file says 'vehicle       hover'")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(v verify "${DIR}/veh-hover.rldchar")
+set(LAST_OUT "${v_OUT}")
+if(NOT (v_RESULT EQUAL 0))
+    fail("verify passes on the hover file")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(vb set-vehicle "${DIR}/veh-hover.rldchar" kart -o "${DIR}/veh-hover-kart.rldchar")
+set(LAST_OUT "${vb_OUT}")
+if(NOT (vb_RESULT EQUAL 0 AND EXISTS "${DIR}/veh-hover-kart.rldchar"))
+    fail("set-vehicle kart on the hover file exits 0")
+endif()
+pack(vi info "${DIR}/veh-hover-kart.rldchar")
+set(LAST_OUT "${vi_OUT}")
+string(FIND "${vi_OUT}" "  vehicle       kart" at)
+file(SIZE "${DIR}/veh-hover.rldchar" sizeHover)
+file(SIZE "${DIR}/veh-hover-kart.rldchar" sizeHoverKart)
+if(NOT (at GREATER -1 AND sizeHover EQUAL sizeHoverKart))
+    fail("kart on the hover file says kart and keeps the size (the look block stays)")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# A kart that already has the look block (veh-hover-kart): hover changes the class
+# byte and the CHRI hash in the directory (33 bytes) and nothing else, kart
+# gives the file back byte for byte. No file of this script has a game kart:
+# the look block is the file with a CHRI of fixedSize 0x3C.
+pack(lh set-vehicle "${DIR}/veh-hover-kart.rldchar" hover -o "${DIR}/veh-look-hover.rldchar")
+set(LAST_OUT "${lh_OUT}")
+if(NOT (lh_RESULT EQUAL 0 AND EXISTS "${DIR}/veh-look-hover.rldchar"))
+    fail("set-vehicle hover on a kart with the look block exits 0")
+endif()
+pack(lk set-vehicle "${DIR}/veh-look-hover.rldchar" kart -o "${DIR}/veh-look-kart.rldchar")
+set(LAST_OUT "${lk_OUT}")
+file(SHA256 "${DIR}/veh-hover-kart.rldchar" lookOld)
+file(SHA256 "${DIR}/veh-look-kart.rldchar" lookBack)
+if(NOT (lk_RESULT EQUAL 0 AND lookOld STREQUAL lookBack))
+    fail("hover then kart on a file with the look block is the file byte for byte")
+endif()
+math(EXPR checks "${checks} + 1")
+file(SIZE "${DIR}/veh-look-hover.rldchar" sizeLookHover)
+if(NOT (sizeLookHover EQUAL sizeHoverKart))
+    fail("hover on a file with the look block keeps the size")
+endif()
+file(READ "${DIR}/veh-hover-kart.rldchar" hexA HEX)
+file(READ "${DIR}/veh-look-hover.rldchar" hexB HEX)
+string(LENGTH "${hexA}" hexLen)
+math(EXPR hexLast "${hexLen} / 2 - 1")
+set(diffCount 0)
+set(diffFirstRest -1)
+set(diffLastRest -1)
+foreach(pos RANGE 0 ${hexLast})
+    math(EXPR at2 "${pos} * 2")
+    string(SUBSTRING "${hexA}" ${at2} 2 byteA)
+    string(SUBSTRING "${hexB}" ${at2} 2 byteB)
+    if(NOT (byteA STREQUAL byteB))
+        math(EXPR diffCount "${diffCount} + 1")
+        if(diffCount GREATER 1)
+            if(diffFirstRest LESS 0)
+                set(diffFirstRest ${pos})
+            endif()
+            set(diffLastRest ${pos})
+        endif()
+    endif()
+endforeach()
+# One byte (the class, 0x27 of the CHRI) plus bytes of the 32-byte CHRI hash in
+# the directory (a hash byte may stay by chance).
+if(diffCount GREATER 0 AND diffCount LESS 34 AND diffFirstRest GREATER -1)
+    math(EXPR diffSpan "${diffLastRest} - ${diffFirstRest}")
+else()
+    set(diffSpan 999)
+endif()
+if(NOT (diffCount GREATER 1 AND diffCount LESS 34 AND diffSpan LESS 32))
+    fail("hover on a file with the look block changes the class byte and the CHRI hash only (${diffCount} bytes differ, span ${diffSpan})")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# hires-add --vehicle writes the class into the CHRI; without it the kart stays.
+pack(av hires-add "${DIR}/old_plain.rldchar" "${DIR}/hires-good.glb" -o "${DIR}/veh-add-hover.rldchar" --vehicle hover)
+set(LAST_OUT "${av_OUT}")
+if(NOT (av_RESULT EQUAL 0))
+    fail("hires-add --vehicle hover")
+endif()
+pack(c hires-check "${DIR}/veh-add-hover.rldchar")
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "  vehicle: hover (CHRI)" at)
+if(NOT (c_RESULT EQUAL 0 AND at GREATER -1))
+    fail("hires-check prints 'vehicle: hover (CHRI)' after hires-add --vehicle hover")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(av hires-add "${DIR}/old_plain.rldchar" "${DIR}/hires-good.glb" -o "${DIR}/veh-add-kart.rldchar")
+set(LAST_OUT "${av_OUT}")
+pack(c hires-check "${DIR}/veh-add-kart.rldchar")
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "  vehicle: kart (CHRI)" at)
+if(NOT (av_RESULT EQUAL 0 AND c_RESULT EQUAL 0 AND at GREATER -1))
+    fail("hires-add without --vehicle keeps 'vehicle: kart (CHRI)'")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# A word that is no class exits 2 and writes nothing; plane is named.
+pack(vx set-vehicle "${DIR}/old_plain.rldchar" boat -o "${DIR}/veh-boat.rldchar")
+set(LAST_OUT "${vx_OUT}")
+if(NOT (vx_RESULT EQUAL 2 AND NOT EXISTS "${DIR}/veh-boat.rldchar"))
+    fail("set-vehicle boat exits 2 and writes nothing")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(vp set-vehicle "${DIR}/old_plain.rldchar" plane -o "${DIR}/veh-plane.rldchar")
+set(LAST_OUT "${vp_OUT}")
+string(FIND "${vp_OUT}" "vehicle: plane" at)
+if(NOT (vp_RESULT EQUAL 0 AND at GREATER -1 AND EXISTS "${DIR}/veh-plane.rldchar"))
+    fail("set-vehicle plane prints 'vehicle: plane'")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# (make-char --vehicle is not run here: every model this script has carries a
+# skin, which make-char refuses - model-rig.)
 
 message("rldhires files passed: ${checks} checks")

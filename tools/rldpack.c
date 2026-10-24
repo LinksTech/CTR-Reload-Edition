@@ -7201,6 +7201,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	{
 		return RldHires_StripCommand(argc - 2, &argv[2]);
 	}
+	if (strcmp(argv[1], "set-vehicle") == 0)
+	{
+		return RldHires_SetVehicleCommand(argc - 2, &argv[2]);
+	}
 	if (strcmp(argv[1], "hires-upscale") == 0)
 	{
 		return RldHires_UpscaleCommand(argc - 2, &argv[2]);

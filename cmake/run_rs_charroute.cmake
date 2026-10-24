@@ -478,6 +478,46 @@ if(PAGE)
             "with its bytes of before, a plain skinned one, the author's off)")
     message("charroute page passed: vertex colours psx off gltf")
 
+    # THE VEHICLE CLASS (step Model, every route): Kart at the start passes no
+    # --vehicle; "vehicle hover" makes the check's make-char carry --vehicle
+    # hover, "vehicle kart" takes it away again; "vehicle plane" is refused
+    # (coming soon) and changes nothing.
+    page_check(vehicle-kart vanilla route-bare.glb "")
+    file(READ "${DIR}/page-vehicle-kart.log" text)
+    if(NOT text MATCHES "rldpack make-char " OR text MATCHES "--vehicle")
+        message(FATAL_ERROR "charroute FAILED: the start (Kart) passes --vehicle or makes no check\n${text}")
+    endif()
+    page_check(vehicle-hover vanilla route-bare.glb "--do;vehicle hover")
+    page_says(vehicle-hover "vehicle: hover \\(the author's choice\\)" "the verb vehicle hover was not taken")
+    page_says(vehicle-hover "rldpack make-char [^\n]*--vehicle hover" "the check after vehicle hover has no --vehicle hover")
+    page_check(vehicle-back vanilla route-bare.glb "--do;vehicle hover;--do;vehicle kart")
+    # Back on Kart the command is that of the first check again, so the page
+    # may show that kept result without running rldpack: whatever runs after
+    # the verb has no --vehicle, and the report names no vehicle class (the
+    # line is written only for Hover); the hover report names it.
+    file(READ "${DIR}/page-vehicle-back.log" text)
+    string(FIND "${text}" "vehicle: kart (the author's choice)" vehicleAt)
+    if(vehicleAt LESS 0)
+        message(FATAL_ERROR "charroute FAILED: the verb vehicle kart was not taken\n${text}")
+    endif()
+    string(SUBSTRING "${text}" ${vehicleAt} -1 vehicleTail)
+    if(vehicleTail MATCHES "--vehicle")
+        message(FATAL_ERROR "charroute FAILED: after vehicle kart the check still passes --vehicle\n${text}")
+    endif()
+    file(READ "${DIR}/page-vehicle-back-report.txt" vehicleReport)
+    file(READ "${DIR}/page-vehicle-hover-report.txt" vehicleHoverReport)
+    if(vehicleReport MATCHES "option Vehicle class" OR NOT vehicleHoverReport MATCHES "option Vehicle class: hover \\(passed as --vehicle hover\\)")
+        message(FATAL_ERROR "charroute FAILED: the report names the vehicle class for Kart, or not for Hover\n${vehicleReport}")
+    endif()
+    execute_process(COMMAND "${STUDIO}" --settings "${DIR}/rs.ini" --log "${DIR}/page-vehicle-plane.log"
+                            --do "page char" --do "route vanilla" --do "vehicle plane" --do "quit"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
+    file(READ "${DIR}/page-vehicle-plane.log" text)
+    if(result EQUAL 0 OR NOT text MATCHES "vehicle: plane is not selectable \\(coming soon\\)")
+        message(FATAL_ERROR "charroute FAILED: \"vehicle plane\" was not refused (exit ${result})\n${text}")
+    endif()
+    message("charroute page passed: the vehicle class (Kart passes nothing, Hover --vehicle hover, Plane refused)")
+
     # THE COUNTS IN THE MODE CHOSEN (HRG-36): the page's hi-res check counts
     # what rldpack hires-check --vertex-colors <mode> counts - in PSX blend and
     # off no HRG-36 (no row, no warning), in glTF its row and warning.

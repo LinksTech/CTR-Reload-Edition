@@ -496,6 +496,23 @@ static int RldHires_CheckCommand(int argc, char **argv)
 			printf("hires check: 1 errors, 0 warnings, 0 notes\n");
 			return 1;
 		}
+		// The vehicle class from CHRI (vehicle_class extension of 4.3), never from CHRG.
+		{
+			int infoIndex = -1;
+			size_t infoSize = 0;
+			const char *infoWhy = NULL;
+			u8 *infoBytes;
+			struct RldCharInfo info;
+
+			Rld_FindEntry(&reader, "CHRI", &infoIndex);
+			infoBytes = (infoIndex >= 0) ? Rld_ReadChunk(&reader, infoIndex, &infoSize, &infoWhy) : NULL;
+			if ((infoBytes != NULL) && (RldChar_ParseInfo(&info, infoBytes, infoSize) == NULL))
+			{
+				printf("  vehicle: %s (CHRI)%s\n", RldMk_VehicleWord(RldChar_Vehicle(&info)),
+				       (info.vehicleByte > RLDCHAR_VEHICLE_PLANE) ? " - a reserved value, read as kart" : "");
+			}
+			free(infoBytes);
+		}
 		index = RldHires_FindChunk(&reader);
 		if (index < 0)
 		{
@@ -630,6 +647,161 @@ static void RldHiresPack_GameKartDonor(struct RldHiresPackIn *in, u32 donor)
 	}
 }
 
+// THE VEHICLE CLASS of a finished character (CHRI 0x27, vehicle_class extension of 4.3, include/rldchar.inc
+// RldChar_Vehicle; RldMk_ChriVehicle): hires-add --vehicle and set-vehicle.
+// Takes --vehicle kart|hover|plane out of argv (anywhere, once): the other
+// arguments go to rest in their order, their count is returned; *given 1 when
+// it was there. -1 = a usage error.
+static int RldHiresPack_Vehicle(int argc, char **argv, char **rest, u32 *vehicle, int *given)
+{
+	int n = 0;
+	int i;
+
+	*vehicle = RLDCHAR_VEHICLE_KART;
+	*given = 0;
+	for (i = 0; i < argc; i++)
+	{
+		if (strcmp(argv[i], "--vehicle") == 0)
+		{
+			if (*given || ((i + 1) >= argc) || !RldMk_VehicleOf(argv[i + 1], vehicle))
+			{
+				return -1;
+			}
+			i++;
+			*given = 1;
+			continue;
+		}
+		rest[n++] = argv[i];
+	}
+	return n;
+}
+
+// The CHRI of in gets the class (RldMk_ChriVehicle), held to the game's own
+// reading (RldMk_ChriVehicleHolds); its directory entry follows (both sizes,
+// SHA-256), every other chunk stays as it is. One line says the class and
+// whether a byte changed. NULL = done, else a fixed text (in unchanged).
+static const char *RldHiresPack_SetVehicle(struct RldHiresPackIn *in, u32 vehicle)
+{
+	int i;
+
+	for (i = 0; i < in->c.chunkCount; i++)
+	{
+		struct RldChunk *chunk = &in->c.chunks[i];
+		struct RldCharInfo info;
+		const char *why = NULL;
+		size_t size = 0;
+		u8 *with;
+		u32 was;
+		int same;
+
+		if (memcmp(chunk->type, "CHRI", 4) != 0)
+		{
+			continue;
+		}
+		if ((chunk->sizeStored != chunk->sizeRaw) || (chunk->stored == NULL) || ((chunk->flags & 0x0fu) != RLD_COMPRESSION_NONE))
+		{
+			return "CHRI is not stored as it is";
+		}
+		if (RldChar_ParseInfo(&info, chunk->stored, (size_t)chunk->sizeStored) != NULL)
+		{
+			return "CHRI does not read";
+		}
+		was = RldChar_Vehicle(&info);
+		with = RldMk_ChriVehicle(chunk->stored, (size_t)chunk->sizeStored, vehicle, &size, &why);
+		if ((with != NULL) && (why == NULL))
+		{
+			why = RldMk_ChriVehicleHolds(chunk->stored, (size_t)chunk->sizeStored, with, size, vehicle);
+		}
+		if (why != NULL)
+		{
+			free(with);
+			return why;
+		}
+		same = (size == (size_t)chunk->sizeStored) && (memcmp(with, chunk->stored, size) == 0);
+		free(chunk->stored);
+		chunk->stored = with;
+		chunk->sizeStored = (u64)size;
+		chunk->sizeRaw = (u64)size;
+		Sha256(chunk->stored, size, chunk->hash);
+		printf("  vehicle: %s (CHRI 0x27, vehicle_class extension of 4.3), was %s%s\n", RldMk_VehicleWord(vehicle), RldMk_VehicleWord(was),
+		       same ? " - CHRI unchanged" : ((info.fixedSize < RLDCHAR_CHRI_SIZE_LOOK) ? " - the look block written with the retail look" : ""));
+		return NULL;
+	}
+	return "the file has no CHRI";
+}
+
+// Every chunk of in in its order (CHRG where it is), written with the header of
+// in (its flags and its minor). NULL = out of memory.
+static u8 *RldHiresPack_RebuildAll(struct RldHiresPackIn *in, size_t *sizeOut)
+{
+	u8 *bytes = Rld_WriteEnvelope(&s_rldCharFormat, in->flags, &in->c, sizeOut);
+
+	if (bytes != NULL)
+	{
+		Rld_WriteLE16(&bytes[0x0a], in->minor); // the minor of the file, not the one rldpack writes
+	}
+	return bytes;
+}
+
+static int RldHires_SetVehicleCommand(int argc, char **argv)
+{
+	static struct RldHiresPackIn in;
+	const char *paths[2];
+	const char *outPath;
+	const char *why;
+	u32 vehicle = RLDCHAR_VEHICLE_KART;
+	u8 *bytes;
+	size_t size = 0;
+	u8 digest[32];
+	char hex[65];
+	int k;
+
+	if (!RldHiresPack_Args(argc, argv, 2, paths, &outPath) || !RldMk_VehicleOf(paths[1], &vehicle))
+	{
+		fprintf(stderr, "usage: rldpack set-vehicle <in.rldchar> <kart|hover|plane> -o <out.rldchar>\n");
+		return 2;
+	}
+	why = RldHiresPack_Load(paths[0], &in);
+	if (why != NULL)
+	{
+		fprintf(stderr, "rldpack: %s: %s\n", paths[0], why);
+		Rld_Say("error", "rldchar", paths[0], "%s is no readable character: %s", paths[0], why);
+		return 1;
+	}
+	printf("set-vehicle: %s\n", paths[0]);
+	why = RldHiresPack_SetVehicle(&in, vehicle);
+	if (why != NULL)
+	{
+		RldHiresPack_Free(&in.c);
+		fprintf(stderr, "rldpack: %s: %s - nothing written\n", paths[0], why);
+		Rld_Say("error", "vehicle", paths[0], "The vehicle class cannot be written: %s. Nothing was written.", why);
+		return 1;
+	}
+	bytes = RldHiresPack_RebuildAll(&in, &size);
+	RldHiresPack_Free(&in.c);
+	if (bytes == NULL)
+	{
+		fprintf(stderr, "rldpack: out of memory\n");
+		return 1;
+	}
+	if (!RldHiresPack_Write(outPath, bytes, size))
+	{
+		free(bytes);
+		fprintf(stderr, "rldpack: %s cannot be written\n", outPath);
+		Rld_Say("error", "write", outPath, "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
+		return 1;
+	}
+	Sha256(bytes, size, digest);
+	for (k = 0; k < 32; k++)
+	{
+		snprintf(&hex[k * 2], 3, "%02x", digest[k]);
+	}
+	printf("wrote %s (%u bytes, %d chunks, sha256 %s)\n", outPath, (unsigned)size, (int)Rld_ReadLE32(&bytes[0x10]), hex);
+	Rld_Emit("written", outPath, hex, (const char *)NULL);
+	free(bytes);
+	return 0;
+}
+
 static int RldHires_AddCommand(int argc, char **argv)
 {
 	static RldHiresReport rep;
@@ -645,21 +817,28 @@ static int RldHires_AddCommand(int argc, char **argv)
 	int ok;
 	int kartRefused;
 	int result;
-	char *rest[10];
-	char *rest2[10];
+	char *rest0[12];
+	char *rest[12];
+	char *rest2[12];
 	int mode = RLDHIRES_VCOL_GLTF;
 	int given = 0;
 	u32 parts = 0u;
 	int partsGiven = 0;
-	int restCount = (argc > 10) ? -1 : RldHiresPack_VertexColours(argc, argv, rest, &mode, &given);
+	u32 vehicle = RLDCHAR_VEHICLE_KART;
+	int vehicleGiven = 0;
+	int restCount = (argc > 12) ? -1 : RldHiresPack_Vehicle(argc, argv, rest0, &vehicle, &vehicleGiven);
 
+	if (restCount >= 0)
+	{
+		restCount = RldHiresPack_VertexColours(restCount, rest0, rest, &mode, &given);
+	}
 	if (restCount >= 0)
 	{
 		restCount = RldHiresPack_Parts(restCount, rest, rest2, &parts, &partsGiven);
 	}
 	if ((restCount < 0) || !RldHiresPack_Args(restCount, rest2, 2, paths, &outPath))
 	{
-		fprintf(stderr, "usage: rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <0..14|template>]\n");
+		fprintf(stderr, "usage: rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <0..14|template>] [--vehicle kart|hover|plane]\n");
 		return 2;
 	}
 	if (!Rld_ReadFile(paths[1], &glb, &glbSize))
@@ -701,6 +880,19 @@ static int RldHires_AddCommand(int argc, char **argv)
 	if ((parts & RLDHIRES_PART_GAME_KART) != 0u)
 	{
 		RldHiresPack_GameKartDonor(&in, (parts & RLDHIRES_PART_DONOR_MASK) >> RLDHIRES_PART_DONOR_SHIFT);
+	}
+	// --vehicle: the class into CHRI of the character (without it CHRI stays).
+	if (vehicleGiven)
+	{
+		why = RldHiresPack_SetVehicle(&in, vehicle);
+		if (why != NULL)
+		{
+			RldHiresPack_Free(&in.c);
+			printf("hires-add: the vehicle class cannot be written (%s) - nothing written\n", why);
+			Rld_Say("error", "vehicle", paths[0], "The vehicle class cannot be written: %s. Nothing was written.", why);
+			free(glb);
+			return 1;
+		}
 	}
 	chunk = RldHires_BuildChunkParts(glb, (u32)glbSize, (u32)mode, parts, &chunkSize);
 	free(glb);
@@ -768,8 +960,14 @@ static void RldHires_Usage(FILE *out)
 	fprintf(out, "  (a 20-byte CHRG header; an older game reads past it and draws the kart).\n");
 	fprintf(out, "  --game-kart <0..14|template>: the model has no kart; the game puts in the\n");
 	fprintf(out, "  original kart from the player's own game data (that driver's colours).\n");
+	fprintf(out, "  --vehicle kart|hover|plane: writes the vehicle class into CHRI as set-vehicle.\n");
 	fprintf(out, "  rldpack hires-strip <in.rldchar> -o <out.rldchar>\n");
 	fprintf(out, "  Removes CHRG; every other chunk stays byte for byte.\n");
+	fprintf(out, "  rldpack set-vehicle <in.rldchar> <kart|hover|plane> -o <out.rldchar>\n");
+	fprintf(out, "  Writes the vehicle class into CHRI (byte 0x27, vehicle_class extension of 4.3): what the driver\n");
+	fprintf(out, "  sits in, not the physics. A file without the look block gets it with the\n");
+	fprintf(out, "  retail look for hover or plane; kart on such a file changes nothing. Every\n");
+	fprintf(out, "  other byte of CHRI and every other chunk stays as it is.\n");
 	fprintf(out, "  rldpack hires-upscale <in.glb> -o <out.glb>\n");
 	fprintf(out, "  Writes a new model whose small base colour textures (larger edge below 128)\n");
 	fprintf(out, "  are enlarged 2x or 4x with Scale2x, a pixel-art upscaler (no new colours,\n");

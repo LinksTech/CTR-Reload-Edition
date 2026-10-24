@@ -1131,6 +1131,36 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
                       wcscmp(a[5], L"--game-kart") == 0 && wcscmp(a[6], L"template") == 0 && wcscmp(a[7], L"--machine") == 0 &&
                       RsHires_PackArgsParts(L"in.rldchar", L"m.glb", L"out.rldchar", -1, 0u, a) == 6,
                   "hires-add with --kart-part or --game-kart template before --machine; parts 0: the arguments of before");
+            // THE VEHICLE CLASS (step Model): Kart passes nothing, Hover --vehicle hover.
+            Check(RsHires_VehicleArg(0) == NULL && wcscmp(RsHires_VehicleArg(1), L"hover") == 0 && RsHires_VehicleArg(2) == NULL &&
+                      RsHires_VehicleArg(-1) == NULL && RsHires_VehicleArg(3) == NULL,
+                  "the vehicle class word: Kart nothing, Hover 'hover', Plane (not selectable) and any other value nothing");
+            {
+                static const unsigned partsList[3] = { 0u, RS_HIRES_PARTS_KART, RS_HIRES_PARTS_GAME_KART };
+                const wchar_t *b[RS_HIRES_PACK_ARGS];
+                int pi, ai, same = 1, hoverOk = 1;
+                for (pi = 0; pi < 3; pi++) {
+                    int n1 = RsHires_PackArgsParts(L"in.rldchar", L"m.glb", L"out.rldchar", RS_HIRES_VCOL_PSX, partsList[pi], a);
+                    int n2 = RsHires_PackArgsVehicle(L"in.rldchar", L"m.glb", L"out.rldchar", RS_HIRES_VCOL_PSX, partsList[pi], NULL, b);
+                    int n3;
+                    if (n1 != n2)
+                        same = 0;
+                    else
+                        for (ai = 0; ai < n1; ai++)
+                            if (wcscmp(a[ai], b[ai]) != 0)
+                                same = 0;
+                    n3 = RsHires_PackArgsVehicle(L"in.rldchar", L"m.glb", L"out.rldchar", RS_HIRES_VCOL_PSX, partsList[pi], L"hover", b);
+                    if (n3 != n1 + 2 || wcscmp(b[n3 - 3], L"--vehicle") != 0 || wcscmp(b[n3 - 2], L"hover") != 0 ||
+                        wcscmp(b[n3 - 1], L"--machine") != 0)
+                        hoverOk = 0;
+                    else
+                        for (ai = 0; ai < n1 - 1; ai++)
+                            if (wcscmp(a[ai], b[ai]) != 0)
+                                hoverOk = 0;
+                }
+                Check(same, "hires-add with the vehicle NULL: the same arguments and count as without it (parts 0, kart part, game kart)");
+                Check(hoverOk, "hires-add with the vehicle 'hover': two more arguments, --vehicle hover right before --machine");
+            }
         }
         // THE OWN VEHICLE (include/rldhires.inc RldHires_OwnVehicle): a kart part
         // with a body draws exactly its wheel nodes - 2 of 4 a warning that says

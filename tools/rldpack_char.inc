@@ -10313,6 +10313,153 @@ static u8 *RldMk_ChriGameKart(const u8 *chri, size_t size, const struct RldCharG
 	return out;
 }
 
+// THE VEHICLE CLASS (CHRI 0x27, vehicle_class extension of 4.3, include/rldchar.inc RldChar_Vehicle): the
+// words of make-char --vehicle, set-vehicle and hires-add --vehicle, by value.
+static const char *const s_rldMkVehicleWords[RLDCHAR_VEHICLE_PLANE + 1u] = {"kart", "hover", "plane"};
+
+// The class as a word; the reserved values are read as a kart.
+static const char *RldMk_VehicleWord(u32 vehicle)
+{
+	return s_rldMkVehicleWords[(vehicle > RLDCHAR_VEHICLE_PLANE) ? RLDCHAR_VEHICLE_KART : vehicle];
+}
+
+// kart|hover|plane (any case) -> *vehicle. 0 = none of them (nothing said: the
+// caller names the switch).
+static int RldMk_VehicleOf(const char *arg, u32 *vehicle)
+{
+	char word[8];
+	u32 v;
+
+	if ((arg == NULL) || !RldMk_Lower(arg, word, sizeof(word)))
+	{
+		return 0;
+	}
+	for (v = 0; v <= RLDCHAR_VEHICLE_PLANE; v++)
+	{
+		if (strcmp(word, s_rldMkVehicleWords[v]) == 0)
+		{
+			*vehicle = v;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// A CHRI with the vehicle class `vehicle`, malloc'ed, the rest as it was:
+//   fixedSize 0x3C or more (the look block is there): the same bytes, byte
+//     0x27 = vehicle - for a kart too (0).
+//   below 0x3C and a kart: the same bytes - a kart file keeps its bytes.
+//   0x1C, 0x20 or 0x24 and not a kart: fixedSize 0x3C - the bytes up to the
+//     old fixedSize as they were, 0 from there to 0x3C (no flags, no map
+//     color, the retail look: what the reader took for the absent fields),
+//     byte 0x27 = vehicle, then the strings as they were.
+// Any other fixedSize below 0x3C is written by no packer: its bytes from 0x24
+// on would be a field this packer does not know, so it is refused. NULL with
+// *why = a fixed text: refused, or out of memory.
+static u8 *RldMk_ChriVehicle(const u8 *chri, size_t size, u32 vehicle, size_t *sizeOut, const char **why)
+{
+	struct RldCharInfo info;
+	u32 fixedSize;
+	size_t strings;
+	size_t outSize;
+	u8 *out;
+
+	*sizeOut = 0;
+	*why = RldChar_ParseInfo(&info, chri, size);
+	if (*why != NULL)
+	{
+		return NULL;
+	}
+	if (vehicle > RLDCHAR_VEHICLE_PLANE)
+	{
+		*why = "the vehicle class is not kart, hover or plane";
+		return NULL;
+	}
+	fixedSize = info.fixedSize;
+	if ((fixedSize < RLDCHAR_CHRI_SIZE_LOOK) && (vehicle != RLDCHAR_VEHICLE_KART) && (fixedSize != RLDCHAR_INFO_FIXED_SIZE) &&
+	    (fixedSize != RLDCHAR_CHRI_SIZE_FLAGS) && (fixedSize != RLDCHAR_CHRI_SIZE_MAP_COLOR))
+	{
+		*why = "CHRI has a fixedSize between the map color and the look that no packer writes - its bytes there are not known";
+		return NULL;
+	}
+	strings = size - fixedSize;
+	outSize = ((fixedSize < RLDCHAR_CHRI_SIZE_LOOK) && (vehicle != RLDCHAR_VEHICLE_KART)) ? (RLDCHAR_CHRI_SIZE_LOOK + strings) : size;
+	out = (u8 *)calloc(1, outSize);
+	if (out == NULL)
+	{
+		*why = "out of memory";
+		return NULL;
+	}
+	if (outSize == size)
+	{
+		memcpy(out, chri, size);
+	}
+	else
+	{
+		memcpy(out, chri, fixedSize);
+		Rld_WriteLE16(&out[0x00], RLDCHAR_CHRI_SIZE_LOOK);
+		memcpy(&out[RLDCHAR_CHRI_SIZE_LOOK], &chri[fixedSize], strings);
+	}
+	if (Rld_ReadLE16(&out[0x00]) >= RLDCHAR_CHRI_SIZE_LOOK)
+	{
+		out[RLDCHAR_CHRI_VEHICLE] = (u8)vehicle;
+	}
+	*sizeOut = outSize;
+	return out;
+}
+
+// Does `after` (RldMk_ChriVehicle of `before`) read as `before` in everything
+// but the class, and with the class `vehicle`? The game's own readers:
+// RldChar_ParseInfo (template, class, name, version, flags, map color, author),
+// RldChar_ParseLook and, with bit 5, RldChar_ParseGameKart. NULL = yes, else
+// what differs.
+static const char *RldMk_ChriVehicleHolds(const u8 *before, size_t beforeSize, const u8 *after, size_t afterSize, u32 vehicle)
+{
+	struct RldCharInfo a;
+	struct RldCharInfo b;
+	struct RldCharLook lookA;
+	struct RldCharLook lookB;
+	u32 colorA = 0;
+	u32 colorB = 0;
+
+	if ((RldChar_ParseInfo(&a, before, beforeSize) != NULL) || (RldChar_ParseInfo(&b, after, afterSize) != NULL))
+	{
+		return "the character info does not read";
+	}
+	if (RldChar_Vehicle(&b) != vehicle)
+	{
+		return "the vehicle class does not read back";
+	}
+	if ((a.templateId != b.templateId) || (a.classId != b.classId) || (memcmp(a.name, b.name, sizeof(a.name)) != 0) ||
+	    (a.charVersion != b.charVersion) || (a.flags != b.flags) || (a.stringCount != b.stringCount) || (strcmp(a.author, b.author) != 0))
+	{
+		return "a field of the character info differs";
+	}
+	if ((RldChar_MapColor(&a, &colorA) != RldChar_MapColor(&b, &colorB)) || (colorA != colorB))
+	{
+		return "the map color differs";
+	}
+	RldChar_ParseLook(&a, before, beforeSize, &lookA);
+	RldChar_ParseLook(&b, after, afterSize, &lookB);
+	if (memcmp(&lookA, &lookB, sizeof(lookA)) != 0)
+	{
+		return "the look differs";
+	}
+	if ((a.flags & RLDCHAR_FLAG_GAME_KART) != 0u)
+	{
+		struct RldCharGameKart kartA;
+		struct RldCharGameKart kartB;
+		const char *whyA = RldChar_ParseGameKart(&a, before, beforeSize, &kartA);
+		const char *whyB = RldChar_ParseGameKart(&b, after, afterSize, &kartB);
+
+		if ((whyA != whyB) || ((whyA == NULL) && (memcmp(&kartA, &kartB, sizeof(kartA)) != 0)))
+		{
+			return "the game kart differs";
+		}
+	}
+	return NULL;
+}
+
 // The donor as a word: "template" or 0..14.
 static void RldMk_DonorText(u32 donor, char *out, size_t size)
 {
@@ -14512,6 +14659,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *reduceArg = NULL;
 	const char *wheelsArg = NULL;
 	const char *maskArg = NULL;
+	const char *vehicleArg = NULL;
+	u32 vehicle = RLDCHAR_VEHICLE_KART;
 	const char *kartDonorArg = NULL;
 	const char *maskModelArg = NULL;
 	const char *mapColorArg = NULL;
@@ -14667,6 +14816,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--mask") == 0) && hasValue)
 		{
 			maskArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--vehicle") == 0) && hasValue)
+		{
+			vehicleArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--mask-model") == 0) && hasValue)
 		{
@@ -14922,6 +15075,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 	(void)RldMk_MaskSwitch(maskArg, &opt.mask);
+	if ((vehicleArg != NULL) && !RldMk_VehicleOf(vehicleArg, &vehicle))
+	{
+		RldMk_Say("error", "vehicle", vehicleArg, "The vehicle class must be kart, hover or plane.");
+	}
 	if (kartDonorArg != NULL)
 	{
 		if (!opt.figureOnly)
@@ -15656,6 +15813,36 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			          "CHRI bit 5: in the game the classic model gets the kart of retail driver %u%s from the player's game data in place of the stand-in (%u triangles); a game before 4.3 shows the stand-in.",
 			          (unsigned)RldChar_GameKartDonor(&gk, templateId), (gk.donor == RLDCHAR_GAME_KART_TEMPLATE) ? " (the template)" : "", gk.triangles);
 			Rld_Emit("value", "game-kart", donor, "container", (const char *)NULL);
+		}
+	}
+
+	// --vehicle hover|plane (CHRI 0x27, vehicle_class extension of 4.3): the class in the look block,
+	// written with the retail look when the build has none; held to the
+	// game's own reading. A kart (the default) writes nothing: the bytes of
+	// before.
+	if ((chri != NULL) && (vehicle != RLDCHAR_VEHICLE_KART))
+	{
+		size_t withSize = 0;
+		const char *why = NULL;
+		u8 *withVehicle = RldMk_ChriVehicle(chri, chriSize, vehicle, &withSize, &why);
+
+		if ((withVehicle != NULL) && (why == NULL))
+		{
+			why = RldMk_ChriVehicleHolds(chri, chriSize, withVehicle, withSize, vehicle);
+		}
+		if (why != NULL)
+		{
+			RldMk_Say("error", "chri", why, "Internal error: the vehicle class does not read back (%s). Please report it.", why);
+			free(withVehicle);
+			free(chri);
+			chri = NULL;
+		}
+		else
+		{
+			free(chri);
+			chri = withVehicle;
+			chriSize = withSize;
+			printf("  vehicle       %s (CHRI 0x27, vehicle_class extension of 4.3; a game without the vehicle_class extension takes it for a kart)\n", RldMk_VehicleWord(vehicle));
 		}
 	}
 
@@ -16406,6 +16593,15 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 		printf("  height        %s\n", ((info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0u) ? "every value of the up axis (--y-full, CHRI bit 4)"
 		                                                                                 : "even values of the up axis, as retail");
+		// The vehicle class (CHRI 0x27, vehicle_class extension of 4.3): a reserved value is read as a kart.
+		if (info.vehicleByte > RLDCHAR_VEHICLE_PLANE)
+		{
+			printf("  vehicle       kart (reserved value %u at CHRI 0x27, read as kart)\n", (unsigned)info.vehicleByte);
+		}
+		else
+		{
+			printf("  vehicle       %s\n", RldMk_VehicleWord(RldChar_Vehicle(&info)));
+		}
 		if ((info.flags & RLDCHAR_FLAG_GAME_KART) != 0u)
 		{
 			struct RldCharGameKart gk;
@@ -16890,6 +17086,10 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              rescue after a fall, its sound and music and\n");
 	fprintf(out, "                              the HUD icon; like (default): the template's\n");
 	fprintf(out, "                              (Fake Crash: Uka Uka); aku: Aku Aku; uka: Uka Uka\n");
+	fprintf(out, "  --vehicle kart|hover|plane  what the driver sits in (CHRI 0x27, vehicle_class extension of 4.3):\n");
+	fprintf(out, "                              kart (default, nothing written), hover or plane.\n");
+	fprintf(out, "                              Not the physics: the driving style is --class.\n");
+	fprintf(out, "                              A game without the vehicle_class extension takes every class for a kart\n");
 	fprintf(out, "  --map-color RRGGBB          the color of the driver's marker on the minimap\n");
 	fprintf(out, "                              (hex, as FF8000); default the template's\n");
 	fprintf(out, "  --mask-model <model>        an own mask drawn in place of Aku Aku / Uka Uka\n");
@@ -18680,6 +18880,258 @@ static void RldMk_SelfTestMapColor(const u8 field[RLDCHAR_NAME_FIELD])
 	free(chri);
 }
 
+// THE VEHICLE CLASS (CHRI 0x27, vehicle_class extension of 4.3): RldMk_ChriVehicle on every fixedSize a
+// packer writes (kart = the same bytes, hover and plane = the look block with
+// the retail look and the class, nothing else moved), on a CHRI with a look and
+// one with a game kart (one byte), on a field no packer writes (refused), the
+// reserved values, and the words.
+static void RldMk_SelfTestVehicleClass(const u8 field[RLDCHAR_NAME_FIELD])
+{
+	static const u32 s_flags[3] = {0u, RLDCHAR_FLAG_NO_WHEELS, RLDCHAR_FLAG_MAP_COLOR};
+	static const u32 s_fixed[3] = {RLDCHAR_INFO_FIXED_SIZE, RLDCHAR_CHRI_SIZE_FLAGS, RLDCHAR_CHRI_SIZE_MAP_COLOR};
+	static const char *const s_names[3] = {"0x1C", "0x20", "0x24 (bit 3 + map color)"};
+	struct RldCharInfo a;
+	struct RldCharInfo b;
+	struct RldCharLook lookA;
+	struct RldCharLook lookB;
+	struct RldCharGameKart gk;
+	struct RldCharGameKart gkA;
+	struct RldCharGameKart gkB;
+	char name[200];
+	const char *why = NULL;
+	u8 *base[3] = {NULL, NULL, NULL};
+	size_t baseSize[3] = {0u, 0u, 0u};
+	u8 *out;
+	u8 *back;
+	u8 *look = NULL;
+	u8 *kartChri = NULL;
+	u8 *odd = NULL;
+	size_t outSize = 0;
+	size_t backSize = 0;
+	size_t lookSize = 0;
+	size_t kartSize = 0;
+	size_t oddSize = 0;
+	u32 colorA = 0;
+	u32 colorB = 0;
+	u32 vehicle;
+	u32 i;
+	u32 c;
+	int ok;
+
+	for (c = 0; c < 3u; c++)
+	{
+		base[c] = RldMk_BuildChriColor(14u, 0u, field, 3u, "self-test", s_flags[c], 0x00336699u, &baseSize[c]);
+	}
+
+	// 1. A kart changes nothing.
+	for (c = 0; c < 3u; c++)
+	{
+		why = NULL;
+		out = (base[c] != NULL) ? RldMk_ChriVehicle(base[c], baseSize[c], RLDCHAR_VEHICLE_KART, &outSize, &why) : NULL;
+		snprintf(name, sizeof(name), "vehicle kart on CHRI fixedSize %s: the same bytes", s_names[c]);
+		RldMk_Test((out != NULL) && (why == NULL) && (outSize == baseSize[c]) && (memcmp(out, base[c], outSize) == 0), name, "%s",
+		           (why != NULL) ? why : "bytes differ");
+		free(out);
+	}
+
+	// 2. Hover and plane on fixedSize 0x1C, 0x20, 0x24.
+	for (c = 0; c < 3u; c++)
+	{
+		for (vehicle = RLDCHAR_VEHICLE_HOVER; vehicle <= RLDCHAR_VEHICLE_PLANE; vehicle++)
+		{
+			const size_t old = s_fixed[c];
+
+			why = NULL;
+			out = (base[c] != NULL) ? RldMk_ChriVehicle(base[c], baseSize[c], vehicle, &outSize, &why) : NULL;
+			ok = (out != NULL) && (why == NULL) && (outSize == baseSize[c] + (RLDCHAR_CHRI_SIZE_LOOK - old)) &&
+			     (Rld_ReadLE16(&out[0x00]) == RLDCHAR_CHRI_SIZE_LOOK) && (out[RLDCHAR_CHRI_VEHICLE] == (u8)vehicle) &&
+			     (memcmp(&out[2], &base[c][2], old - 2u) == 0) &&
+			     (memcmp(&out[RLDCHAR_CHRI_SIZE_LOOK], &base[c][old], baseSize[c] - old) == 0);
+			for (i = (u32)old; ok && (i < RLDCHAR_CHRI_SIZE_LOOK); i++)
+			{
+				ok = (out[i] == ((i == RLDCHAR_CHRI_VEHICLE) ? (u8)vehicle : (u8)0));
+			}
+			snprintf(name, sizeof(name), "vehicle %s on CHRI fixedSize %s: fixedSize 0x3C, byte 0x27, the new bytes 0, the strings behind",
+			         RldMk_VehicleWord(vehicle), s_names[c]);
+			RldMk_Test(ok, name, "%s", (why != NULL) ? why : "bytes differ");
+			if (out != NULL)
+			{
+				why = RldChar_ParseInfo(&a, base[c], baseSize[c]);
+				if (why == NULL)
+				{
+					why = RldChar_ParseInfo(&b, out, outSize);
+				}
+				ok = (why == NULL) && (RldChar_Vehicle(&b) == vehicle) && (b.vehicleByte == vehicle) && (b.flags == a.flags) &&
+				     (RldChar_MapColor(&a, &colorA) == RldChar_MapColor(&b, &colorB)) && (colorA == colorB) && (strcmp(a.author, b.author) == 0) &&
+				     (a.templateId == b.templateId) && (a.charVersion == b.charVersion) && (strcmp(a.name, b.name) == 0);
+				if (ok)
+				{
+					RldChar_ParseLook(&a, base[c], baseSize[c], &lookA);
+					RldChar_ParseLook(&b, out, outSize, &lookB);
+					ok = (memcmp(&lookA, &lookB, sizeof(lookA)) == 0) && (lookB.why == NULL) && (lookB.shadow == RLDCHAR_LOOK_RETAIL) &&
+					     (lookB.exhaust == RLDCHAR_LOOK_RETAIL) && (RldMk_ChriVehicleHolds(base[c], baseSize[c], out, outSize, vehicle) == NULL);
+				}
+				snprintf(name, sizeof(name), "vehicle %s on CHRI fixedSize %s: read back as the original in flags, color, author, retail look",
+				         RldMk_VehicleWord(vehicle), s_names[c]);
+				RldMk_Test(ok, name, "%s", (why != NULL) ? why : "a field differs");
+			}
+			free(out);
+		}
+	}
+
+	// 3. A look already there, and a game kart: one byte only.
+	memset(&gk, 0, sizeof(gk));
+	gk.donor = RLDCHAR_GAME_KART_TEMPLATE;
+	gk.triangles = 228u;
+	gk.commandFirst = 5u;
+	gk.commandEnd = 20u;
+	gk.recordFirst = 3u;
+	gk.recordEnd = 40u;
+	gk.scale = 4096u;
+	gk.offset[0] = 1;
+	gk.offset[1] = -2;
+	gk.offset[2] = 3;
+	if (base[0] != NULL)
+	{
+		look = RldMk_ChriVehicle(base[0], baseSize[0], RLDCHAR_VEHICLE_HOVER, &lookSize, &why);
+		if (look != NULL)
+		{
+			look[RLDCHAR_CHRI_VEHICLE] = 0u;
+			look[RLDCHAR_CHRI_SHADOW_MODE] = RLDCHAR_LOOK_AUTO;
+			Rld_WriteLE16(&look[RLDCHAR_CHRI_SHADOW_QUAD], (u32)(u16)(s16)-800);
+			Rld_WriteLE16(&look[RLDCHAR_CHRI_SHADOW_QUAD + 2u], 800u);
+			Rld_WriteLE16(&look[RLDCHAR_CHRI_SHADOW_QUAD + 4u], (u32)(u16)(s16)-820);
+			Rld_WriteLE16(&look[RLDCHAR_CHRI_SHADOW_QUAD + 6u], 1040u);
+		}
+		kartChri = RldMk_ChriGameKart(base[0], baseSize[0], &gk, &kartSize);
+	}
+	for (c = 0; c < 2u; c++)
+	{
+		const u8 *src = (c == 0u) ? look : kartChri;
+		const size_t srcSize = (c == 0u) ? lookSize : kartSize;
+
+		why = NULL;
+		back = NULL;
+		out = (src != NULL) ? RldMk_ChriVehicle(src, srcSize, RLDCHAR_VEHICLE_HOVER, &outSize, &why) : NULL;
+		ok = (out != NULL) && (outSize == srcSize);
+		for (i = 0; ok && (i < (u32)srcSize); i++)
+		{
+			ok = (i == RLDCHAR_CHRI_VEHICLE) ? (out[i] == RLDCHAR_VEHICLE_HOVER) : (out[i] == src[i]);
+		}
+		if (ok)
+		{
+			back = RldMk_ChriVehicle(out, outSize, RLDCHAR_VEHICLE_KART, &backSize, &why);
+			ok = (back != NULL) && (backSize == srcSize) && (memcmp(back, src, srcSize) == 0);
+		}
+		if (ok)
+		{
+			why = RldChar_ParseInfo(&a, src, srcSize);
+			if (why == NULL)
+			{
+				why = RldChar_ParseInfo(&b, out, outSize);
+			}
+			ok = (why == NULL) && (RldChar_Vehicle(&b) == RLDCHAR_VEHICLE_HOVER) &&
+			     (RldMk_ChriVehicleHolds(src, srcSize, out, outSize, RLDCHAR_VEHICLE_HOVER) == NULL);
+		}
+		if (ok)
+		{
+			RldChar_ParseLook(&a, src, srcSize, &lookA);
+			RldChar_ParseLook(&b, out, outSize, &lookB);
+			ok = (memcmp(&lookA, &lookB, sizeof(lookA)) == 0) && ((c == 1u) || (lookB.shadow == RLDCHAR_LOOK_AUTO));
+		}
+		if (ok && (c == 1u))
+		{
+			ok = (RldChar_ParseGameKart(&a, src, srcSize, &gkA) == NULL) && (RldChar_ParseGameKart(&b, out, outSize, &gkB) == NULL) &&
+			     (memcmp(&gkA, &gkB, sizeof(gkA)) == 0) && (memcmp(&gkA, &gk, sizeof(gk)) == 0);
+		}
+		RldMk_Test(ok,
+		           (c == 0u) ? "vehicle hover on a CHRI with a look (auto shadow): exactly byte 0x27 changes, kart gives the original back, the look reads equal"
+		                     : "vehicle hover on a CHRI with a game kart (0x50, bit 5): exactly byte 0x27 changes, kart gives the original back, the game kart reads equal",
+		           "%s", (why != NULL) ? why : "bytes or fields differ");
+		free(out);
+		free(back);
+	}
+
+	// 4. fixedSize 0x28: a field no packer writes.
+	if (base[1] != NULL)
+	{
+		oddSize = baseSize[1] + 8u;
+		odd = (u8 *)calloc(1, oddSize);
+		if (odd != NULL)
+		{
+			memcpy(odd, base[1], RLDCHAR_CHRI_SIZE_FLAGS);
+			memcpy(&odd[RLDCHAR_CHRI_SIZE_FLAGS + 8u], &base[1][RLDCHAR_CHRI_SIZE_FLAGS], baseSize[1] - RLDCHAR_CHRI_SIZE_FLAGS);
+			Rld_WriteLE16(&odd[0x00], 0x28u);
+			odd[RLDCHAR_CHRI_SIZE_FLAGS + 1u] = 0x55u;
+		}
+	}
+	why = NULL;
+	outSize = 99u;
+	out = (odd != NULL) ? RldMk_ChriVehicle(odd, oddSize, RLDCHAR_VEHICLE_HOVER, &outSize, &why) : NULL;
+	RldMk_Test((odd != NULL) && (out == NULL) && (why != NULL) && (outSize == 0u), "vehicle hover on CHRI fixedSize 0x28 (a field no packer writes): refused with a reason",
+	           "%s", (out != NULL) ? "accepted" : "no reason or out of memory");
+	free(out);
+	why = NULL;
+	out = (odd != NULL) ? RldMk_ChriVehicle(odd, oddSize, RLDCHAR_VEHICLE_KART, &outSize, &why) : NULL;
+	RldMk_Test((out != NULL) && (outSize == oddSize) && (memcmp(out, odd, oddSize) == 0), "vehicle kart on CHRI fixedSize 0x28: the same bytes", "%s",
+	           (why != NULL) ? why : "bytes differ");
+	free(out);
+	free(odd);
+
+	// 5. Reserved values 3 and 255 are read as a kart; without the look block the byte is 0.
+	for (i = 0; (look != NULL) && (i < 2u); i++)
+	{
+		const u8 value = (i == 0u) ? 3u : 0xFFu;
+
+		look[RLDCHAR_CHRI_VEHICLE] = value;
+		why = RldChar_ParseInfo(&a, look, lookSize);
+		snprintf(name, sizeof(name), "vehicle byte %u at 0x27: accepted, read as a kart, stored as it is", (unsigned)value);
+		RldMk_Test((why == NULL) && (a.vehicleByte == value) && (RldChar_Vehicle(&a) == RLDCHAR_VEHICLE_KART), name, "%s",
+		           (why != NULL) ? why : "a field differs");
+	}
+	ok = 1;
+	for (c = 0; c < 3u; c++)
+	{
+		why = (base[c] != NULL) ? RldChar_ParseInfo(&a, base[c], baseSize[c]) : "out of memory";
+		ok = ok && (why == NULL) && (a.vehicleByte == 0u) && (RldChar_Vehicle(&a) == RLDCHAR_VEHICLE_KART);
+	}
+	RldMk_Test(ok, "CHRI without the look block (0x1C, 0x20, 0x24): vehicleByte 0, a kart", "a field differs");
+
+	// 6. The words.
+	{
+		static const char *const goodWord[4] = {"kart", "hover", "plane", "HOVER"};
+		static const u32 goodValue[4] = {RLDCHAR_VEHICLE_KART, RLDCHAR_VEHICLE_HOVER, RLDCHAR_VEHICLE_PLANE, RLDCHAR_VEHICLE_HOVER};
+		static const char *const badWord[3] = {"boat", "", "hoverx"};
+		u32 v;
+
+		ok = 1;
+		for (i = 0; i < 4u; i++)
+		{
+			v = 99u;
+			ok = ok && RldMk_VehicleOf(goodWord[i], &v) && (v == goodValue[i]);
+		}
+		RldMk_Test(ok, "vehicle words kart, hover, plane, HOVER accepted with the right value", "a word was refused or has the wrong value");
+		ok = 1;
+		for (i = 0; i < 3u; i++)
+		{
+			v = 99u;
+			ok = ok && !RldMk_VehicleOf(badWord[i], &v) && (v == 99u);
+		}
+		RldMk_Test(ok, "vehicle words boat, empty, hoverx refused, the value untouched", "a word was accepted");
+		RldMk_Test((strcmp(RldMk_VehicleWord(0u), "kart") == 0) && (strcmp(RldMk_VehicleWord(1u), "hover") == 0) &&
+		               (strcmp(RldMk_VehicleWord(2u), "plane") == 0) && (strcmp(RldMk_VehicleWord(3u), "kart") == 0) &&
+		               (strcmp(RldMk_VehicleWord(255u), "kart") == 0),
+		           "vehicle word of 0, 1, 2 and the reserved 3, 255 (kart)", "a word differs");
+	}
+
+	free(look);
+	free(kartChri);
+	for (c = 0; c < 3u; c++)
+	{
+		free(base[c]);
+	}
+}
+
 // CHRI, the container, and the name as the maker takes it.
 static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 {
@@ -18809,6 +19261,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 	RldMk_SelfTestChriFlags(field, good, goodSize);
 	RldMk_SelfTestChriMask(field);
 	RldMk_SelfTestMapColor(field);
+	RldMk_SelfTestVehicleClass(field);
 
 	// The name as typed: capitals, the menu font, the length.
 	RldMk_ResetSaid();

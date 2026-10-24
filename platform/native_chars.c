@@ -4174,6 +4174,19 @@ int NativeChar_SeatEngineClass(int seat, int retailClass)
 	return (int)s_charFiles[s_seat[seat].entry].info.classId;
 }
 
+int NativeChar_SeatVehicleClass(int seat)
+{
+	// Unlike the engine class, a seat of --dev-char-seats gives its file's
+	// class: the class decides the drawing only (round H1 step 4), never the
+	// physics, so a dev seat shows what its file holds.
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return (int)RLDCHAR_VEHICLE_KART;
+	}
+
+	return (int)RldChar_Vehicle(&s_charFiles[s_seat[seat].entry].info);
+}
+
 const u32 *NativeChar_SeatMapColor(int seat, const u32 *retail)
 {
 	if ((NativeChar_SeatModel(seat) == NULL) || !s_seat[seat].hasMapColor)
@@ -5640,6 +5653,139 @@ internal void NativeChar_GameKartSelfTest(int *checks, int *failures)
 	free(cmdl);
 }
 
+// A bare CHRI of the given fixedSize with a string count of 0 behind the fixed
+// part; the look bytes stay 0 (the caller sets what it needs). 0x40 bytes.
+internal void NativeChar_VehicleBuild(u8 *bytes, u32 fixedSize)
+{
+	memset(bytes, 0, 0x40u);
+	bytes[0x00] = (u8)fixedSize;
+	bytes[0x02] = RLDCHAR_TEMPLATE_MAX;
+	memcpy(&bytes[0x04], "LOOK", 4);
+	bytes[0x18] = 1;
+	NativeChar_TestPut32(&bytes[fixedSize], 0u);
+}
+
+// The vehicle class byte at 0x27 (round H1 step 3): the class reading, its
+// independence of the look, and the seat value without a bound seat.
+internal void NativeChar_VehicleSelfTest(int *checks, int *failures)
+{
+	static const u32 smallSizes[3] = {0x1Cu, 0x20u, 0x24u};
+	static const u8 stored[5] = {0u, 1u, 2u, 3u, 0xFFu};
+	static const u32 expected[5] = {RLDCHAR_VEHICLE_KART, RLDCHAR_VEHICLE_HOVER, RLDCHAR_VEHICLE_PLANE, RLDCHAR_VEHICLE_KART, RLDCHAR_VEHICLE_KART};
+	u8 bytes[0x40u];
+	u8 other[0x40u];
+	struct RldCharInfo info;
+	struct RldCharInfo infoOther;
+	struct RldCharLook look;
+	struct RldCharLook lookOther;
+	u32 color = 0u;
+	u32 colorOther = 0u;
+	char what[192];
+	const char *why;
+	int i;
+
+	// 1. No look block: kart, also with a non-zero byte at 0x27 where that byte
+	// lies behind the fixed part (0x1C, 0x20); at 0x24 it is the string count.
+	for (i = 0; i < 3; i++)
+	{
+		const u32 fixedSize = smallSizes[i];
+		int sub;
+
+		for (sub = 0; sub < 2; sub++)
+		{
+			if ((sub == 1) && (fixedSize == 0x24u))
+			{
+				continue;
+			}
+
+			NativeChar_VehicleBuild(bytes, fixedSize);
+			if (sub == 1)
+			{
+				bytes[RLDCHAR_CHRI_VEHICLE] = 2;
+			}
+			memset(&info, 0x5a, sizeof(info));
+			why = RldChar_ParseInfo(&info, bytes, 0x40u);
+			snprintf(what, sizeof(what), "vehicle: fixedSize 0x%X%s refused (%s)", (unsigned)fixedSize, (sub == 1) ? " with 0x27 set" : "", (why != NULL) ? why : "");
+			NativeChar_LookExpect(checks, failures, why == NULL, what);
+			snprintf(what, sizeof(what), "vehicle: fixedSize 0x%X%s is not a kart without a stored byte", (unsigned)fixedSize, (sub == 1) ? " with 0x27 set" : "");
+			NativeChar_LookExpect(checks, failures, (info.vehicleByte == 0u) && (RldChar_Vehicle(&info) == RLDCHAR_VEHICLE_KART), what);
+		}
+	}
+
+	// 2. fixedSize 0x3C: the stored value, the class (3..255 read as kart).
+	for (i = 0; i < 5; i++)
+	{
+		NativeChar_VehicleBuild(bytes, RLDCHAR_CHRI_SIZE_LOOK);
+		bytes[RLDCHAR_CHRI_VEHICLE] = stored[i];
+		memset(&info, 0x5a, sizeof(info));
+		why = RldChar_ParseInfo(&info, bytes, 0x40u);
+		snprintf(what, sizeof(what), "vehicle: byte %u refused (%s)", (unsigned)stored[i], (why != NULL) ? why : "");
+		NativeChar_LookExpect(checks, failures, why == NULL, what);
+		snprintf(what, sizeof(what), "vehicle: byte %u stored %u, class %u, not %u", (unsigned)stored[i], (unsigned)info.vehicleByte, (unsigned)RldChar_Vehicle(&info),
+		         (unsigned)expected[i]);
+		NativeChar_LookExpect(checks, failures, (info.vehicleByte == (u32)stored[i]) && (RldChar_Vehicle(&info) == expected[i]), what);
+	}
+
+	// 3. The look does not depend on the class: shadow auto, exhaust custom 1.
+	NativeChar_VehicleBuild(bytes, RLDCHAR_CHRI_SIZE_LOOK);
+	bytes[RLDCHAR_CHRI_SHADOW_MODE] = (u8)RLDCHAR_LOOK_AUTO;
+	bytes[RLDCHAR_CHRI_EXHAUST_MODE] = (u8)RLDCHAR_LOOK_CUSTOM;
+	bytes[RLDCHAR_CHRI_EXHAUST_COUNT] = 1;
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_SHADOW_QUAD + 0u], -517);
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_SHADOW_QUAD + 2u], 517);
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_SHADOW_QUAD + 4u], -866);
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_SHADOW_QUAD + 6u], 931);
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_EXHAUST_POINTS + 0u], 0);
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_EXHAUST_POINTS + 2u], 320);
+	NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_EXHAUST_POINTS + 4u], -900);
+	memcpy(other, bytes, sizeof(other));
+	bytes[RLDCHAR_CHRI_VEHICLE] = 0;
+	other[RLDCHAR_CHRI_VEHICLE] = 1;
+	why = RldChar_ParseInfo(&info, bytes, 0x40u);
+	NativeChar_LookExpect(checks, failures, why == NULL, "vehicle: the look case (class 0) refused");
+	why = RldChar_ParseInfo(&infoOther, other, 0x40u);
+	NativeChar_LookExpect(checks, failures, why == NULL, "vehicle: the look case (class 1) refused");
+	memset(&look, 0x5a, sizeof(look));
+	memset(&lookOther, 0x5a, sizeof(lookOther));
+	RldChar_ParseLook(&info, bytes, 0x40u, &look);
+	RldChar_ParseLook(&infoOther, other, 0x40u, &lookOther);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_AUTO) && (look.exhaust == RLDCHAR_LOOK_CUSTOM) && (look.why == NULL),
+	                      "vehicle: the look case was not read");
+	NativeChar_LookExpect(checks, failures, memcmp(&look, &lookOther, sizeof(look)) == 0, "vehicle: the look changes with the class byte");
+
+	// 4. A zero look block (class 1) equals no look block.
+	NativeChar_VehicleBuild(bytes, RLDCHAR_CHRI_SIZE_LOOK);
+	bytes[RLDCHAR_CHRI_VEHICLE] = 1;
+	NativeChar_VehicleBuild(other, RLDCHAR_INFO_FIXED_SIZE);
+	why = RldChar_ParseInfo(&info, bytes, 0x40u);
+	NativeChar_LookExpect(checks, failures, why == NULL, "vehicle: the zero look block refused");
+	why = RldChar_ParseInfo(&infoOther, other, 0x40u);
+	NativeChar_LookExpect(checks, failures, why == NULL, "vehicle: the CHRI without a look block refused");
+	memset(&look, 0x5a, sizeof(look));
+	memset(&lookOther, 0x5a, sizeof(lookOther));
+	RldChar_ParseLook(&info, bytes, 0x40u, &look);
+	RldChar_ParseLook(&infoOther, other, 0x40u, &lookOther);
+	NativeChar_LookExpect(checks, failures, memcmp(&look, &lookOther, sizeof(look)) == 0, "vehicle: a zero look block differs from no look block");
+	NativeChar_LookExpect(checks, failures,
+	                      (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.exhaust == RLDCHAR_LOOK_RETAIL) && (look.why == NULL) && (lookOther.why == NULL),
+	                      "vehicle: a zero look block is not all retail");
+	NativeChar_LookExpect(checks, failures,
+	                      (info.flags == 0u) && (infoOther.flags == 0u) && (RldChar_MapColor(&info, &color) == 0) && (RldChar_MapColor(&infoOther, &colorOther) == 0),
+	                      "vehicle: flags or map color of the zero look block");
+
+	// 5. NULL is a kart.
+	NativeChar_LookExpect(checks, failures, RldChar_Vehicle(NULL) == RLDCHAR_VEHICLE_KART, "vehicle: NULL is not a kart");
+
+	// 6. The seat value: out-of-range seats, and seat 0 when no seat is bound.
+	NativeChar_LookExpect(checks, failures,
+	                      (NativeChar_SeatVehicleClass(-1) == (int)RLDCHAR_VEHICLE_KART) && (NativeChar_SeatVehicleClass(NATIVE_CHAR_SEATS) == (int)RLDCHAR_VEHICLE_KART),
+	                      "vehicle: a seat out of range is not a kart");
+	if (NativeChar_SeatModel(0) == NULL)
+	{
+		NativeChar_LookExpect(checks, failures, NativeChar_SeatVehicleClass(0) == (int)RLDCHAR_VEHICLE_KART, "vehicle: an unbound seat 0 is not a kart");
+	}
+}
+
 void NativeChar_LookSelfTest(int *checks, int *failures)
 {
 	const struct NativeCharFile keepFile = s_charFiles[0];
@@ -5652,6 +5798,7 @@ void NativeChar_LookSelfTest(int *checks, int *failures)
 	NativeChar_LookParseSelfTest(checks, failures);
 	NativeChar_LookUnitSelfTest(checks, failures);
 	NativeChar_GameKartSelfTest(checks, failures);
+	NativeChar_VehicleSelfTest(checks, failures);
 
 	// No look in the run: retail at once, nothing moved.
 	s_charLookAny = 0;

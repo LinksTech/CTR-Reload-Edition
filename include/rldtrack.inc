@@ -290,6 +290,8 @@ static void Sha256(const void *bytes, size_t size, u8 out[32])
 // flag bit 5, the game kart of a figure-only file (include/rldchar.inc), which
 // a reader of 4.2 ignores. Again no byte of a track changes but the minor
 // field, and every reader takes any minor.
+//
+// The .rldchar vehicle_class extension (CHRI byte 0x27) is no version step.
 #define RLD_VERSION_MAJOR 4
 #define RLD_VERSION_MINOR 3
 #define RLD_HEADER_SIZE    40

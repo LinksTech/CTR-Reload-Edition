@@ -152,6 +152,13 @@ reader of 4.2 reads past all of them. 4.2 (2026-10-17) marked CHRG
 version 1 as frozen, again with no byte of a track but the minor. 4.1
 (2026-09-28) froze the track format.
 
+4.3 + vehicle_class extension (reserved byte 0x27), 2026-10-24: CHRI byte 0x27,
+the vehicle class (section 3), is a backward-compatible extension of the
+`.rldchar` side. It is no new format number: the container format stays 4.3,
+no byte of a track changes, not even the minor (`RLD_VERSION_MINOR` stays 3),
+and an older reader never reads the byte. 4.4 is held for the engine track of
+a branch that is not merged yet. A reader takes any minor.
+
 | Chunk | Required | Limit | Content |
 |---|---|---|---|
 | META | yes | 64 KiB | name, author, version, modes, memory numbers |
@@ -568,7 +575,7 @@ Planned: emissive (not built).
 | 0x24 | u8 | shadowMode | the look, only when fixedSize >= 0x3C, else retail: 0 retail, 1 auto (the quad at 0x28), 2 off; any other value is read as retail |
 | 0x25 | u8 | exhaustMode | 0 retail, 1 custom (the points at 0x30), 2 off; any other value is read as retail |
 | 0x26 | u8 | exhaustCount | 1 or 2 with custom, else 0; custom with 0 or more than 2 is read as retail |
-| 0x27 | u8 | reserved | written 0, not checked |
+| 0x27 | u8 | vehicle | (vehicle_class extension of 4.3) the vehicle class, inside the look block (only when fixedSize >= 0x3C, else a kart): 0 kart, 1 hover, 2 plane; 3..255 reserved, read as kart (no finding). What the driver sits in, never the physics - the class at 0x03 drives it (see "The vehicle class" below) |
 | 0x28 | s16[4] | shadowQuad | xMin, xMax, zMin, zMax in 1/16 game units; only with shadow auto, else 0 |
 | 0x30 | s16[3] | exhaust0 | x, y, z in 1/16 game units: the exhaust in place of retail source 0 (+X, the driver's left); only with exhaust custom, else 0 |
 | 0x36 | s16[3] | exhaust1 | x, y, z in 1/16 game units: in place of retail source 1 (-X, the right); only with custom and count 2, else 0 |
@@ -675,6 +682,45 @@ The game kart (CHRI bit 5, container format 4.3; `RldChar_ParseGameKart`,
   grey stand-in`; with `--machine` `@value game-kart <n|template|ignored>
   <container|why>`. make-char prints `@value game-kart <n|template> container`.
 
+The vehicle class (CHRI byte 0x27, container format 4.3 + vehicle_class extension; `RldChar_Vehicle`
+in `include/rldchar.inc`, `RldMk_ChriVehicle` in `tools/rldpack_char.inc`):
+
+- The byte was "reserved, written 0, not checked" in the look block before, so
+  every file from before holds 0 there: a kart. A file without the look block
+  (fixedSize below 0x3C) is a kart as well. 1 hover, 2 plane; 3..255 are
+  reserved and read as kart, no finding (the pattern of the mask's value 3).
+- It says what the driver sits in, for the drawing. Nothing of the game logic
+  reads it: the physics stay those of the engine class at 0x03. The game reads
+  it from CHRI only (`NativeChar_SeatVehicleClass`, `platform/native_chars.c`),
+  never from CHRG: kart for an unbound seat and a retail driver.
+- `rldpack make-char --vehicle kart|hover|plane` (default kart). A kart writes
+  nothing, so the bytes stay those of before. Hover or plane on a file
+  without the look block write it with the retail look: fixedSize 0x3C, the
+  old bytes up to the old fixedSize as they were, 0 up to 0x3C but the class
+  at 0x27, the strings behind. Such a block means exactly what no block means:
+  `RldChar_ParseLook` gives the same all-retail result with no reason for both
+  (modes 0 are retail, no value is read), the flags at 0x1C and the color at
+  0x20 are 0 = what the reader takes for absent fields (the color is used only
+  with bit 3), and the author string follows fixedSize as always. Only the
+  file size, the CHRI bytes and their hash change.
+- `rldpack set-vehicle <in.rldchar> <kart|hover|plane> -o <out.rldchar>`
+  writes the class into a finished file; `rldpack hires-add ... --vehicle
+  <class>` the same while adding CHRG. Every other byte of CHRI and every
+  other chunk stays as it is (the layout of `Rld_WriteEnvelope`, as
+  `hires-add`); a fixedSize between 0x24 and 0x3C, which no packer writes, is
+  refused. Kart on a file without the look block changes nothing.
+- `rldpack info` and `rldpack verify` print `vehicle <kart|hover|plane>`
+  (a reserved value: `vehicle kart (reserved value N at CHRI 0x27, read as
+  kart)`); `rldpack hires-check <file.rldchar>` prints `vehicle: <class>
+  (CHRI)`.
+- Reload Studio: the step Model has "Vehicle class": Kart (the start), Hover,
+  and Plane (coming soon, not selectable). Hover passes `--vehicle hover` to
+  make-char (also for the classic fallback of a CHRG route, whose CHRI the
+  result keeps); with the classic model from a finished character to
+  `hires-add`. Kart passes nothing.
+- A game without the vehicle_class extension never reads the byte: it loads the file and drives
+  and draws every class as a kart.
+
 The look (`RldChar_ParseLook`, one function for packer and reader): the
 ground shadow and the exhaust of the driver, fitted to the model.
 
@@ -693,8 +739,9 @@ ground shadow and the exhaust of the driver, fitted to the model.
     and zMin < zMax, each side at least 16 (1 game unit);
   - exhaust custom: count 1 or 2; per used point x and z within -4096..4096,
     y within -256..4096;
-  - an unknown mode is read as retail. The reserved byte, the count without
-    custom and every unused value are not checked.
+  - an unknown mode is read as retail. The vehicle class at 0x27 is not part
+    of the look; the count without custom and every unused value are not
+    checked.
 - A file from before the field (fixedSize below 0x3C) is retail/retail -
   also with the wheels hidden: the defaults below are the writer's, not the
   reader's.
@@ -2556,7 +2603,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new field in the CHRG header | more header bytes (headerBytes > 16) for what an older reader may ignore; a new flag bit or CHRG version 2 for what it must not ignore - an older reader then drops only the hi-res part (see "Extending CHRG") |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color. The game kart at 0x3C came as a later one (fixedSize 0x50, written only with bit 5): an older reader draws the stand-in kart |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color. The game kart at 0x3C came as a later one (fixedSize 0x50, written only with bit 5): an older reader draws the stand-in kart. The vehicle class (vehicle_class extension of 4.3) took byte 0x27 of the look block, written 0 and never read before: an older reader drives every class as a kart |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |

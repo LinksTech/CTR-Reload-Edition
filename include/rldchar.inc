@@ -70,7 +70,11 @@
 #define RLDCHAR_CHRI_SIZE_LOOK 0x3Cu
 #define RLDCHAR_CHRI_SHADOW_MODE 0x24u     // u8 RLDCHAR_LOOK_RETAIL / _AUTO / _OFF
 #define RLDCHAR_CHRI_EXHAUST_MODE 0x25u    // u8 RLDCHAR_LOOK_RETAIL / _CUSTOM / _OFF
-#define RLDCHAR_CHRI_EXHAUST_COUNT 0x26u   // u8 1 or 2 with custom, else 0; 0x27 is reserved (0)
+#define RLDCHAR_CHRI_EXHAUST_COUNT 0x26u   // u8 1 or 2 with custom, else 0
+#define RLDCHAR_CHRI_VEHICLE 0x27u         // u8 (vehicle_class extension of 4.3) the vehicle class RLDCHAR_VEHICLE_* (RldChar_Vehicle); inside the look block, so only when fixedSize >= RLDCHAR_CHRI_SIZE_LOOK
+#define RLDCHAR_VEHICLE_KART 0u            // a kart - every file from before the field, and every file without the look block
+#define RLDCHAR_VEHICLE_HOVER 1u           // a hover
+#define RLDCHAR_VEHICLE_PLANE 2u           // a plane; 3..255 are reserved and read as RLDCHAR_VEHICLE_KART
 #define RLDCHAR_CHRI_SHADOW_QUAD 0x28u     // s16 xMin, xMax, zMin, zMax
 #define RLDCHAR_CHRI_EXHAUST_POINTS 0x30u  // s16 x, y, z of point 0, then of point 1
 #define RLDCHAR_CHRI_SIZE_GAME_KART 0x50u  // the game kart field 0x3C..0x4F (THE GAME KART) - present when fixedSize >= this, written only with bit 5
@@ -214,7 +218,8 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x24 u8  shadowMode   RLDCHAR_LOOK_RETAIL 0, _AUTO 1 (the quad at 0x28), _OFF 2
 // 0x25 u8  exhaustMode  RLDCHAR_LOOK_RETAIL 0, _CUSTOM 1 (the points at 0x30), _OFF 2
 // 0x26 u8  exhaustCount 1 or 2 with custom, else 0
-// 0x27 u8  reserved     written 0, not checked
+// 0x27 u8  vehicle      (vehicle_class extension of 4.3) RLDCHAR_VEHICLE_KART 0, _HOVER 1, _PLANE 2; 3..255
+//                       reserved, read as kart, no finding (RldChar_Vehicle)
 // 0x28 s16[4] shadowQuad    xMin, xMax, zMin, zMax, 1/16 model units; only with shadow auto
 // 0x30 s16[3] exhaust0      x, y, z, 1/16 model units; in place of retail source 0 (+X, left)
 // 0x36 s16[3] exhaust1      x, y, z; in place of retail source 1 (-X, right), only with count 2, else 0
@@ -248,6 +253,21 @@ static const struct RldFormat s_rldCharFormat = {
 // keys the look on the model, so CMDL and native drawing read the same values.
 // Retail in these units: exhaust smoke (+-288, 896, -896), shadow quad
 // x -800..800, z -820..1040.
+//
+// The vehicle class (vehicle_class extension of 4.3) is the fourth: byte 0x27 of the look block, which
+// was "reserved, written 0, not checked" before, so every file from before
+// holds 0 there = a kart, and a file without the look block is a kart too.
+// The packer writes the look block for a class other than kart only; a file
+// without a look then gets it with the retail look (every byte of 0x24..0x3B
+// 0 but the class): RldChar_ParseLook reads such a block exactly as no block
+// (both give the all-zero RldCharLook with why NULL), the flags at 0x1C and
+// the map color at 0x20 are the values the reader took for an absent field
+// (0; the color is read only with RLDCHAR_FLAG_MAP_COLOR), and the strings
+// move behind the longer fixedSize. A kart file keeps its bytes. A reader
+// from before the vehicle_class extension never reads 0x27 and drives every class as a kart. The
+// class says what the driver sits in; nothing of the game logic reads it -
+// the physics stay those of the engine class at 0x03 (the name of the field
+// in the code is "vehicle" for that reason: "class" is taken).
 //
 // RLDCHAR_FLAG_FULL_HEIGHT (bit 4) is about the bytes of CMDL and CMSK. The
 // renderer packs the up axis as (pos.y + byte) << 2 and the retail path clears
@@ -350,6 +370,7 @@ struct RldCharInfo
 	u32 charVersion;
 	u32 flags;                             // 0 when absent (fixedSize < 0x20); unknown bits kept as stored
 	u32 mapColor;                          // the 4 bytes at 0x20 as a little-endian u32, 0 when absent (fixedSize < 0x24)
+	u32 vehicleByte;                       // the byte at 0x27 as stored (vehicle_class extension of 4.3), 0 when absent (fixedSize < 0x3C); read it with RldChar_Vehicle
 	u32 stringCount;
 	char author[RLDCHAR_AUTHOR_MAX + 1];   // "" when absent
 };
@@ -361,6 +382,20 @@ static u32 RldChar_Mask(u32 flags)
 	const u32 mask = (flags & RLDCHAR_FLAG_MASK_BITS) >> RLDCHAR_FLAG_MASK_SHIFT;
 
 	return (mask > RLDCHAR_MASK_UKA) ? RLDCHAR_MASK_LIKE : mask;
+}
+
+// The vehicle class of CHRI (vehicle_class extension of 4.3): RLDCHAR_VEHICLE_KART, _HOVER or _PLANE.
+// Without the look block (vehicleByte 0) and for the reserved values 3..255
+// a kart, so a newer packer never refuses a file here (the pattern of
+// RldChar_Mask). NULL = a kart.
+static u32 RldChar_Vehicle(const struct RldCharInfo *info)
+{
+	if (info == NULL)
+	{
+		return RLDCHAR_VEHICLE_KART;
+	}
+
+	return (info->vehicleByte > RLDCHAR_VEHICLE_PLANE) ? RLDCHAR_VEHICLE_KART : info->vehicleByte;
 }
 
 // The color of the minimap marker: 1 with *color = 0x00BBGGRR - the byte order
@@ -439,6 +474,14 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 		out->mapColor = Rld_ReadLE32(&bytes[RLDCHAR_CHRI_MAP_COLOR_OFFSET]);
 	}
 
+	// The vehicle class the same way (vehicle_class extension of 4.3): the byte lies inside the look
+	// block, which lies inside the chunk once CHRI-1 holds. No rule: a
+	// reserved value is read as a kart (RldChar_Vehicle).
+	if (out->fixedSize >= RLDCHAR_CHRI_SIZE_LOOK)
+	{
+		out->vehicleByte = bytes[RLDCHAR_CHRI_VEHICLE];
+	}
+
 	out->stringCount = Rld_ReadLE32(&bytes[out->fixedSize]);
 
 	// Every entry takes at least its 4 length bytes, so even a stringCount of
@@ -510,8 +553,9 @@ static int RldChar_LookValue(const u8 *chri, u32 offset)
 //                zMin < zMax, each side at least RLDCHAR_LOOK_EDGE_MIN.
 //   exhaust custom: count 1 or 2; per used point |x|, |z| <= RLDCHAR_LOOK_COORD_MAX
 //                and RLDCHAR_LOOK_Y_MIN <= y <= RLDCHAR_LOOK_COORD_MAX.
-// The reserved byte 0x27, the count without custom and the unused values are
-// not checked.
+// The vehicle class at 0x27 (RldChar_ParseInfo, RldChar_Vehicle), the count
+// without custom and the unused values are not part of the look and not
+// checked.
 static void RldChar_ParseLook(const struct RldCharInfo *info, const u8 *chri, size_t size, struct RldCharLook *out)
 {
 	u32 shadow;

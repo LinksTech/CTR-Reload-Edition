@@ -216,6 +216,15 @@ struct Model *NativeChar_SeatModel(int index);
 // unchanged retail expression.
 int NativeChar_SeatEngineClass(int seat, int retailClass);
 
+// The vehicle class of a seat (CHRI 0x27, vehicle_class extension of 4.3, include/rldchar.inc
+// RldChar_Vehicle): RLDCHAR_VEHICLE_KART 0, _HOVER 1 or _PLANE 2 of the file
+// of a bound seat whose guard holds (NativeChar_SeatModel != NULL) - the
+// player's seat and a seat of --dev-char-seats / --dev-char-seat-files alike,
+// since the class is about drawing, not physics. RLDCHAR_VEHICLE_KART for an
+// unbound seat, a failed guard (a retail driver) and every file without the
+// field. Read from CHRI only, never from CHRG. Nothing reads it yet.
+int NativeChar_SeatVehicleClass(int seat);
+
 // 1 for a bound custom seat whose guard holds: it never speaks with its
 // template's voice - no retail voice line or short sound, and no sample of
 // the voice slider in the options of the pause menu (game/HOWL/
