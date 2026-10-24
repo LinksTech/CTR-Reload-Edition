@@ -438,10 +438,17 @@ with at most 64 joints and 4 weights per vertex (HRG-12..14); nodes with a
 mesh and no skin move with their node. Materials: the base colour and an
 optional normal map; metallicRoughness, occlusion and emissive are ignored
 (HRG-26), alpha BLEND is drawn as MASK with cutoff 0.5 (HRG-25). Textures are
-PNG only, at most 2048 on an edge (HRG-16, HRG-17). Morph targets, cameras and
-lights are ignored (HRG-23, HRG-24). The rest pose and every clip stay within
-4 m on each axis (HRG-18); the game uses this hull only for visibility and
-sorting, physics and collision keep following CMDL.
+PNG only, at most 2048 on an edge (HRG-16, HRG-17). Cameras and lights are
+ignored (HRG-24). Morph targets (shape keys) are read as stored and played by
+name (HRG-23, a note naming the keys): POSITION and NORMAL deltas, the names
+from the mesh's `extras.targetNames`, one key per name over every drawn mesh,
+at most 32 keys and 4 MiB of deltas (more is left out, the note counts it);
+the game sets their weights at run time (include/platform/engine.h, THE SHAPE
+KEYS), clip channels `weights` and the default weights are not played. The
+rest pose and every clip stay within 4 m on each axis (HRG-18, without the
+shape keys); the game uses this hull, grown by every place the shape keys can
+reach, only for visibility and sorting, physics and collision keep following
+CMDL.
 
 **The clips** are animations found by their exact name (lower case). No clip
 is required: a missing one plays its fallback, the next clip of its chain,

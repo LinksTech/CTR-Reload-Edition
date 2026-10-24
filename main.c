@@ -449,6 +449,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-anim", "", "with --engine-hires-dir: the animated test body of tools/hires_blender_driver.py (anim.hra, anim.hrt in that folder) instead of body.hrm - pose frames for steering, air and drift picked from game state, one log line per tick (prototype Z4)"},
     {"--engine-hires-chars-log", "", "measuring only, not with --no-hires-chars: one line per logic tick and hi-res seat ('[CTR Engine] hires char: vb ...': the state read, the clip drawn and its time, the fade weight, the wheels read back from the drawn matrices, the draw tint)"},
     {"--engine-hires-chars-filter", "<nearest|linear>", "measuring only, not with --no-hires-chars: the hi-res drivers' textures point sampled (nearest) or trilinear with anisotropy (linear, the default) - the comparison image of the two"},
+    {"--dev-shape-keys", "<name=weight,...>", "measuring only, not with --no-hires-chars: the shape keys (glTF morph targets) of seat 0's hi-res driver at these weights (0..1 each, at most 32 keys), set at every level load - the scripted screenshot of a key (include/platform/engine.h, THE SHAPE KEYS)"},
+    {"--dev-shape-chain", "<name,...@pos|@loopN>", "measuring only, not with --no-hires-chars: a key chain of seat 0's hi-res driver (the keys after the Basis, at most 16) held at position pos (0..keys), or played forwards and backwards over N frames without end (@loopN, 1..100000); set at every level load"},
     {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
     {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
     {"--engine-hide", "<sky,water,track>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky, water and track (track: the level's faces, its water and its level instances; drivers and effects stay - with --engine-static-model only the model shows)"},
@@ -1125,6 +1127,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int hiresOffGiven = 0;
 		int hiresLogGiven = 0;
 		const char *hiresFilterValue = NULL;
+		const char *shapeKeysValue = NULL;
+		const char *shapeChainValue = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
 		{
@@ -1181,6 +1185,16 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if ((strcmp(argv[argIndex], "--engine-hires-chars-filter") == 0) && (value != NULL))
 			{
 				hiresFilterValue = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--dev-shape-keys") == 0) && (value != NULL))
+			{
+				shapeKeysValue = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--dev-shape-chain") == 0) && (value != NULL))
+			{
+				shapeChainValue = value;
 				argIndex++;
 			}
 			else if (strcmp(argv[argIndex], "--engine-flycam") == 0)
@@ -1274,6 +1288,21 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (flycamGiven && (autoValue != NULL))
 			{
 				refusal = "switch --engine-flycam does not go with --engine-flycam-auto";
+			}
+			else if (hiresOffGiven && ((shapeKeysValue != NULL) || (shapeChainValue != NULL)))
+			{
+				refusal = (shapeKeysValue != NULL) ? "switch --dev-shape-keys does not go with --no-hires-chars" : "switch --dev-shape-chain does not go with --no-hires-chars";
+			}
+			if ((refusal == NULL) && ((shapeKeysValue != NULL) || (shapeChainValue != NULL)))
+			{
+				// The shape key values (include/platform/engine.h, THE SHAPE KEYS):
+				// the form only - the names are the driver's, known at the level load.
+				static char shapeWhy[200];
+
+				if (!Engine_HiresShapeArgCheck(shapeKeysValue, shapeChainValue, shapeWhy, (int)sizeof(shapeWhy)))
+				{
+					refusal = shapeWhy;
+				}
 			}
 			if (refusal != NULL)
 			{
@@ -1721,6 +1750,16 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		{
 			// The value was checked before any window (nearest or linear).
 			g_cfg_engineHiresCharsFilter = (strcmp(argv[++argIndex], "nearest") == 0) ? ENGINE_TEXTURE_PIXELATED : ENGINE_TEXTURE_FILTERED;
+		}
+		else if ((strcmp(argv[argIndex], "--dev-shape-keys") == 0) && ((argIndex + 1) < argc))
+		{
+			// The form was checked before any window; applied at every level load
+			// (platform/engine_hires_char.c, EngHc_ShapeDevApply).
+			snprintf(g_cfg_engineShapeKeys, sizeof(g_cfg_engineShapeKeys), "%s", argv[++argIndex]);
+		}
+		else if ((strcmp(argv[argIndex], "--dev-shape-chain") == 0) && ((argIndex + 1) < argc))
+		{
+			snprintf(g_cfg_engineShapeChain, sizeof(g_cfg_engineShapeChain), "%s", argv[++argIndex]);
 		}
 		else if ((strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) && ((argIndex + 1) < argc))
 		{

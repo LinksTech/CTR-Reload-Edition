@@ -52,6 +52,11 @@ typedef struct
 	int unlitExt;       // 1 = the material has extension KHR_materials_unlit (listed in extensionsUsed AND extensionsRequired)
 	int externalUri;    // 1 = buffers[0] has "uri": "external.bin" instead of using the GLB BIN chunk (the BIN chunk is still written)
 	float colour0;      // > 0: the body's four vertices get COLOR_0, a linear grey of this value (float VEC3, the last accessor)
+	int morph;          // shape keys (morph targets) on mesh "body" (0 = none, the GLB is byte-identical to a build without this field):
+	                    //   1 = two targets "lift" (POSITION (0,0.25,0) on v0 and v1) and "bend" (POSITION (0.5,0,0) and NORMAL (1,0,-1) on v3), named in mesh extras.targetNames, mesh weights [0,0]
+	                    //   2 = as 1, but the "bend" POSITION accessor is sparse (no base bufferView, index [3] as UNSIGNED_BYTE, value (0.5,0,0))
+	                    //   3 = as 1 without extras.targetNames (unnamed targets)
+	                    //   4 = 33 targets "k0".."k32"; kj has POSITION (0,0,0.01f*(j+1)) on v0 only, no NORMAL, no mesh weights
 } EngHiresTestGlbDesc;
 
 // The clip names, index = bit of clipMask (the fixed list of the hi-res format).
@@ -574,6 +579,9 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 	u32 vImg0 = 0;
 	u32 vImg1 = 0;
 	u32 aCol = 0;
+	u32 aMorphP[33];
+	u32 aMorphN[33];
+	u32 nMorph = 0;
 	u32 wheels;
 	u32 texture;
 	int normalMap;
@@ -672,6 +680,61 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 		aCol = EngHiresTest_AddFloatAcc(&sc, col, 4, 3, 0);
 	}
 
+	// ----- shape keys of the body, after everything else: a model without them keeps every index -----
+	if (d->morph >= 1 && d->morph <= 4)
+	{
+		const u32 none = 0xffffffffu;
+		float dp[12];
+		float dn[12];
+
+		if (d->morph == 4)
+		{
+			for (k = 0; k < 33; k++)
+			{
+				memset(dp, 0, sizeof(dp));
+				dp[2] = 0.01f * (float)(k + 1);   // vertex 0, z
+				aMorphP[k] = EngHiresTest_AddFloatAcc(&sc, dp, 4, 3, 0);
+				aMorphN[k] = none;
+			}
+			nMorph = 33;
+		}
+		else
+		{
+			// "lift": v0 and v1 up by 0.25, no normals
+			memset(dp, 0, sizeof(dp));
+			dp[1] = 0.25f;
+			dp[4] = 0.25f;
+			aMorphP[0] = EngHiresTest_AddFloatAcc(&sc, dp, 4, 3, 0);
+			aMorphN[0] = none;
+			// "bend": v3 moves by (0.5,0,0), its normal by (1,0,-1)
+			if (d->morph == 2)
+			{
+				static const u8 sparseIdx[1] = {3};
+				static const float sparseVal[3] = {0.5f, 0.0f, 0.0f};
+				u32 vIdxS = EngHiresTest_AddView(&sc, sparseIdx, sizeof(sparseIdx));
+				u32 vValS = EngHiresTest_AddView(&sc, sparseVal, sizeof(sparseVal));
+
+				if (sc.nAccs > 0)
+				{
+					EngHiresTest_JsonPrintf(&sc.accs, ",");
+				}
+				EngHiresTest_JsonPrintf(&sc.accs, "{\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",\"sparse\":{\"count\":1,\"indices\":{\"bufferView\":%u,\"componentType\":5121},\"values\":{\"bufferView\":%u}}}", vIdxS, vValS);
+				aMorphP[1] = sc.nAccs++;
+			}
+			else
+			{
+				memset(dp, 0, sizeof(dp));
+				dp[9] = 0.5f;
+				aMorphP[1] = EngHiresTest_AddFloatAcc(&sc, dp, 4, 3, 0);
+			}
+			memset(dn, 0, sizeof(dn));
+			dn[9] = 1.0f;
+			dn[11] = -1.0f;
+			aMorphN[1] = EngHiresTest_AddFloatAcc(&sc, dn, 4, 3, 0);
+			nMorph = 2;
+		}
+	}
+
 	// ----- JSON -----
 	EngHiresTest_JsonPrintf(&json, "{\"asset\":{\"version\":\"2.0\",\"generator\":\"engine_hires_testglb\"},");
 	if (d->requiredExt || d->unlitExt)
@@ -715,7 +778,46 @@ internal u8 *EngHiresTest_Glb(const EngHiresTestGlbDesc *d, size_t *size)
 	{
 		EngHiresTest_JsonPrintf(&json, ",\"COLOR_0\":%u", aCol);
 	}
-	EngHiresTest_JsonPrintf(&json, "},\"indices\":%u}]}", aIdx);
+	EngHiresTest_JsonPrintf(&json, "},\"indices\":%u", aIdx);
+	if (nMorph > 0)
+	{
+		EngHiresTest_JsonPrintf(&json, ",\"targets\":[");
+		for (i = 0; i < nMorph; i++)
+		{
+			EngHiresTest_JsonPrintf(&json, "%s{\"POSITION\":%u", (i > 0) ? "," : "", aMorphP[i]);
+			if (aMorphN[i] != 0xffffffffu)
+			{
+				EngHiresTest_JsonPrintf(&json, ",\"NORMAL\":%u", aMorphN[i]);
+			}
+			EngHiresTest_JsonPrintf(&json, "}");
+		}
+		EngHiresTest_JsonPrintf(&json, "]");
+	}
+	EngHiresTest_JsonPrintf(&json, "}]");
+	if (nMorph > 0)
+	{
+		if (d->morph != 3)
+		{
+			EngHiresTest_JsonPrintf(&json, ",\"extras\":{\"targetNames\":[");
+			for (i = 0; i < nMorph; i++)
+			{
+				if (d->morph == 4)
+				{
+					EngHiresTest_JsonPrintf(&json, "%s\"k%u\"", (i > 0) ? "," : "", i);
+				}
+				else
+				{
+					EngHiresTest_JsonPrintf(&json, "%s\"%s\"", (i > 0) ? "," : "", (i == 0) ? "lift" : "bend");
+				}
+			}
+			EngHiresTest_JsonPrintf(&json, "]}");
+		}
+		if (d->morph != 4)
+		{
+			EngHiresTest_JsonPrintf(&json, ",\"weights\":[0,0]");
+		}
+	}
+	EngHiresTest_JsonPrintf(&json, "}");
 	if (wheels > 0)
 	{
 		EngHiresTest_JsonPrintf(&json, ",{\"name\":\"wheel\",\"primitives\":[{\"mode\":4,\"material\":0,\"attributes\":{\"POSITION\":%u,\"NORMAL\":%u}}]}", aWPos, aWNrm);
@@ -1033,6 +1135,32 @@ internal int EngHiresTest_GlbSelfTest(int *checks)
 	if (gltf != NULL)
 	{
 		EngHiresTest_Check(&n, &fails, gltf->buffers_count == 1 && EngHiresTest_StrEq(gltf->buffers[0].uri, "external.bin"), "(c) buffer 0 uri external.bin");
+		cgltf_free(gltf);
+	}
+	free(glb);
+
+	// ===== (d) shape keys: morph 1 parses with two named targets, morph 3 without names =====
+	memset(&d, 0, sizeof(d));
+	d.morph = 1;
+	glb = NULL;
+	gltf = EngHiresTest_BuildParse(&d, &glb, &opt, &n, &fails, "(d) build+parse");
+	if (gltf != NULL)
+	{
+		const cgltf_mesh *m = (gltf->meshes_count > 0) ? &gltf->meshes[0] : NULL;
+
+		EngHiresTest_Check(&n, &fails, m != NULL && m->primitives_count == 1 && m->primitives[0].targets_count == 2, "(d) body has 2 morph targets");
+		EngHiresTest_Check(&n, &fails, m != NULL && m->target_names_count == 2 && EngHiresTest_StrEq(m->target_names[0], "lift") && EngHiresTest_StrEq(m->target_names[1], "bend"), "(d) target names lift, bend");
+		cgltf_free(gltf);
+	}
+	free(glb);
+
+	memset(&d, 0, sizeof(d));
+	d.morph = 3;
+	glb = NULL;
+	gltf = EngHiresTest_BuildParse(&d, &glb, &opt, &n, &fails, "(d) unnamed build+parse");
+	if (gltf != NULL)
+	{
+		EngHiresTest_Check(&n, &fails, gltf->meshes_count > 0 && gltf->meshes[0].primitives[0].targets_count == 2 && gltf->meshes[0].target_names_count == 0, "(d) unnamed targets");
 		cgltf_free(gltf);
 	}
 	free(glb);

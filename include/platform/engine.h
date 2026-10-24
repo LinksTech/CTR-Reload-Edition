@@ -1232,6 +1232,58 @@ int Engine_HiresCharHull(int ch, float hullMin[3], float hullMax[3]);
 // seat back to the game state. Cleared at every level load.
 void Engine_HiresSeatForceClip(int seat, int clip);
 
+// THE SHAPE KEYS (glTF morph targets; round "Dummy Glider" phase 1b,
+// include/rldhires_morph.inc). A hi-res driver whose GLB has morph targets is
+// drawn with them: the targets are read from the CHRG chunk's GLB as stored (no
+// format change; POSITION and NORMAL deltas, names from mesh.extras.targetNames,
+// one KEY per name over every drawn mesh) and blended per frame on the CPU
+// before the skinning (p = p0 + sum of weight x delta). A seat's weights are
+// the KEY LAYER (one weight 0..1 per key, set by name) plus the KEY CHAIN (an
+// ordered list of keys after the Basis; at position t = i + f only key i with
+// 1 - f and key i + 1 with f are mixed - the Basis is no key -, at t = n the
+// last key with 1), each final weight clamped to 0..1. Single keys stored on
+// top of the chain's last key (e.g. flap, dive, pull_up on wings_open) go into
+// the key layer and add on top of the chain. The chain moves in whole frames:
+// Engine_HiresShapeChainPlay(+1) runs 0 -> n over `frames` frames, (-1) back,
+// one frame per game frame (logic tick) of the seat (Engine_HiresCharsCollect);
+// it stops at the end and Done says so. Purely visual: no game state is read
+// or written by these calls and the game never reads them back.
+// A seat without a hi-res character, or whose character has no keys, has no
+// shape key state: every call answers 0 / -1 / "" and changes nothing, and its
+// frames run the code path of before (no blend, no extra work). The state is
+// cleared at every level load (all weights 0, no chain); the podium, the menu
+// scene and the driver select draw the Basis.
+// For step C (the glide ability): set the chain once after the level load
+// (e.g. {"wings_fold_33", "wings_fold_66", "wings_open"}, frames 6), play +1 to
+// open and -1 to close, read Pos / Done, set flap / dive / pull_up by name.
+// Seat = the driver's seat (driver->driverID, 0..7).
+#define ENGINE_HIRES_SHAPE_KEYS_MAX 32  // keys of one file (later names are left out, HRG-23 says so)
+#define ENGINE_HIRES_SHAPE_CHAIN_MAX 16 // keys of one chain
+int Engine_HiresShapeKeyCount(int seat);                 // keys of the seat's character, 0 = none
+const char *Engine_HiresShapeKeyName(int seat, int key); // "" for none
+int Engine_HiresShapeKeyFind(int seat, const char *name); // the key of a name, -1 none
+int Engine_HiresShapeKeySet(int seat, const char *name, float weight); // the key layer (weight clamped to 0..1); 1 = set, 0 = no such key (nothing changes)
+float Engine_HiresShapeKeyGet(int seat, const char *name); // the key layer's weight, 0 for none
+float Engine_HiresShapeWeight(int seat, int key);          // the final weight the seat is drawn with (layer + chain, 0..1)
+// The chain: names[0..count-1] are the keys after the Basis (1..ENGINE_HIRES_SHAPE_CHAIN_MAX),
+// frames 1..100000 for the whole way 0 -> count. 1 = set; 0 = refused (an unknown
+// name, a bad count) and nothing changes. The same keys again keep the position.
+int Engine_HiresShapeChainSet(int seat, const char *const *names, int count, int frames);
+int Engine_HiresShapeChainPlay(int seat, int direction);  // +1 forwards, -1 backwards, 0 hold; 0 = no chain
+int Engine_HiresShapeChainSetPos(int seat, float pos);    // at once, 0..count (rounded to a whole frame); 0 = no chain
+float Engine_HiresShapeChainPos(int seat);                // 0..count; -1 = no chain
+int Engine_HiresShapeChainDone(int seat);                 // 1 = at the end of the direction played (or holding); -1 = no chain
+void Engine_HiresShapeReset(int seat);                    // all weights 0, no chain (a seat with keys only)
+// --dev-shape-keys name=weight[,name=weight...] and --dev-shape-chain
+// name[,name...]@pos|@loopN (main.c, runtime): seat 0's key layer and chain,
+// applied at every level load (the scripted screenshots per key). @loopN plays
+// the chain forwards and backwards over N frames without end. Unknown names are
+// logged once per load ("[CTR Engine] hires shape keys: ...").
+#define ENGINE_HIRES_SHAPE_ARG_MAX 512
+extern char g_cfg_engineShapeKeys[ENGINE_HIRES_SHAPE_ARG_MAX];
+extern char g_cfg_engineShapeChain[ENGINE_HIRES_SHAPE_ARG_MAX];
+int Engine_HiresShapeArgCheck(const char *keys, const char *chain, char *why, int whySize); // 1 = the two values parse (pure; main.c before any window)
+
 // THE FORCED SUBMIT: one hi-res character with a clip the caller chooses, at an
 // instance (its world matrix with inst->scale and the tints of the driver
 // route; inst, idpp, pb from the draw dispatch) or at a world matrix (inst

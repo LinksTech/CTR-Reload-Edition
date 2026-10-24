@@ -1021,3 +1021,436 @@ internal int EngHires_SelfTestAnim(int *checks)
 
 #undef ANIM_CHECK
 #undef ANIM_PI
+
+// ===========================================================================
+// ENGINE HIRES SELFTEST (shape keys) - checks of include/rldhires_morph.inc
+// (round "Dummy Glider" phase 1b, 2026-10-24).
+//
+// Same rules as above: every expected number is written down in closed form, the
+// code under test never computes an expectation. The test GLBs are made in memory
+// by EngHiresTest_Glb (desc.morph 1..4), no file is touched.
+//
+// Entry point: EngHires_SelfTestMorph(&checks) returns the number of failures.
+// It is NOT called from here: engine_hires_char.c adds
+//     failures += EngHires_SelfTestMorph(checks);
+// next to the call of EngHires_SelfTestAnim.
+// ===========================================================================
+
+#define MORPH_CHECK(cond, what)                                             \
+	do                                                                      \
+	{                                                                       \
+		(*checks)++;                                                        \
+		if (!(cond))                                                        \
+		{                                                                   \
+			fails++;                                                        \
+			printf("engine selftest: hires morph %s FAILED\n", (what));     \
+		}                                                                   \
+	} while (0)
+
+internal int EngMorphT_Near(float a, float b)
+{
+	return fabsf(a - b) <= 1e-6f;
+}
+
+internal int EngMorphT_Near3(const float *a, float x, float y, float z)
+{
+	return EngMorphT_Near(a[0], x) && EngMorphT_Near(a[1], y) && EngMorphT_Near(a[2], z);
+}
+
+// What RldMorph_Reach reports, in call order.
+typedef struct
+{
+	u32 n;
+	u32 vertex[8];
+	float lo[8][3];
+	float hi[8][3];
+} EngMorphTReach;
+
+internal void EngMorphT_Grow(void *user, u32 vertex, const float lo[3], const float hi[3])
+{
+	EngMorphTReach *r = (EngMorphTReach *)user;
+
+	if (r->n < 8u)
+	{
+		r->vertex[r->n] = vertex;
+		memcpy(r->lo[r->n], lo, 3u * sizeof(float));
+		memcpy(r->hi[r->n], hi, 3u * sizeof(float));
+	}
+	r->n++;
+}
+
+// Builds the code-made GLB of `morph` (desc.morph), parses it and makes the set
+// with RldMorph_Build*: mesh 0 (the body) with first vertex 10, mesh 1 (the wheel,
+// no targets) with first vertex 20. *endResult = RldMorph_BuildEnd's return.
+// 1 = built and parsed; everything cgltf made is freed here (the set owns copies).
+internal int EngMorphT_BuildSet(int morph, RldMorphSet *set, int *endResult)
+{
+	EngHiresTestGlbDesc d;
+	cgltf_options opt;
+	cgltf_data *gltf = NULL;
+	u8 *glb = NULL;
+	RldMorphBuild b;
+	int ok;
+
+	memset(&d, 0, sizeof(d));
+	d.skinned = 0;
+	d.wheels = 4;
+	d.morph = morph;
+	*endResult = -1;
+	ok = EngHiresAnimT_Parse(&d, &glb, &opt, &gltf);
+	if (ok && gltf->meshes_count >= 1 && gltf->meshes[0].primitives_count >= 1)
+	{
+		RldMorph_BuildBegin(&b, set);
+		RldMorph_BuildPrimitive(&b, &gltf->meshes[0], &gltf->meshes[0].primitives[0], 10u);
+		if (gltf->meshes_count >= 2 && gltf->meshes[1].primitives_count >= 1)
+		{
+			RldMorph_BuildPrimitive(&b, &gltf->meshes[1], &gltf->meshes[1].primitives[0], 20u);
+		}
+		*endResult = RldMorph_BuildEnd(&b);
+	}
+	else
+	{
+		ok = 0;
+	}
+	if (gltf != NULL)
+	{
+		cgltf_free(gltf);
+	}
+	free(glb);
+	return ok;
+}
+
+// (a) the chain's weights at a position, closed forms
+internal int EngMorphT_CaseChainWeights(int *checks)
+{
+	static const int chain[3] = {0, 1, 2};
+	// pos, then the expected weights of key 0, 1, 2 (all exact in float)
+	static const float table[9][4] = {
+		{-1.0f, 0.0f, 0.0f, 0.0f},   // before the Basis: nothing
+		{0.0f, 0.0f, 0.0f, 0.0f},    // the Basis: nothing
+		{0.5f, 0.5f, 0.0f, 0.0f},    // t = 0 + 0.5: first chain key with 0.5
+		{1.0f, 1.0f, 0.0f, 0.0f},    // t = 1: first chain key with 1
+		{1.25f, 0.75f, 0.25f, 0.0f}, // t = 1 + 0.25: 0.75 and 0.25
+		{2.0f, 0.0f, 1.0f, 0.0f},
+		{2.5f, 0.0f, 0.5f, 0.5f},
+		{3.0f, 0.0f, 0.0f, 1.0f},    // t = n: the last key with 1
+		{3.5f, 0.0f, 0.0f, 1.0f}     // beyond n: the same
+	};
+	int fails = 0;
+	int i;
+	float w[3];
+
+	for (i = 0; i < 9; i++)
+	{
+		w[0] = w[1] = w[2] = 0.0f;
+		RldMorph_ChainWeightsAdd(chain, 3, table[i][0], w);
+		MORPH_CHECK(w[0] == table[i][1] && w[1] == table[i][2] && w[2] == table[i][3], "chain weights at t = -1 0 0.5 1 1.25 2 2.5 3 3.5");
+	}
+	w[0] = w[1] = w[2] = 0.0f;
+	RldMorph_ChainWeightsAdd(chain, 0, 2.0f, w);
+	MORPH_CHECK(w[0] == 0.0f && w[1] == 0.0f && w[2] == 0.0f, "chain weights with count 0 add nothing");
+	// it adds on top of what is there
+	w[0] = 0.25f;
+	w[1] = 0.0f;
+	w[2] = 0.0f;
+	RldMorph_ChainWeightsAdd(chain, 3, 0.5f, w);
+	MORPH_CHECK(w[0] == 0.75f && w[1] == 0.0f && w[2] == 0.0f, "chain weights add to existing weights");
+	return fails;
+}
+
+// (b) the state: frames, play, refusals, same chain again
+internal int EngMorphT_CaseState(int *checks)
+{
+	static const int keys[3] = {0, 1, 2};
+	static const int keysOther[3] = {2, 1, 0};
+	static const int keysNeg[3] = {0, -1, 2};
+	static const int keysHigh[3] = {0, 1, 7};
+	static const int keys17[RLDMORPH_CHAIN_MAX + 1] = {0};
+	RldMorphState st;
+	RldMorphState copy;
+	int fails = 0;
+	int i;
+
+	RldMorph_StateReset(&st);
+	MORPH_CHECK(st.chainCount == 0 && st.frames == 1 && st.frame == 0 && st.dir == 0, "state reset: no chain, frames 1, frame 0, dir 0");
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys, 3, 6, 7u) == 1, "chain set {0,1,2} over 6 frames");
+	MORPH_CHECK(RldMorph_ChainPos(&st) == 0.0f, "chain pos 0 after set");
+	MORPH_CHECK(RldMorph_ChainPlay(&st, 1) == 1, "chain play +1");
+	for (i = 0; i < 3; i++)
+	{
+		RldMorph_ChainStep(&st);
+	}
+	MORPH_CHECK(RldMorph_ChainPos(&st) == 1.5f && RldMorph_ChainDone(&st) == 0, "3 steps of 6 frames: pos 1.5, not done");
+	for (i = 0; i < 3; i++)
+	{
+		RldMorph_ChainStep(&st);
+	}
+	MORPH_CHECK(RldMorph_ChainPos(&st) == 3.0f && RldMorph_ChainDone(&st) == 1, "6 steps of 6 frames: pos 3, done");
+	RldMorph_ChainStep(&st);
+	MORPH_CHECK(RldMorph_ChainPos(&st) == 3.0f && RldMorph_ChainDone(&st) == 1, "one more step stays at 3");
+	MORPH_CHECK(RldMorph_ChainPlay(&st, -1) == 1, "chain play -1");
+	for (i = 0; i < 10; i++)
+	{
+		RldMorph_ChainStep(&st);
+	}
+	MORPH_CHECK(RldMorph_ChainPos(&st) == 0.0f && RldMorph_ChainDone(&st) == 1, "10 steps backwards: pos 0, done");
+
+	// refusals leave the state byte-identical
+	memcpy(&copy, &st, sizeof(st));
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys, 0, 6, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: count 0");
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys17, RLDMORPH_CHAIN_MAX + 1, 6, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: count CHAIN_MAX + 1");
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys, 3, 0, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: frames 0");
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys, 3, RLDMORPH_FRAMES_MAX + 1, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: frames FRAMES_MAX + 1");
+	MORPH_CHECK(RldMorph_ChainSet(&st, keysNeg, 3, 6, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: key -1");
+	MORPH_CHECK(RldMorph_ChainSet(&st, keysHigh, 3, 6, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: key == keyCount");
+	MORPH_CHECK(RldMorph_ChainSet(&st, NULL, 3, 6, 7u) == 0 && memcmp(&copy, &st, sizeof(st)) == 0, "refusal: NULL keys");
+
+	// the same chain again keeps the position (3 of 6 frames = 1.5 -> 2 of 4 frames), the direction is cleared
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys, 3, 6, 7u) == 1 && RldMorph_ChainSetPos(&st, 1.5f) == 1 && RldMorph_ChainPos(&st) == 1.5f, "set pos 1.5 of 6 frames");
+	RldMorph_ChainPlay(&st, 1);
+	MORPH_CHECK(RldMorph_ChainSet(&st, keys, 3, 4, 7u) == 1, "same chain again over 4 frames");
+	MORPH_CHECK(st.frame == 2 && st.frames == 4 && RldMorph_ChainPos(&st) == 1.5f, "same chain keeps pos 1.5 (frame 2 of 4)");
+	MORPH_CHECK(st.dir == 0 && RldMorph_ChainDone(&st) == 1, "chain set clears the direction (done)");
+	// a different chain starts at the Basis
+	MORPH_CHECK(RldMorph_ChainSet(&st, keysOther, 3, 4, 7u) == 1 && RldMorph_ChainPos(&st) == 0.0f && st.chain[0] == 2 && st.chain[2] == 0, "other chain resets pos to 0");
+
+	// set pos: frames 4, count 3
+	MORPH_CHECK(RldMorph_ChainSetPos(&st, 1.0f) == 1 && st.frame == 1 && RldMorph_ChainPos(&st) == 0.75f, "set pos 1.0 -> frame 1 -> pos 0.75");
+	MORPH_CHECK(RldMorph_ChainSetPos(&st, -5.0f) == 1 && RldMorph_ChainPos(&st) == 0.0f, "set pos -5 -> 0");
+	MORPH_CHECK(RldMorph_ChainSetPos(&st, 99.0f) == 1 && RldMorph_ChainPos(&st) == 3.0f, "set pos 99 -> 3");
+
+	// no chain
+	RldMorph_StateReset(&st);
+	MORPH_CHECK(RldMorph_ChainPlay(&st, 1) == 0, "no chain: play returns 0");
+	MORPH_CHECK(RldMorph_ChainSetPos(&st, 1.0f) == 0, "no chain: set pos returns 0");
+	MORPH_CHECK(RldMorph_ChainPos(&st) == 0.0f && RldMorph_ChainDone(&st) == 1, "no chain: pos 0, done");
+	return fails;
+}
+
+// (c) the final weights: key layer + chain, clamped
+internal int EngMorphT_CaseWeights(int *checks)
+{
+	static const int one[1] = {0};
+	static const u32 nanBits = 0x7fc00000u;
+	RldMorphState st;
+	float out[4];
+	float nanF;
+	int fails = 0;
+	int n;
+	int i;
+
+	memcpy(&nanF, &nanBits, sizeof(nanF));
+
+	// key layer 0.8 on key 0 plus chain {0} at pos 1 (weight 1): 1.8 is clamped to 1
+	RldMorph_StateReset(&st);
+	st.key[0] = 0.8f;
+	RldMorph_ChainSet(&st, one, 1, 1, 2u);
+	RldMorph_ChainSetPos(&st, 1.0f);
+	for (i = 0; i < 4; i++)
+	{
+		out[i] = 9.0f;
+	}
+	n = RldMorph_Weights(&st, 2u, out);
+	MORPH_CHECK(n == 1 && out[0] == 1.0f && out[1] == 0.0f && out[2] == 9.0f, "weights: 0.8 + chain 1 is clamped to 1, returns 1");
+
+	// the key layer alone passes below 1
+	RldMorph_StateReset(&st);
+	st.key[1] = 0.5f;
+	n = RldMorph_Weights(&st, 2u, out);
+	MORPH_CHECK(n == 1 && out[0] == 0.0f && out[1] == 0.5f, "weights: key layer 0.5 passes");
+
+	// NaN and negative become 0
+	RldMorph_StateReset(&st);
+	st.key[0] = nanF;
+	st.key[1] = -0.5f;
+	n = RldMorph_Weights(&st, 3u, out);
+	MORPH_CHECK(n == 0 && out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f, "weights: NaN and negative give 0, returns 0");
+
+	// nothing set: the Basis
+	RldMorph_StateReset(&st);
+	n = RldMorph_Weights(&st, 4u, out);
+	MORPH_CHECK(n == 0 && out[0] == 0.0f && out[3] == 0.0f, "weights: all 0, no chain returns 0");
+
+	// no keys: nothing written, 0
+	RldMorph_StateReset(&st);
+	st.key[0] = 1.0f;
+	for (i = 0; i < 4; i++)
+	{
+		out[i] = 9.0f;
+	}
+	n = RldMorph_Weights(&st, 0u, out);
+	MORPH_CHECK(n == 0 && out[0] == 9.0f, "weights: keyCount 0 returns 0");
+	return fails;
+}
+
+// The sets of morph 1 and morph 2 (sparse) must be the same in every array.
+internal int EngMorphT_SetSame(const RldMorphSet *a, const RldMorphSet *b)
+{
+	u32 k;
+
+	if (a->keyCount != b->keyCount || a->normalMask != b->normalMask || a->vertCount != b->vertCount || a->kept != b->kept)
+	{
+		return 0;
+	}
+	if (a->vert == NULL || b->vert == NULL || a->baseP == NULL || b->baseP == NULL || a->baseN == NULL || b->baseN == NULL)
+	{
+		return 0;
+	}
+	if (memcmp(a->name, b->name, sizeof(a->name)) != 0 || memcmp(a->entries, b->entries, sizeof(a->entries)) != 0)
+	{
+		return 0;
+	}
+	if (memcmp(a->vert, b->vert, (size_t)a->vertCount * sizeof(u32)) != 0)
+	{
+		return 0;
+	}
+	if (memcmp(a->baseP, b->baseP, (size_t)a->vertCount * 3u * sizeof(float)) != 0 || memcmp(a->baseN, b->baseN, (size_t)a->vertCount * 3u * sizeof(float)) != 0)
+	{
+		return 0;
+	}
+	for (k = 0; k < a->keyCount; k++)
+	{
+		if (memcmp(a->at[k], b->at[k], (size_t)a->entries[k] * sizeof(u32)) != 0)
+		{
+			return 0;
+		}
+		if (memcmp(a->delta[k], b->delta[k], (size_t)a->entries[k] * 6u * sizeof(float)) != 0)
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+// (d) the build half and the blend on the code-made GLBs
+internal int EngMorphT_CaseBuild(int *checks)
+{
+	// The body of the test GLB: vertex 3 lies at (0.1, 0.5, 0), its normal is (0,0,1),
+	// vertex 0 at (0,0,0), vertex 1 at (0.1,0,0). "lift" moves v0 and v1 by (0,0.25,0);
+	// "bend" moves v3 by (0.5,0,0) and its normal by (1,0,-1). The body starts at
+	// vertex 10 of the driver, so the set's vertices are 10, 11, 13 (slots 0, 1, 2).
+	RldMorphSet set1;
+	RldMorphSet set2;
+	RldMorphSet set3;
+	RldMorphSet set4;
+	int fails = 0;
+	int end1 = -1;
+	int end2 = -1;
+	int end3 = -1;
+	int end4 = -1;
+	int ok1;
+	int ok2;
+	int ok3;
+	int ok4;
+
+	memset(&set1, 0, sizeof(set1));
+	memset(&set2, 0, sizeof(set2));
+	memset(&set3, 0, sizeof(set3));
+	memset(&set4, 0, sizeof(set4));
+
+	// ----- morph 1: two named targets -----
+	ok1 = EngMorphT_BuildSet(1, &set1, &end1);
+	MORPH_CHECK(ok1 && end1 == 1, "morph 1: build and BuildEnd == 1");
+	if (ok1 && end1 == 1)
+	{
+		float w[2];
+		float p[9];
+		float n[9];
+		EngMorphTReach reach;
+
+		MORPH_CHECK(set1.keyCount == 2 && strcmp(set1.name[0], "lift") == 0 && strcmp(set1.name[1], "bend") == 0, "morph 1: keys lift, bend");
+		MORPH_CHECK(RldMorph_Find(&set1, "bend") == 1 && RldMorph_Find(&set1, "lift") == 0 && RldMorph_Find(&set1, "x") == -1 && RldMorph_Find(&set1, NULL) == -1, "morph 1: find");
+		MORPH_CHECK(set1.targets == 2 && set1.unnamed == 0 && set1.overKeys == 0 && set1.overBudget == 0 && set1.badAccessor == 0, "morph 1: counters");
+		MORPH_CHECK(set1.normalMask == 2u, "morph 1: normal mask 2 (only bend)");
+		MORPH_CHECK(set1.vertCount == 3 && set1.vert != NULL && set1.vert[0] == 10u && set1.vert[1] == 11u && set1.vert[2] == 13u, "morph 1: vertices 10, 11, 13");
+		MORPH_CHECK(set1.kept == 3 && set1.entries[0] == 2 && set1.entries[1] == 1, "morph 1: entries 2 and 1");
+		MORPH_CHECK(set1.at[0] != NULL && set1.at[0][0] == 0u && set1.at[0][1] == 1u && set1.at[1] != NULL && set1.at[1][0] == 2u, "morph 1: slots lift {0,1}, bend {2}");
+		MORPH_CHECK(set1.baseP != NULL && EngMorphT_Near3(&set1.baseP[6], 0.1f, 0.5f, 0.0f), "morph 1: base position of slot 2 (0.1,0.5,0)");
+		MORPH_CHECK(set1.baseN != NULL && EngMorphT_Near3(&set1.baseN[6], 0.0f, 0.0f, 1.0f), "morph 1: base normal of slot 2 (0,0,1)");
+		MORPH_CHECK(set1.delta[0] != NULL && EngMorphT_Near3(&set1.delta[0][0], 0.0f, 0.25f, 0.0f) && EngMorphT_Near3(&set1.delta[0][3], 0.0f, 0.0f, 0.0f), "morph 1: lift delta of slot 0 (0,0.25,0), no normal");
+		MORPH_CHECK(set1.delta[1] != NULL && EngMorphT_Near3(&set1.delta[1][0], 0.5f, 0.0f, 0.0f) && EngMorphT_Near3(&set1.delta[1][3], 1.0f, 0.0f, -1.0f), "morph 1: bend delta (0.5,0,0) and normal (1,0,-1)");
+
+		// blend, weights {1, 0}
+		w[0] = 1.0f;
+		w[1] = 0.0f;
+		RldMorph_Blend(&set1, w, p, n);
+		MORPH_CHECK(EngMorphT_Near3(&p[0], 0.0f, 0.25f, 0.0f) && EngMorphT_Near3(&p[3], 0.1f, 0.25f, 0.0f), "blend {1,0}: slots 0 and 1 up by 0.25");
+		MORPH_CHECK(EngMorphT_Near3(&p[6], 0.1f, 0.5f, 0.0f) && EngMorphT_Near3(&n[6], 0.0f, 0.0f, 1.0f), "blend {1,0}: slot 2 unchanged, normal (0,0,1)");
+		// blend, weights {0.5, 1}
+		w[0] = 0.5f;
+		w[1] = 1.0f;
+		RldMorph_Blend(&set1, w, p, n);
+		MORPH_CHECK(EngMorphT_Near3(&p[0], 0.0f, 0.125f, 0.0f), "blend {0.5,1}: slot 0 up by 0.125");
+		MORPH_CHECK(EngMorphT_Near3(&p[6], 0.6f, 0.5f, 0.0f), "blend {0.5,1}: slot 2 x + 0.5");
+		MORPH_CHECK(EngMorphT_Near3(&n[6], 1.0f, 0.0f, 0.0f), "blend {0.5,1}: slot 2 normal (0,0,1) + (1,0,-1) = (1,0,0)");
+		MORPH_CHECK(EngMorphT_Near3(&n[0], 0.0f, 0.0f, 1.0f), "blend {0.5,1}: slot 0 normal unchanged (lift has none)");
+
+		// reach: lo = base, hi = base + the positive deltas
+		memset(&reach, 0, sizeof(reach));
+		RldMorph_Reach(&set1, EngMorphT_Grow, &reach);
+		MORPH_CHECK(reach.n == 3 && reach.vertex[0] == 10u && reach.vertex[1] == 11u && reach.vertex[2] == 13u, "reach: 3 vertices 10, 11, 13");
+		MORPH_CHECK(EngMorphT_Near3(reach.lo[0], 0.0f, 0.0f, 0.0f) && EngMorphT_Near3(reach.hi[0], 0.0f, 0.25f, 0.0f), "reach: slot 0 lo (0,0,0) hi (0,0.25,0)");
+		MORPH_CHECK(EngMorphT_Near3(reach.lo[1], 0.1f, 0.0f, 0.0f) && EngMorphT_Near3(reach.hi[1], 0.1f, 0.25f, 0.0f), "reach: slot 1 lo (0.1,0,0) hi (0.1,0.25,0)");
+		MORPH_CHECK(EngMorphT_Near3(reach.lo[2], 0.1f, 0.5f, 0.0f) && EngMorphT_Near3(reach.hi[2], 0.6f, 0.5f, 0.0f), "reach: slot 2 lo (0.1,0.5,0) hi (0.6,0.5,0)");
+	}
+
+	// ----- morph 2: the same set from a sparse POSITION accessor -----
+	ok2 = EngMorphT_BuildSet(2, &set2, &end2);
+	MORPH_CHECK(ok2 && end2 == 1, "morph 2 (sparse): build and BuildEnd == 1");
+	if (ok1 && end1 == 1 && ok2 && end2 == 1)
+	{
+		MORPH_CHECK(EngMorphT_SetSame(&set1, &set2), "morph 2 (sparse): every array equals the morph 1 set");
+	}
+
+	// ----- morph 3: unnamed targets -----
+	ok3 = EngMorphT_BuildSet(3, &set3, &end3);
+	MORPH_CHECK(ok3 && end3 == 1, "morph 3: build and BuildEnd == 1");
+	MORPH_CHECK(set3.keyCount == 0 && set3.unnamed == 2 && set3.targets == 2 && set3.block == NULL && set3.vertCount == 0, "morph 3: no keys, 2 unnamed, no block");
+
+	// ----- morph 4: 33 targets, 32 keys kept -----
+	ok4 = EngMorphT_BuildSet(4, &set4, &end4);
+	MORPH_CHECK(ok4 && end4 == 1, "morph 4: build and BuildEnd == 1");
+	if (ok4 && end4 == 1)
+	{
+		u32 k;
+		int allOne = 1;
+
+		MORPH_CHECK(set4.keyCount == RLDMORPH_KEYS_MAX && set4.keyCount == 32 && set4.overKeys == 1 && set4.targets == 33, "morph 4: 32 keys, 1 over, 33 targets");
+		MORPH_CHECK(strcmp(set4.name[0], "k0") == 0 && strcmp(set4.name[31], "k31") == 0, "morph 4: names k0 and k31");
+		MORPH_CHECK(set4.vertCount == 1 && set4.vert != NULL && set4.vert[0] == 10u, "morph 4: one vertex (10)");
+		for (k = 0; k < set4.keyCount; k++)
+		{
+			if (set4.entries[k] != 1u)
+			{
+				allOne = 0;
+			}
+		}
+		MORPH_CHECK(allOne, "morph 4: every key has 1 entry");
+		// Key 5 is target k5: the builder writes z = 0.01f * (float)(5 + 1), i.e. the float product
+		// 0.01f * 6.0f; compared with a tolerance of 1e-9 so a compiler folding it in another
+		// precision still passes.
+		MORPH_CHECK(set4.delta[5] != NULL && fabsf(set4.delta[5][2] - 0.01f * 6.0f) < 1e-9f && set4.delta[5][0] == 0.0f && set4.delta[5][1] == 0.0f, "morph 4: key 5 delta z = 0.06");
+		MORPH_CHECK(set4.delta[31] != NULL && fabsf(set4.delta[31][2] - 0.01f * 32.0f) < 1e-9f, "morph 4: key 31 delta z = 0.32");
+	}
+
+	RldMorph_Free(&set1);
+	RldMorph_Free(&set2);
+	RldMorph_Free(&set3);
+	RldMorph_Free(&set4);
+	MORPH_CHECK(set1.block == NULL && set1.keyCount == 0, "set freed: block NULL");
+	return fails;
+}
+
+// Returns the number of failed checks of the shape keys; *checks += number of checks.
+internal int EngHires_SelfTestMorph(int *checks)
+{
+	int fails = 0;
+
+	fails += EngMorphT_CaseChainWeights(checks);
+	fails += EngMorphT_CaseState(checks);
+	fails += EngMorphT_CaseWeights(checks);
+	fails += EngMorphT_CaseBuild(checks);
+	return fails;
+}
+
+#undef MORPH_CHECK

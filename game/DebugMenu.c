@@ -77,6 +77,17 @@ void Platform_SetPageRowRange(int on);
 int Platform_GetPagePreload(void);
 void Platform_SetPagePreload(int on);
 
+// What the SHAPE KEYS page acts on (include/platform/engine.h, THE SHAPE KEYS),
+// declared here for the same reason as the platform side above. The calls are
+// purely visual: nothing the page does is written into the game.
+int Engine_HiresShapeKeyCount(int seat);
+const char *Engine_HiresShapeKeyName(int seat, int key);
+int Engine_HiresShapeKeySet(int seat, const char *name, float weight);
+float Engine_HiresShapeKeyGet(int seat, const char *name);
+float Engine_HiresShapeChainPos(int seat);
+int Engine_HiresShapeChainSetPos(int seat, float pos);
+void Engine_HiresShapeReset(int seat);
+
 // Every menu step that is meant to survive a restart writes the file. Declared
 // here with the rest of the platform side this file reaches for.
 void Platform_SettingsSave(void);
@@ -97,6 +108,7 @@ enum
 	DBG_VIDEO,
 	DBG_VIEW,
 	DBG_TRACKS,
+	DBG_SHAPE_KEYS,
 	DBG_DRIVER,
 	DBG_TRACK,
 	DBG_PAGE_COUNT,
@@ -130,7 +142,7 @@ enum
 #define DBG_FIRST_ROW_Y  28
 #define DBG_VISIBLE_ROWS 12
 
-global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS"};
+global_variable const char *const s_rootNames[] = {"CHEATS", "LEVEL SELECT", "VIDEO", "VIEW", "TRACKS", "SHAPE KEYS"};
 
 // The VIDEO page.
 //
@@ -517,6 +529,58 @@ internal int DebugMenu_TrackRowCount(void)
 	return DBG_TRACKS_FIRST_ROW + ((count > 0) ? count : 1);
 }
 
+// The SHAPE KEYS page, for the player driver (seat 0). Its rows are the keys
+// of that driver's hi-res character, then the chain position when a chain is
+// set, then ALL TO 0. The list is asked of the engine every time it is needed
+// and never cached: a level load changes the driver, and with it the keys.
+// Without keys the page is one inert row.
+#define DBG_SHAPE_SEAT 0
+#define DBG_SHAPE_STEP 0.25f
+// 13 characters of name + 4 of value fit the 18 of the panel (see the comment
+// at NATIVE_DEBUG_MENU_W_TRACKS).
+#define DBG_SHAPE_NAME_CHARS 13
+
+internal int DebugMenu_ShapeKeyCount(void)
+{
+	const int count = Engine_HiresShapeKeyCount(DBG_SHAPE_SEAT);
+
+	return (count > 0) ? count : 0;
+}
+
+internal int DebugMenu_ShapeHasChain(void)
+{
+	return Engine_HiresShapeChainPos(DBG_SHAPE_SEAT) >= 0.0f;
+}
+
+internal int DebugMenu_ShapeRowCount(void)
+{
+	const int keys = DebugMenu_ShapeKeyCount();
+
+	if (keys == 0)
+	{
+		return 1;
+	}
+
+	// keys, [chain], ALL TO 0
+	return keys + (DebugMenu_ShapeHasChain() ? 1 : 0) + 1;
+}
+
+// The name as the font can show it (upper case only), cut to what the panel
+// holds beside the value.
+internal void DebugMenu_ShapeKeyLabel(const char *name, char *out)
+{
+	int n = 0;
+
+	while ((name[n] != '\0') && (n < DBG_SHAPE_NAME_CHARS))
+	{
+		char c = name[n];
+
+		out[n] = ((c >= 'a') && (c <= 'z')) ? (char)(c - 'a' + 'A') : c;
+		n++;
+	}
+	out[n] = '\0';
+}
+
 internal int DebugMenu_PanelWidth(int page)
 {
 	return ((page == DBG_TRACKS) || (page == DBG_TRACK)) ? NATIVE_DEBUG_MENU_W_TRACKS : NATIVE_DEBUG_MENU_W;
@@ -571,6 +635,8 @@ internal int DebugMenu_RowCount(int page)
 		return DBG_VIDEO_ROW_COUNT;
 	case DBG_VIEW:
 		return DBG_VIEW_ROW_COUNT;
+	case DBG_SHAPE_KEYS:
+		return DebugMenu_ShapeRowCount();
 	case DBG_DRIVER:
 		return DBG_COUNT(s_drivers);
 	case DBG_TRACKS:
@@ -597,6 +663,12 @@ internal const char *DebugMenu_PageTitle(int page)
 	if (page == DBG_TRACK)
 	{
 		return "TRACK";
+	}
+
+	// Before the root-name lookup below, which would give the row's short name.
+	if (page == DBG_SHAPE_KEYS)
+	{
+		return "SHAPE KEY PREVIEW";
 	}
 
 	if (page == DBG_VIEW)
@@ -640,6 +712,10 @@ internal const char *DebugMenu_ActionHint(int page)
 	if (page == DBG_TRACK)
 	{
 		return "X = USE ROW";
+	}
+	if (page == DBG_SHAPE_KEYS)
+	{
+		return "X = STEP";
 	}
 
 	return "X = APPLY";
@@ -1133,6 +1209,66 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 			Platform_Log("[CTR Debug] PSX depth %s\n", g_cfg_psxDepth ? "on" : "off");
 		}
 		break;
+
+	case DBG_SHAPE_KEYS:
+	{
+		const int keys = DebugMenu_ShapeKeyCount();
+
+		// No keys: the one row is inert.
+		if (keys == 0)
+		{
+			break;
+		}
+
+		if ((row >= 0) && (row < keys))
+		{
+			// The menu has no left/right, so the weight steps 0 -> .25 -> .5
+			// -> .75 -> 1 -> 0 on each press. The stored weight is rounded to
+			// the step first, so a value set elsewhere (--dev-shape-keys) joins
+			// the same ladder.
+			const char *name = Engine_HiresShapeKeyName(DBG_SHAPE_SEAT, row);
+			int idx = (int)(Engine_HiresShapeKeyGet(DBG_SHAPE_SEAT, name) / DBG_SHAPE_STEP + 0.5f) + 1;
+			float weight;
+
+			if (idx > 4)
+			{
+				idx = 0;
+			}
+			weight = (float)idx * DBG_SHAPE_STEP;
+
+			Engine_HiresShapeKeySet(DBG_SHAPE_SEAT, name, weight);
+			Platform_Log("[CTR Debug] shape key %s = %.2f\n", name, weight);
+			break;
+		}
+
+		if (DebugMenu_ShapeHasChain() && (row == keys))
+		{
+			// The end of the chain is not known here: step on, and when the
+			// position did not grow (the engine clamped it at the end), go back
+			// to 0.
+			const float before = Engine_HiresShapeChainPos(DBG_SHAPE_SEAT);
+			float after;
+
+			Engine_HiresShapeChainSetPos(DBG_SHAPE_SEAT, before + DBG_SHAPE_STEP);
+			after = Engine_HiresShapeChainPos(DBG_SHAPE_SEAT);
+			if (!(after > before))
+			{
+				Engine_HiresShapeChainSetPos(DBG_SHAPE_SEAT, 0.0f);
+				after = Engine_HiresShapeChainPos(DBG_SHAPE_SEAT);
+			}
+			Platform_Log("[CTR Debug] shape chain pos = %.2f\n", after);
+			break;
+		}
+
+		// The last row. A row index past the end (the chain went away since the
+		// cursor was placed) does nothing.
+		if (row == (DebugMenu_ShapeRowCount() - 1))
+		{
+			Engine_HiresShapeReset(DBG_SHAPE_SEAT);
+			Platform_Log("[CTR Debug] shape keys all 0\n");
+		}
+		break;
+	}
 
 	case DBG_DRIVER:
 		if ((row >= 0) && (row < DBG_COUNT(s_drivers)))
@@ -3999,6 +4135,33 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 					sprintf(line, "%-12s%dx%d", "FRAME", frameW, frameH);
 				}
 				break;
+
+			case DBG_SHAPE_KEYS:
+			{
+				const int keys = DebugMenu_ShapeKeyCount();
+
+				if (keys == 0)
+				{
+					sprintf(line, "NO SHAPE KEYS");
+				}
+				else if (i < keys)
+				{
+					const char *name = Engine_HiresShapeKeyName(DBG_SHAPE_SEAT, i);
+					char label[DBG_SHAPE_NAME_CHARS + 1];
+
+					DebugMenu_ShapeKeyLabel(name, label);
+					sprintf(line, "%-13s%.2f", label, Engine_HiresShapeKeyGet(DBG_SHAPE_SEAT, name));
+				}
+				else if (DebugMenu_ShapeHasChain() && (i == keys))
+				{
+					sprintf(line, "CHAIN POS %.2f", Engine_HiresShapeChainPos(DBG_SHAPE_SEAT));
+				}
+				else
+				{
+					sprintf(line, "ALL TO 0");
+				}
+				break;
+			}
 
 			case DBG_DRIVER:
 				// A marker on the driver a jump would use.

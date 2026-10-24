@@ -141,6 +141,8 @@
 
 // The vertex colour mode of the chunk's flags and the one way to read COLOR_0.
 #include <rldhires_color.inc>
+// The shape keys (glTF morph targets): read and counted the engine's way (HRG-23).
+#include <rldhires_morph.inc>
 
 //========================================================================================
 // THE CHUNK CHRG
@@ -471,7 +473,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-20", RLDHIRES_WARNING, "wheels: not all four wheel nodes usable, standard wheels"},
     {"HRG-21", RLDHIRES_NOTE, "an animation name is not a clip name, or a clip name twice: ignored"},
     {"HRG-22", RLDHIRES_NOTE, "CUBICSPLINE is read linear between the key values"},
-    {"HRG-23", RLDHIRES_NOTE, "morph targets are ignored"},
+    {"HRG-23", RLDHIRES_NOTE, "morph targets (shape keys): played by name (at most 32 keys, 4 MB of deltas; more is left out); clip weights and default weights are not played"},
     {"HRG-24", RLDHIRES_NOTE, "cameras and lights are ignored"},
     {"HRG-25", RLDHIRES_NOTE, "alphaMode BLEND is drawn as MASK with cutoff 0.5"},
     {"HRG-26", RLDHIRES_NOTE, "metallicRoughness, occlusion and emissive are ignored"},
@@ -1163,10 +1165,9 @@ static void RldHires_CheckMeshNode(RldHiresModel *m, RldHiresReport *rep, const 
 			}
 			*seenNormalMissing = 1;
 		}
-		if ((prim->targets_count != 0u) && !*seenMorph)
+		if (prim->targets_count != 0u)
 		{
-			RldHires_Say(rep, "HRG-23", "mesh '%s' has morph targets (shape keys) - they are ignored", meshName);
-			*seenMorph = 1;
+			*seenMorph = 1; // HRG-23: one note for the whole file after the meshes (RldHires_MorphNote)
 		}
 
 		if (node->skin != NULL)
@@ -1438,6 +1439,67 @@ static int RldHires_SrgbByte(float lin)
 // the texture unchanged - in glTF mode 128 halves it. The median is always
 // measured (ps1ColourMedian, the Studio's suggestion of a mode); the warning is
 // said only in glTF mode: PSX blend reads such colours right, off ignores them.
+static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep);
+
+// HRG-23: the shape keys (morph targets) as the engine reads them
+// (include/rldhires_morph.inc, the same build over the drawn primitives in the
+// engine's vertex order: the body nodes, then the four wheel nodes when all
+// four are usable). The game plays them by name through its shape key API
+// (include/platform/engine.h THE SHAPE KEYS); the note names the keys and what
+// is left out. Clip channels "weights" and the file's default weights are not
+// played (said with the clips).
+static void RldHires_MorphNote(const RldHiresModel *m, RldHiresReport *rep, int wheels)
+{
+	RldMorphSet set;
+	RldMorphBuild b;
+	char names[120];
+	size_t used = 0;
+	u32 first = 0;
+	u32 k;
+	int n;
+
+	if (m->data == NULL)
+	{
+		return;
+	}
+	RldMorph_BuildBegin(&b, &set);
+	for (n = 0; n < m->drawNodeCount + (wheels ? RLDHIRES_WHEEL_COUNT : 0); n++)
+	{
+		const int node = (n < m->drawNodeCount) ? m->drawNodes[n] : m->wheelNode[n - m->drawNodeCount];
+		const cgltf_mesh *mesh = (node >= 0) ? m->data->nodes[node].mesh : NULL;
+		cgltf_size p;
+
+		for (p = 0; (mesh != NULL) && (p < mesh->primitives_count); p++)
+		{
+			const cgltf_primitive *prim = &mesh->primitives[p];
+			const cgltf_accessor *pos = cgltf_find_accessor(prim, cgltf_attribute_type_position, 0);
+
+			if ((pos == NULL) || (prim->type != cgltf_primitive_type_triangles))
+			{
+				continue;
+			}
+			RldMorph_BuildPrimitive(&b, mesh, prim, first);
+			first += (u32)pos->count;
+		}
+	}
+	if (!RldMorph_BuildEnd(&b))
+	{
+		RldHires_Say(rep, "HRG-23", "the model has %u morph targets (shape keys) - out of memory while counting them", (unsigned)set.targets);
+		RldMorph_Free(&set);
+		return;
+	}
+	names[0] = '\0';
+	for (k = 0; (k < set.keyCount) && (used < sizeof(names)); k++)
+	{
+		used += (size_t)snprintf(names + used, sizeof(names) - used, "%s%s", (k == 0u) ? "" : ", ", set.name[k]);
+	}
+	// One line within RLDHIRES_TEXT_MAX: the numbers first, the names last (cut when long).
+	RldHires_Say(rep, "HRG-23", "%u shape keys played by name, %u vertices, %u bytes; left out %u unnamed, %u past 32, %u over budget, %u bad: %s", (unsigned)set.keyCount,
+	             (unsigned)set.vertCount, (unsigned)set.bytes, (unsigned)set.unnamed, (unsigned)set.overKeys, (unsigned)set.overBudget, (unsigned)set.badAccessor,
+	             names);
+	RldMorph_Free(&set);
+}
+
 static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
 {
 	u32 histogram[256];
@@ -2197,6 +2259,12 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 		}
 	}
 
+	// HRG-23: the shape keys, counted the engine's way (RldHires_MorphNote).
+	if (seenMorph)
+	{
+		RldHires_MorphNote(m, rep, wheelOk);
+	}
+
 	// HRG-32, HRG-33, HRG-34: the engine's hard limits (EngHc_BuildCpu).
 	m->materials = (u32)gd->materials_count;
 	if (m->materials > RLDHIRES_MATERIALS_MAX)
@@ -2470,7 +2538,7 @@ static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, 
 			{
 				if ((anim->channels[s].target_path == cgltf_animation_path_type_weights) && !seenMorph)
 				{
-					RldHires_Say(rep, "HRG-23", "the clip '%s' animates morph targets (shape keys) - they are ignored", s_rldHiresClipName[c]);
+					RldHires_Say(rep, "HRG-23", "the clip '%s' animates morph target weights - clips do not play them (the game sets shape keys by name)", s_rldHiresClipName[c]);
 					seenMorph = 1;
 				}
 			}

@@ -209,6 +209,10 @@ typedef struct
 	float hullMin[3];
 	float hullMax[3];
 	u32 hostBytes;
+	// THE SHAPE KEYS (include/rldhires_morph.inc): the file's morph targets by
+	// name, read at the load as stored; keyCount 0 = none (the path of before).
+	RldMorphSet morph;
+	int morphShort; // 1 = the keys could not be kept (out of memory): drawn without them
 	// THE KART PART (CHRG parts bit 0, include/rldhires.inc THE PARTS): kartEntry[e]
 	// = 1 for a palette entry of the kart (a joint or rigid node in the subtree of
 	// the node "kart", and the four wheels); NULL when the file has none.
@@ -261,6 +265,10 @@ typedef struct
 	u32 logTimer;
 	int logValid;
 	int force;
+	// THE SHAPE KEYS of the seat (engine.h THE SHAPE KEYS): cleared at every
+	// level load; stepped once per logic tick; only for a character with keys.
+	RldMorphState morph;
+	int morphLoop; // --dev-shape-chain @loopN: the chain turns round at each end
 } EngHcSeatRun;
 
 // What a pose was made of (the log line).
@@ -331,7 +339,16 @@ internal struct
 	int graveCount;
 	u32 refusedSlotSkins;    // a slot asked for a second character in one frame (refused)
 	int refusedSlotLogged;
+	// THE SHAPE KEYS: the blend's scratch (the largest set's vertices x 3) and counters.
+	float *morphP;
+	float *morphN;
+	u32 scratchMorph;
+	u32 morphSkins;      // skins with at least one weight not 0
+	u64 morphVertices;   // vertices blended in them
 } s_hc;
+
+char g_cfg_engineShapeKeys[ENGINE_HIRES_SHAPE_ARG_MAX];
+char g_cfg_engineShapeChain[ENGINE_HIRES_SHAPE_ARG_MAX];
 
 // ---------------------------------------------------------------------------
 // Small maths.
@@ -428,6 +445,8 @@ internal void EngHc_FreeCpu(EngHcChar *c)
 	free(c->indices);
 	free(c->rigidNode);
 	free(c->kartEntry);
+	RldMorph_Free(&c->morph);
+	c->morphShort = 0;
 	c->src = NULL;
 	c->base = NULL;
 	c->indices = NULL;
@@ -714,10 +733,47 @@ internal int EngHc_MaterialOf(const cgltf_data *gltf, const cgltf_primitive *pri
 	return (prim->material != NULL) ? (int)(prim->material - gltf->materials) : (int)gltf->materials_count;
 }
 
+// THE SHAPE KEYS IN THE HULL: a vertex a key moves grows the box of each palette
+// entry it is weighted to by every place its keys can take it (RldMorph_Reach).
+typedef struct
+{
+	const EngHcChar *c;
+	float *box;
+} EngHcHullMorph;
+
+internal void EngHc_HullMorphGrow(void *user, u32 vertex, const float lo[3], const float hi[3])
+{
+	const EngHcHullMorph *h = (const EngHcHullMorph *)user;
+	const EngHcSrc *s;
+	int k;
+
+	if (vertex >= h->c->vertexCount)
+	{
+		return;
+	}
+	s = &h->c->src[vertex];
+	for (k = 0; k < 4; k++)
+	{
+		if ((s->w[k] > 0.0f) && ((u32)s->j[k] < h->c->paletteCount))
+		{
+			float *b = &h->box[(u32)s->j[k] * 6u];
+			int a;
+
+			for (a = 0; a < 3; a++)
+			{
+				b[a] = (lo[a] < b[a]) ? lo[a] : b[a];
+				b[3 + a] = (hi[a] > b[3 + a]) ? hi[a] : b[3 + a];
+			}
+		}
+	}
+}
+
 // The hull: per palette entry the box of its vertices (local), through the
 // rest pose and every clip at ENG_HC_HULL_SAMPLES times; the wheels as their
-// middles +- their radius. Model units.
-internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds)
+// middles +- their radius. Model units. withMorph: every vertex also where its
+// shape keys can take it (the culling hull; the 4 m rule HRG-18 is tested
+// without, as the checker tests it).
+internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds, int withMorph)
 {
 	float *box = (float *)malloc((size_t)c->paletteCount * 6u * sizeof(float));
 	int sample;
@@ -754,6 +810,14 @@ internal void EngHc_Hull(EngHcChar *c, RldAnimTrs *pose, float *worlds)
 				}
 			}
 		}
+	}
+	if (withMorph && (c->morph.keyCount > 0u))
+	{
+		EngHcHullMorph h;
+
+		h.c = c;
+		h.box = box;
+		RldMorph_Reach(&c->morph, EngHc_HullMorphGrow, &h);
 	}
 	for (sample = -1; sample < ENGINE_HIRES_CLIPS * ENG_HC_HULL_SAMPLES; sample++)
 	{
@@ -1225,6 +1289,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	u32 vfirst;
 	RldAnimTrs *pose = NULL;
 	float *worlds = NULL;
+	RldMorphBuild morphBuild;
 	int n;
 	int k;
 
@@ -1479,8 +1544,10 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		}
 	}
 
-	// The vertices and indices.
+	// The vertices and indices; the shape keys of every glTF primitive read
+	// (a primitive without targets adds nothing: RldMorph_BuildPrimitive returns).
 	vfirst = 0;
+	RldMorph_BuildBegin(&morphBuild, &c->morph);
 	for (n = 0; n < m->drawNodeCount + 4; n++)
 	{
 		const int wheel = n - m->drawNodeCount;
@@ -1544,6 +1611,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			ic -= ic % 3u;
 			EngHc_ReadPrimitive(prim, skinned, entry, RldHiresColor_ModeFor(c->vcolMode, EngHc_MaterialTextured(prim->material)), c->src, c->base, vfirst,
 			                    count);
+			RldMorph_BuildPrimitive(&morphBuild, node->mesh, prim, vfirst);
 			for (q = 0; q < ic; q++)
 			{
 				const u32 idx = (prim->indices != NULL) ? (u32)cgltf_accessor_read_index(prim->indices, q) : q;
@@ -1553,6 +1621,11 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			vfirst += count;
 		}
 	}
+	if (!RldMorph_BuildEnd(&morphBuild))
+	{
+		c->morphShort = 1; // drawn without its keys; the ready line says so
+	}
+	c->hostBytes += c->morph.bytes;
 
 	// The wheel nodes at rest: the radius in model units, the roll sign and the rest yaw.
 	RldAnim_PoseRest(&c->skel, pose);
@@ -1593,9 +1666,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			c->wheelRestYaw[k] = (float)atan2(-(double)w[2], (double)w[0]);
 		}
 	}
-	EngHc_Hull(c, pose, worlds);
-	free(pose);
-	free(worlds);
+	EngHc_Hull(c, pose, worlds, 0);
 	for (k = 0; k < 3; k++)
 	{
 		if (!((c->hullMax[k] - c->hullMin[k]) <= ENG_HC_HULL_MAX))
@@ -1603,10 +1674,21 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			snprintf(detail, (size_t)detailSize, "with its clips the model reaches %.2f m along %c - at most 4 m; keep every pose inside 4 m", (double)((c->hullMax[k] - c->hullMin[k]) / ENG_HC_UNITS),
 			         "xyz"[k]);
 			*rule = "HRG-18";
+			free(pose);
+			free(worlds);
 			EngHc_FreeCpu(c);
 			return 0;
 		}
 	}
+	// THE SHAPE KEYS: the culling hull reaches every place the keys can take
+	// the vertices (the 4 m rule above is the checker's, without them). A file
+	// without keys keeps the hull above unchanged.
+	if (c->morph.keyCount > 0u)
+	{
+		EngHc_Hull(c, pose, worlds, 1);
+	}
+	free(pose);
+	free(worlds);
 	for (k = 0; k < 3; k++)
 	{
 		const float grow = (c->hullMax[k] - c->hullMin[k]) * ENG_HC_HULL_MARGIN;
@@ -2196,7 +2278,10 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 // Skins a character's pose at a place into the slot's array of this bank and
 // hands it to the renderer. 1 = ready to draw. Once per slot and frame: a
 // second call in the same frame keeps the first pose.
-internal int EngHc_SkinSlot(int slot, int ch, const RldAnimTrs *pose, const EngHcPlace *pl)
+// morphW: the shape key weights (c->morph.keyCount of them, at least one not
+// 0), blended into the moved vertices before the skinning; NULL = the Basis -
+// the loop of before, untouched (every file without keys, every forced submit).
+internal int EngHc_SkinSlot(int slot, int ch, const RldAnimTrs *pose, const EngHcPlace *pl, const float *morphW)
 {
 	EngHcSlot *s = &s_hc.slots[slot];
 	const EngHcChar *c = &s_hc.chars[ch];
@@ -2235,24 +2320,65 @@ internal int EngHc_SkinSlot(int slot, int ch, const RldAnimTrs *pose, const EngH
 		s->cpuChar[bank] = ch;
 	}
 	EngHc_Palette(c, pose, pl, &s->yawDrawn, &s->rollDrawn);
-	for (v = 0; v < c->vertexCount; v++)
+	if ((morphW == NULL) || (c->morph.vertCount == 0u) || (s_hc.morphP == NULL) || (s_hc.morphN == NULL) || (s_hc.scratchMorph < c->morph.vertCount))
 	{
-		const EngHcSrc *src = &c->src[v];
-		EngineVertex *o = &out[v];
-		float n[3];
+		for (v = 0; v < c->vertexCount; v++)
+		{
+			const EngHcSrc *src = &c->src[v];
+			EngineVertex *o = &out[v];
+			float n[3];
 
-		RldAnim_SkinVertex(s_hc.palette, src->j, src->w, src->p, src->n, o->position, n);
-		if (src->hasNormal)
-		{
-			o->uvBox[0] = EngHc_PackUnit(n[0]);
-			o->uvBox[1] = EngHc_PackUnit(n[1]);
-			o->uvBox[2] = EngHc_PackUnit(n[2]);
-			o->uvBox[3] = 255;
+			RldAnim_SkinVertex(s_hc.palette, src->j, src->w, src->p, src->n, o->position, n);
+			if (src->hasNormal)
+			{
+				o->uvBox[0] = EngHc_PackUnit(n[0]);
+				o->uvBox[1] = EngHc_PackUnit(n[1]);
+				o->uvBox[2] = EngHc_PackUnit(n[2]);
+				o->uvBox[3] = 255;
+			}
+			else
+			{
+				o->uvBox[0] = o->uvBox[1] = o->uvBox[2] = o->uvBox[3] = 0; // "ns": the face's own normal
+			}
 		}
-		else
+	}
+	else
+	{
+		// THE SHAPE KEYS: the moved vertices blended first (base + weight x
+		// delta, include/rldhires_morph.inc), then the same skinning; the set's
+		// vertices ascend, so one cursor walks them beside the loop.
+		u32 next = 0;
+
+		RldMorph_Blend(&c->morph, morphW, s_hc.morphP, s_hc.morphN);
+		for (v = 0; v < c->vertexCount; v++)
 		{
-			o->uvBox[0] = o->uvBox[1] = o->uvBox[2] = o->uvBox[3] = 0; // "ns": the face's own normal
+			const EngHcSrc *src = &c->src[v];
+			EngineVertex *o = &out[v];
+			const float *p = src->p;
+			const float *sn = src->n;
+			float n[3];
+
+			if ((next < c->morph.vertCount) && (c->morph.vert[next] == v))
+			{
+				p = &s_hc.morphP[next * 3u];
+				sn = &s_hc.morphN[next * 3u];
+				next++;
+			}
+			RldAnim_SkinVertex(s_hc.palette, src->j, src->w, p, sn, o->position, n);
+			if (src->hasNormal)
+			{
+				o->uvBox[0] = EngHc_PackUnit(n[0]);
+				o->uvBox[1] = EngHc_PackUnit(n[1]);
+				o->uvBox[2] = EngHc_PackUnit(n[2]);
+				o->uvBox[3] = 255;
+			}
+			else
+			{
+				o->uvBox[0] = o->uvBox[1] = o->uvBox[2] = o->uvBox[3] = 0; // "ns": the face's own normal
+			}
 		}
+		s_hc.morphSkins++;
+		s_hc.morphVertices += c->morph.vertCount;
 	}
 	s->skinnedFrame = s_hc.frame + 1u;
 	s->skinnedChar = ch;
@@ -2457,6 +2583,15 @@ internal void EngHc_SeatTick(const struct GameTracker *gGT, int seat)
 		return;
 	}
 	run->timer = (u32)gGT->timer;
+	// THE SHAPE KEYS: the chain moves one frame per logic tick (a character with keys only).
+	if (c->morph.keyCount > 0u)
+	{
+		RldMorph_ChainStep(&run->morph);
+		if (run->morphLoop && (run->morph.dir != 0) && RldMorph_ChainDone(&run->morph))
+		{
+			(void)RldMorph_ChainPlay(&run->morph, -run->morph.dir);
+		}
+	}
 	memset(&in, 0, sizeof(in));
 	in.touch = ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) ? 1 : 0;
 	in.kartState = (int)d->kartState;
@@ -2681,10 +2816,20 @@ int Engine_HiresCharRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 		pl.roll[w] = run->roll[w];
 	}
 	EngHc_StatePose(c, &run->st, run->snapshot, s_hc.poseA, &info);
-	if (!EngHc_SkinSlot(seat, ch, s_hc.poseA, &pl))
+	// THE SHAPE KEYS of the seat: only a character with keys, only when a weight is not 0.
 	{
-		s_hc.declined++;
-		return 0;
+		float morphW[RLDMORPH_KEYS_MAX];
+		const float *useW = NULL;
+
+		if ((c->morph.keyCount > 0u) && (RldMorph_Weights(&run->morph, c->morph.keyCount, morphW) > 0))
+		{
+			useW = morphW;
+		}
+		if (!EngHc_SkinSlot(seat, ch, s_hc.poseA, &pl, useW))
+		{
+			s_hc.declined++;
+			return 0;
+		}
 	}
 	drawn = EngHc_DrawAtInstance(seat, ch, inst, idpp, pb, &pl.world);
 	if (drawn <= 0)
@@ -2779,7 +2924,7 @@ internal int EngHc_Submit(int ch, const EngineHiresSubmit *s)
 		EngHc_EvalClip(c, s->prevClip, s->prevTime, 0.0f, s_hc.poseB, NULL, NULL);
 		RldAnim_BlendPose(s_hc.poseB, s_hc.poseA, (s->fade < 0.0f) ? 0.0f : s->fade, s_hc.poseA, c->skel.nodeCount);
 	}
-	if (!EngHc_SkinSlot(s->slot, ch, s_hc.poseA, &pl))
+	if (!EngHc_SkinSlot(s->slot, ch, s_hc.poseA, &pl, NULL)) // the Basis: podium, menu scene, driver select
 	{
 		return 0;
 	}
@@ -3008,6 +3153,360 @@ void Engine_HiresSeatForceClip(int seat, int clip)
 }
 
 // ---------------------------------------------------------------------------
+// THE SHAPE KEYS (include/platform/engine.h THE SHAPE KEYS; the maths in
+// include/rldhires_morph.inc). Every call is for a seat whose character has
+// keys; any other seat answers 0 / -1 / "" and nothing changes.
+
+// The seat's run and character when it has keys, else NULL.
+internal EngHcSeatRun *EngHc_ShapeSeat(int seat, const EngHcChar **c)
+{
+	int ch;
+
+	if ((seat < 0) || (seat >= ENGINE_HIRES_SLOT_SEATS) || !s_hc.levelReady)
+	{
+		return NULL;
+	}
+	ch = s_hc.seatChar[seat];
+	if ((ch < 0) || !s_hc.chars[ch].used || (s_hc.chars[ch].morph.keyCount == 0u))
+	{
+		return NULL;
+	}
+	*c = &s_hc.chars[ch];
+	return &s_hc.seats[seat];
+}
+
+int Engine_HiresShapeKeyCount(int seat)
+{
+	const EngHcChar *c = NULL;
+
+	return (EngHc_ShapeSeat(seat, &c) != NULL) ? (int)c->morph.keyCount : 0;
+}
+
+const char *Engine_HiresShapeKeyName(int seat, int key)
+{
+	const EngHcChar *c = NULL;
+
+	if ((EngHc_ShapeSeat(seat, &c) == NULL) || (key < 0) || ((u32)key >= c->morph.keyCount))
+	{
+		return "";
+	}
+	return c->morph.name[key];
+}
+
+int Engine_HiresShapeKeyFind(int seat, const char *name)
+{
+	const EngHcChar *c = NULL;
+
+	return (EngHc_ShapeSeat(seat, &c) != NULL) ? RldMorph_Find(&c->morph, name) : -1;
+}
+
+int Engine_HiresShapeKeySet(int seat, const char *name, float weight)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+	const int key = (run != NULL) ? RldMorph_Find(&c->morph, name) : -1;
+
+	if (key < 0)
+	{
+		return 0;
+	}
+	run->morph.key[key] = (weight > 0.0f) ? ((weight < 1.0f) ? weight : 1.0f) : 0.0f; // NaN -> 0
+	return 1;
+}
+
+float Engine_HiresShapeKeyGet(int seat, const char *name)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+	const int key = (run != NULL) ? RldMorph_Find(&c->morph, name) : -1;
+
+	return (key >= 0) ? run->morph.key[key] : 0.0f;
+}
+
+float Engine_HiresShapeWeight(int seat, int key)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+	float w[RLDMORPH_KEYS_MAX];
+
+	if ((run == NULL) || (key < 0) || ((u32)key >= c->morph.keyCount))
+	{
+		return 0.0f;
+	}
+	(void)RldMorph_Weights(&run->morph, c->morph.keyCount, w);
+	return w[key];
+}
+
+int Engine_HiresShapeChainSet(int seat, const char *const *names, int count, int frames)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+	int keys[RLDMORPH_CHAIN_MAX];
+	int k;
+
+	if ((run == NULL) || (names == NULL) || (count < 1) || (count > RLDMORPH_CHAIN_MAX))
+	{
+		return 0;
+	}
+	for (k = 0; k < count; k++)
+	{
+		keys[k] = RldMorph_Find(&c->morph, names[k]);
+		if (keys[k] < 0)
+		{
+			return 0;
+		}
+	}
+	return RldMorph_ChainSet(&run->morph, keys, count, frames, c->morph.keyCount);
+}
+
+int Engine_HiresShapeChainPlay(int seat, int direction)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+
+	return (run != NULL) ? RldMorph_ChainPlay(&run->morph, direction) : 0;
+}
+
+int Engine_HiresShapeChainSetPos(int seat, float pos)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+
+	return (run != NULL) ? RldMorph_ChainSetPos(&run->morph, pos) : 0;
+}
+
+float Engine_HiresShapeChainPos(int seat)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+
+	return ((run != NULL) && (run->morph.chainCount > 0)) ? RldMorph_ChainPos(&run->morph) : -1.0f;
+}
+
+int Engine_HiresShapeChainDone(int seat)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+
+	return ((run != NULL) && (run->morph.chainCount > 0)) ? RldMorph_ChainDone(&run->morph) : -1;
+}
+
+void Engine_HiresShapeReset(int seat)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run = EngHc_ShapeSeat(seat, &c);
+
+	if (run != NULL)
+	{
+		RldMorph_StateReset(&run->morph);
+		run->morphLoop = 0;
+	}
+}
+
+// THE DEV SWITCHES (--dev-shape-keys, --dev-shape-chain; pure parsing).
+// keys: name=weight[,name=weight...] (1..RLDMORPH_KEYS_MAX pairs, a name 1..63
+// bytes without '=' ',' '@', a weight 0..1). chain: name[,name...]@pos or
+// @loopN (1..RLDMORPH_CHAIN_MAX names, pos >= 0, N 1..RLDMORPH_FRAMES_MAX).
+// The callbacks get each item; NULL callbacks only check.
+typedef struct
+{
+	char name[RLDMORPH_CHAIN_MAX > RLDMORPH_KEYS_MAX ? RLDMORPH_CHAIN_MAX : RLDMORPH_KEYS_MAX][RLDMORPH_NAME_MAX];
+	float weight[RLDMORPH_KEYS_MAX];
+	int count;
+	float pos;  // chain: the position (loop 0)
+	int loop;   // chain: N of @loopN, 0 = @pos
+} EngHcShapeArg;
+
+// One name from *p up to a stop byte; 1 = a name of 1..63 bytes.
+internal int EngHc_ShapeArgName(const char **p, const char *stops, char out[RLDMORPH_NAME_MAX])
+{
+	size_t n = 0;
+
+	while ((**p != '\0') && (strchr(stops, **p) == NULL))
+	{
+		if (n + 1u >= RLDMORPH_NAME_MAX)
+		{
+			return 0;
+		}
+		out[n++] = *(*p)++;
+	}
+	out[n] = '\0';
+	return n > 0u;
+}
+
+internal int EngHc_ShapeArgKeys(const char *text, EngHcShapeArg *a, char *why, int whySize)
+{
+	const char *p = text;
+
+	memset(a, 0, sizeof(*a));
+	while (1)
+	{
+		char *end = NULL;
+		double w;
+
+		if (a->count >= (int)RLDMORPH_KEYS_MAX)
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-keys takes at most %u keys, not '%s'", (unsigned)RLDMORPH_KEYS_MAX, text);
+			return 0;
+		}
+		if (!EngHc_ShapeArgName(&p, "=,@", a->name[a->count]) || (*p != '='))
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-keys expects name=weight[,name=weight...] (a name of 1..63 bytes), not '%s'", text);
+			return 0;
+		}
+		p++;
+		w = strtod(p, &end);
+		if ((end == p) || !(w >= 0.0) || !(w <= 1.0) || ((*end != ',') && (*end != '\0')))
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-keys expects a weight 0..1 after each '=', not '%s'", text);
+			return 0;
+		}
+		a->weight[a->count++] = (float)w;
+		p = end;
+		if (*p == '\0')
+		{
+			return 1;
+		}
+		p++;
+	}
+}
+
+internal int EngHc_ShapeArgChain(const char *text, EngHcShapeArg *a, char *why, int whySize)
+{
+	const char *p = text;
+	char *end = NULL;
+
+	memset(a, 0, sizeof(*a));
+	while (1)
+	{
+		if (a->count >= RLDMORPH_CHAIN_MAX)
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-chain takes at most %d keys, not '%s'", RLDMORPH_CHAIN_MAX, text);
+			return 0;
+		}
+		if (!EngHc_ShapeArgName(&p, "=,@", a->name[a->count]) || ((*p != ',') && (*p != '@')))
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-chain expects name[,name...]@pos or @loopN (a name of 1..63 bytes), not '%s'", text);
+			return 0;
+		}
+		a->count++;
+		if (*p++ == '@')
+		{
+			break;
+		}
+	}
+	if (strncmp(p, "loop", 4) == 0)
+	{
+		const long n = strtol(p + 4, &end, 10);
+
+		if ((end == p + 4) || (*end != '\0') || (n < 1) || (n > RLDMORPH_FRAMES_MAX))
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-chain expects @loopN with N 1..%d, not '%s'", RLDMORPH_FRAMES_MAX, text);
+			return 0;
+		}
+		a->loop = (int)n;
+		return 1;
+	}
+	{
+		const double pos = strtod(p, &end);
+
+		if ((end == p) || (*end != '\0') || !(pos >= 0.0) || !(pos <= (double)a->count))
+		{
+			snprintf(why, (size_t)whySize, "switch --dev-shape-chain expects @pos with pos 0..%d (the number of keys), not '%s'", a->count, text);
+			return 0;
+		}
+		a->pos = (float)pos;
+	}
+	return 1;
+}
+
+int Engine_HiresShapeArgCheck(const char *keys, const char *chain, char *why, int whySize)
+{
+	EngHcShapeArg a;
+
+	why[0] = '\0';
+	if ((keys != NULL) && !EngHc_ShapeArgKeys(keys, &a, why, whySize))
+	{
+		return 0;
+	}
+	if ((chain != NULL) && !EngHc_ShapeArgChain(chain, &a, why, whySize))
+	{
+		return 0;
+	}
+	return 1;
+}
+
+// The dev switches on seat 0 at a level load (after the seats' states were
+// cleared). Unknown names: one line.
+internal void EngHc_ShapeDevApply(void)
+{
+	const EngHcChar *c = NULL;
+	EngHcSeatRun *run;
+	EngHcShapeArg a;
+	char why[200];
+	int k;
+
+	if ((g_cfg_engineShapeKeys[0] == '\0') && (g_cfg_engineShapeChain[0] == '\0'))
+	{
+		return;
+	}
+	run = EngHc_ShapeSeat(0, &c);
+	if (run == NULL)
+	{
+		Platform_Log("[CTR Engine] hires shape keys: seat 0 has no hi-res character with shape keys in this level - --dev-shape-keys / --dev-shape-chain do nothing\n");
+		return;
+	}
+	if ((g_cfg_engineShapeKeys[0] != '\0') && EngHc_ShapeArgKeys(g_cfg_engineShapeKeys, &a, why, (int)sizeof(why)))
+	{
+		for (k = 0; k < a.count; k++)
+		{
+			if (!Engine_HiresShapeKeySet(0, a.name[k], a.weight[k]))
+			{
+				Platform_Log("[CTR Engine] hires shape keys: %s has no key '%s' - left out\n", c->file, a.name[k]);
+			}
+		}
+	}
+	if ((g_cfg_engineShapeChain[0] != '\0') && EngHc_ShapeArgChain(g_cfg_engineShapeChain, &a, why, (int)sizeof(why)))
+	{
+		const char *names[RLDMORPH_CHAIN_MAX];
+		// @pos: fine frames (0.001 of a key); @loopN: N frames for the whole way.
+		const int frames = (a.loop > 0) ? a.loop : (a.count * 1000);
+
+		for (k = 0; k < a.count; k++)
+		{
+			names[k] = a.name[k];
+		}
+		if (!Engine_HiresShapeChainSet(0, names, a.count, frames))
+		{
+			Platform_Log("[CTR Engine] hires shape keys: %s: the chain '%s' names a key the file does not have - no chain\n", c->file, g_cfg_engineShapeChain);
+		}
+		else if (a.loop > 0)
+		{
+			(void)Engine_HiresShapeChainPlay(0, 1);
+			run->morphLoop = 1;
+		}
+		else
+		{
+			(void)Engine_HiresShapeChainSetPos(0, a.pos);
+		}
+	}
+	{
+		char text[400];
+		size_t used = 0;
+		float w[RLDMORPH_KEYS_MAX];
+		u32 key;
+
+		(void)RldMorph_Weights(&run->morph, c->morph.keyCount, w);
+		text[0] = '\0';
+		for (key = 0; (key < c->morph.keyCount) && (used < sizeof(text)); key++)
+		{
+			used += (size_t)snprintf(text + used, sizeof(text) - used, "%s%s %.3f", (key == 0u) ? "" : ", ", c->morph.name[key], (double)w[key]);
+		}
+		Platform_Log("[CTR Engine] hires shape keys: seat 0, %s: drawn with %s%s\n", c->file, text, run->morphLoop ? " (the chain loops)" : "");
+	}
+}
+
+// ---------------------------------------------------------------------------
 // THE LOAD (stage 5, from Engine_DriverCmdlLoad).
 
 internal void EngHc_Report(void)
@@ -3016,6 +3515,12 @@ internal void EngHc_Report(void)
 	             "skinned %llu, skin time %.1f ms in all (%.3f ms per skin); seat ticks %u, tick lines %u; driver select drawn %u, missed %u; host peak of the loader %u KB\n",
 	             s_hc.loaded, s_hc.refused, s_hc.draws, s_hc.mirrorDraws, s_hc.declined, s_hc.submits, s_hc.skins, (unsigned long long)s_hc.skinnedVertices,
 	             s_hc.skinMs, (s_hc.skins > 0u) ? (s_hc.skinMs / (double)s_hc.skins) : 0.0, s_hc.ticks, s_hc.lines, s_hc.selectFrames, s_hc.selectMisses, s_hc.hostPeak / 1024u);
+	// THE SHAPE KEYS: a line of their own, only in a run that blended any (the line above stays as it was).
+	if (s_hc.morphSkins > 0u)
+	{
+		Platform_Log("[CTR Engine] hires shape keys at exit: skins with a weight not 0 %u, vertices blended %llu\n", s_hc.morphSkins,
+		             (unsigned long long)s_hc.morphVertices);
+	}
 }
 
 // The first error of a report (rule, text), or the first message.
@@ -3199,6 +3704,24 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 	Platform_Log("[CTR Engine] hires char textures: %s: filter %s, %d texture(s):%s%s\n", c->file,
 	             (g_cfg_engineHiresCharsFilter == ENGINE_TEXTURE_PIXELATED) ? "nearest (--engine-hires-chars-filter)" : "trilinear with anisotropy", c->texCount,
 	             c->texText, (c->nearestAsked > 0) ? "; the file's sampler asks NEAREST (drawn with the filter above)" : "");
+	// The shape keys, only when the file has morph targets (a file without logs as before).
+	if (c->morph.targets > 0u)
+	{
+		char names[400];
+		size_t used = 0;
+		u32 k;
+
+		names[0] = '\0';
+		for (k = 0; (k < c->morph.keyCount) && (used < sizeof(names)); k++)
+		{
+			used += (size_t)snprintf(names + used, sizeof(names) - used, "%s%s%s", (k == 0u) ? "" : ", ", c->morph.name[k], ((c->morph.normalMask >> k) & 1u) ? "+n" : "");
+		}
+		Platform_Log("[CTR Engine] hires char shape keys: %s: %u key(s) (%s), %u vertices moved, %u deltas, %u bytes; left out: %u unnamed, %u past %u keys, %u over "
+		             "the %u byte budget, %u bad accessors%s\n",
+		             c->file, (unsigned)c->morph.keyCount, names, (unsigned)c->morph.vertCount, (unsigned)c->morph.kept, (unsigned)c->morph.bytes,
+		             (unsigned)c->morph.unnamed, (unsigned)c->morph.overKeys, (unsigned)RLDMORPH_KEYS_MAX, (unsigned)c->morph.overBudget,
+		             (unsigned)RLDMORPH_BYTES_MAX, (unsigned)c->morph.badAccessor, c->morphShort ? "; OUT OF MEMORY: drawn without its keys" : "");
+	}
 	return 1;
 }
 
@@ -3232,6 +3755,31 @@ internal int EngHc_Scratch(void)
 		free(s_hc.palette);
 		s_hc.palette = (float *)malloc((size_t)palette * 12u * sizeof(float));
 		s_hc.scratchPalette = palette;
+	}
+	// THE SHAPE KEYS: the blend's scratch, only when a loaded character has keys
+	// (without it the keys are not drawn: EngHc_SkinSlot falls back to the Basis).
+	{
+		u32 morph = 0;
+
+		for (k = 0; k < ENGINE_HIRES_CHARS_MAX; k++)
+		{
+			if (s_hc.chars[k].used && (s_hc.chars[k].morph.vertCount > morph))
+			{
+				morph = s_hc.chars[k].morph.vertCount;
+			}
+		}
+		if (morph > s_hc.scratchMorph)
+		{
+			free(s_hc.morphP);
+			free(s_hc.morphN);
+			s_hc.morphP = (float *)malloc((size_t)morph * 3u * sizeof(float));
+			s_hc.morphN = (float *)malloc((size_t)morph * 3u * sizeof(float));
+			s_hc.scratchMorph = ((s_hc.morphP != NULL) && (s_hc.morphN != NULL)) ? morph : 0u;
+			if (s_hc.scratchMorph == 0u)
+			{
+				Platform_Log("[CTR Engine] hires shape keys: no memory for the blend of %u vertices - drawn without their keys\n", morph);
+			}
+		}
 	}
 	return (s_hc.poseA != NULL) && (s_hc.poseB != NULL) && (s_hc.worlds != NULL) && (s_hc.palette != NULL);
 }
@@ -3297,6 +3845,8 @@ void Engine_HiresCharsLoad(void)
 		s_hc.seatChar[seat] = -1;
 		s_hc.seats[seat].valid = 0;
 		s_hc.seats[seat].force = -1;
+		RldMorph_StateReset(&s_hc.seats[seat].morph); // the shape keys: cleared at every level load
+		s_hc.seats[seat].morphLoop = 0;
 	}
 	if (!g_cfg_engineHiresChars || !g_cfg_engine || (gGT == NULL))
 	{
@@ -3505,6 +4055,7 @@ void Engine_HiresCharsLoad(void)
 		s_hc.slots[k].skinnedFrame = 0;
 	}
 	s_hc.levelReady = (maxVertices > 0u);
+	EngHc_ShapeDevApply();
 	{
 		int hires = 0;
 		int loaded = 0;
@@ -4237,6 +4788,73 @@ internal int EngHc_SelfTestLoader(int *checks)
 	RldHires_Close(&model);
 	free(chunk);
 	free(glb);
+
+	// (M) THE SHAPE KEYS: the same skinned driver without and with two morph
+	// targets (engine_hires_testglb.c morph 1: "lift" moves body vertices 0 and
+	// 1 up by 0.25 m = 16 units, "bend" vertex 3 by 0.5 m along x with a normal
+	// delta). Without: no key, no block, and the hull of before. With: the keys
+	// by name on the body's vertices (the body is drawn first: vertices 0..3),
+	// the hull's top at least 16 units higher, the 4 m rule as without.
+	{
+		float hullMin0[3] = {0.0f, 0.0f, 0.0f};
+		float hullMax0[3] = {0.0f, 0.0f, 0.0f};
+		int pass;
+
+		for (pass = 0; pass < 2; pass++)
+		{
+			memset(&d, 0, sizeof(d));
+			d.skinned = 1;
+			d.wheels = 4;
+			d.clipMask = 0xfffu;
+			d.morph = pass;
+			glb = EngHiresTest_Glb(&d, &glbSize);
+			chunk = (glb != NULL) ? RldHires_BuildChunk(glb, (u32)glbSize, &chunkSize) : NULL;
+			ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+			if (!ok)
+			{
+				printf("engine selftest: hires loader M%d refused: %s %s\n", pass, rule, detail);
+			}
+			HL_CHECK(ok && (RldHires_ReportHas(&rep, "HRG-23") == (pass == 1)), "M: opens; HRG-23 only with morph targets");
+			memset(&c, 0, sizeof(c));
+			c.indexBuffer = 0xffffffffu;
+			ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+			HL_CHECK(ok, "M: the CPU side is made");
+			if (ok && (pass == 0))
+			{
+				HL_CHECK((c.morph.keyCount == 0u) && (c.morph.targets == 0u) && (c.morph.block == NULL) && (c.morph.bytes == 0u) && !c.morphShort,
+				         "M0: a file without targets has no shape key set");
+				memcpy(hullMin0, c.hullMin, sizeof(hullMin0));
+				memcpy(hullMax0, c.hullMax, sizeof(hullMax0));
+			}
+			if (ok && (pass == 1))
+			{
+				float w[RLDMORPH_KEYS_MAX];
+				RldMorphState st;
+
+				HL_CHECK((c.morph.keyCount == 2u) && (strcmp(c.morph.name[0], "lift") == 0) && (strcmp(c.morph.name[1], "bend") == 0) && (c.morph.vertCount == 3u) &&
+				             (c.morph.vert[0] == 0u) && (c.morph.vert[1] == 1u) && (c.morph.vert[2] == 3u) && (c.morph.normalMask == 2u) && !c.morphShort,
+				         "M1: two keys by name on body vertices 0, 1 and 3");
+				HL_CHECK((c.vertexCount == 52u) && (c.morph.baseP[0] == c.src[0].p[0]) && (c.morph.baseP[7] == c.src[3].p[1]) && (c.morph.baseN[8] == c.src[3].n[2]),
+				         "M1: the base of the blend is the skinning source");
+				// A superset on every axis (the reach holds the base, the margin grows with the extent), higher on y.
+				HL_CHECK((c.hullMin[0] <= hullMin0[0]) && (c.hullMin[1] <= hullMin0[1]) && (c.hullMin[2] <= hullMin0[2]) && (c.hullMax[0] >= hullMax0[0]) &&
+				             (c.hullMax[1] > hullMax0[1]) && (c.hullMax[2] >= hullMax0[2]),
+				         "M1: the culling hull holds the hull without keys and reaches the lifted vertices");
+				RldMorph_StateReset(&st);
+				HL_CHECK(RldMorph_Weights(&st, c.morph.keyCount, w) == 0, "M1: all weights 0 - the route passes no weights (the loop of before)");
+				st.key[1] = 1.0f;
+				HL_CHECK((RldMorph_Weights(&st, c.morph.keyCount, w) == 1) && (w[0] == 0.0f) && (w[1] == 1.0f), "M1: one key at 1 - the blend path");
+			}
+			if (ok)
+			{
+				EngHc_FreeCpu(&c);
+				HL_CHECK((c.morph.block == NULL) && (c.morph.keyCount == 0u), "M: the set is freed with the CPU side");
+			}
+			RldHires_Close(&model);
+			free(chunk);
+			free(glb);
+		}
+	}
 #undef HL_CHECK
 	*checks += n;
 	return failures;
@@ -4263,6 +4881,7 @@ int Engine_SelfTestHiresChar(int *checks)
 
 	failures += EngHiresTest_GlbSelfTest(checks);
 	failures += EngHires_SelfTestAnim(checks);
+	failures += EngHires_SelfTestMorph(checks);
 
 	// Fallback chains (FORMAT section 4) with every clip missing in turn.
 	{
