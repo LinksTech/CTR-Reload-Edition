@@ -347,6 +347,13 @@ Planned, in no particular order and without a date:
 A new version comes out when enough has come together. Until then, fixes
 and additions land in `main` and the nightly build first.
 
+## CNK Expansion – Progress
+
+![CNK expansion progress: tracks complete, functions verified and the state of each building block](status/cnk-progress.svg)
+
+CNK tracks are converted from your own *Crash Nitro Kart* disc (PS2,
+NTSC-U). No game data is included in this repository.
+
 ## Building from source
 
 Windows only, 32-bit (x86) build. You need:
