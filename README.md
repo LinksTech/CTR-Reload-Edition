@@ -32,7 +32,7 @@
   <a href="#custom-tracks">Custom tracks</a> &middot;
   <a href="#custom-characters">Custom characters</a> &middot;
   <a href="#mods">Mods</a> &middot;
-  <a href="#coming-soon">Coming soon</a> &middot;
+  <a href="#work-in-progress">Work in progress</a> &middot;
   <a href="#building-from-source">Building</a> &middot;
   <a href="#reporting-bugs">Bugs</a> &middot;
   <a href="#credits">Credits</a> &middot;
@@ -151,6 +151,9 @@ until the next release.
 - The native engine draws one-player levels with real textures and
   mipmaps, and high-detail and hi-res drivers with skinning; a level it
   cannot load falls back to the original PS1 drawing on its own
+- *New since 0.7.5:* what the PS1 path still draws in an engine race -
+  drivers, crates, fruit - is depth-tested against the engine's track, so
+  nothing shows through walls any more
 - Less emulation where it doesn't matter: several PS1 rendering steps
   now run natively, like transparency in a single pass
 - Runs out of room gracefully: an effect is left out and logged instead
@@ -262,8 +265,9 @@ game's, none, or your own.
 **Animations.** A Low-Poly or Hi-Res driver brings 12 clips as Blender
 actions on its skeleton: `idle`, `steer_left`, `steer_right`, `jump`,
 `drift_left`, `drift_right`, `hit`, `podium_1` to `podium_3`, `lose` and
-`menu`. A missing clip falls back to another one, so you can start with a
-few. A Vanilla driver takes shape keys instead (steer_left, steer_right,
+`menu`, and optionally `finish_win` and `finish_lose` for after the finish
+line *(new since 0.7.5)*. A missing clip falls back to another one, so you
+can start with a few. A Vanilla driver takes shape keys instead (steer_left, steer_right,
 reverse, crash, jump, win and lose) - see [docs/ANIMATIONS.md](docs/ANIMATIONS.md).
 
 **Creator Kit** *(new since 0.7.5)*. Inside the Character page, the Creator
@@ -314,9 +318,24 @@ is exactly as before.
 Not in CRYSTAL, CTR and TIME TRIAL of NITRO-PIT, Adventure, Battle or with
 two players.
 
-## Coming soon
+## Work in progress
 
-In progress, in no particular order and without a date:
+What we are working on right now (as of October 2026):
+
+- **Engine tracks** - a new kind of custom track that the native engine
+  draws from its own data, without `.lev` and `.vrm`, with track features
+  the original never had: anti-gravity zones with their own gravity and
+  camera, and teleport portals that CPU drivers use too. The container
+  format (4.4) and the packer `rldpack make-engine` are in `main` as a
+  provisional preview; the game lists such tracks grey for now. The race
+  side is developed on the branch
+  [`expansions-wip`](https://github.com/LinksTech/CTR-Reload-Edition/tree/expansions-wip).
+- **The native engine drawing more of the race** - after tracks, objects
+  and drivers, the remaining PS1-drawn parts move over step by step
+- **Hi-res drivers and the Creator Kit** - polish from testing, ahead of
+  the next release
+
+Planned, in no particular order and without a date:
 
 - Battle on custom tracks
 - Custom characters in more modes: two players, Adventure and the NITRO-PIT
@@ -326,7 +345,14 @@ In progress, in no particular order and without a date:
 - Skin support for the drivers
 
 A new version comes out when enough has come together. Until then, fixes
-and additions land here first.
+and additions land in `main` and the nightly build first.
+
+## CNK Expansion – Progress
+
+![CNK expansion progress: tracks complete, functions verified and the state of each building block](status/cnk-progress.svg)
+
+CNK tracks are converted from your own *Crash Nitro Kart* disc (PS2,
+NTSC-U). No game data is included in this repository.
 
 ## Building from source
 
