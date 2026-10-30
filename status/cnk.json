@@ -1,7 +1,7 @@
 {
-  "last_updated": "YYYY-MM-DD",
+  "last_updated": "2026-10-30",
   "tracks": { "complete": 0, "total": 13 },
-  "functions_verified": { "verified": 0, "in_scope": 0 },
+  "functions_verified": { "verified": 141, "in_scope": 393 },
   "building_blocks": [
     { "name": "Driving model (CTR)",        "state": "in_progress" },
     { "name": "Anti-gravity (CNK 1:1)",     "state": "in_progress" },
